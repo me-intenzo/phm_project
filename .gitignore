@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+
+outputs/
+data/raw/
+data/processed/
+
+*.pt
+*.pth
+
+wandb/
+logs/
+
+.ipynb_checkpoints/
