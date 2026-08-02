@@ -1,2 +1,14 @@
-dataset: fd002
-model: gru
+dataset: FD002
+
+window_size: 30
+
+batch_size: 64
+
+epochs: 50
+
+learning_rate: 0.001
+
+random_seed: 42
+
+#device: cpu //use only if u wanna run on cpu or lack gpu, otherwise use cuda
+device: cuda
