@@ -1,35 +1,30 @@
 if __name__ == "__main__":
 
-    from loader import load_dataset
-    from validation import (
-        dataset_summary,
-        validate_dataset,
-        plot_engine_cycles,
-        plot_sensor_trends,
-        plot_correlation,
-        check_sensor_variance,
-    )
+    from src.preprocessing.loader import CMAPSSLoader
+    from src.preprocessing.validator import DatasetValidator
+    from src.preprocessing.visualization import DatasetVisualizer
+    from pathlib import Path
 
-    train, test, rul = load_dataset()
+    _REPORT_DIR = Path("outputs/reports")
+    _FIGURE_DIR = Path("outputs/figures")
 
-    validate_dataset(train)
+    train, test, rul = CMAPSSLoader().load_dataset("FD001")
 
-    dataset_summary(train, "Training")
+    validator = DatasetValidator(output_dir=_REPORT_DIR)
+    validator.validate(train, "Training")
 
-    plot_engine_cycles(train)
+    summary = validator.summarize(train, "Training")
+    validator.save_report(summary, "training_summary.csv")
+    print(summary.to_string(index=False))
 
-    plot_sensor_trends(train, sensor="sensor_2")
-
-    plot_sensor_trends(train, sensor="sensor_3")
-
-    plot_sensor_trends(train, sensor="sensor_4")
-
-    plot_sensor_trends(train, sensor="sensor_11")
-
-    plot_sensor_trends(train, sensor="sensor_15")
-
-    plot_correlation(train)
-
-    check_sensor_variance(train)
+    viz = DatasetVisualizer(output_dir=_FIGURE_DIR)
+    viz.plot_engine_lifetime(train)
+    viz.plot_sensor_trend(train, sensor="sensor_2")
+    viz.plot_sensor_trend(train, sensor="sensor_3")
+    viz.plot_sensor_trend(train, sensor="sensor_4")
+    viz.plot_sensor_trend(train, sensor="sensor_11")
+    viz.plot_sensor_trend(train, sensor="sensor_15")
+    viz.plot_correlation(train)
+    viz.sensor_variance(train)
 
     print("\nEDA Complete")
