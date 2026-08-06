@@ -110,25 +110,3 @@ class LSTMPrognosticsModel(nn.Module):
         hi = self.hi_head(features)
 
         return rul.squeeze(-1), hi.squeeze(-1)
-
-
-# --------------------------------------------------------
-# Model Test
-# --------------------------------------------------------
-
-if __name__ == "__main__":
-
-    model = LSTMPrognosticsModel(
-        input_size=18
-    )
-
-    x = torch.randn(
-        64,
-        30,
-        18,
-    )
-
-    rul, hi = model(x)
-
-    print(f"RUL Output Shape : {rul.shape}")
-    print(f"HI Output Shape  : {hi.shape}")
