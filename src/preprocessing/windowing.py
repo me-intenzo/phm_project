@@ -183,3 +183,109 @@ class WindowGenerator:
         logger.info(
             "Processed dataset saved."
         )
+
+            # ------------------------------------------------ #
+
+    def create_test_windows(
+        self,
+        df: pd.DataFrame,
+    ):
+        """
+        Create one final window for each test engine.
+
+        NASA C-MAPSS test evaluation uses the final available
+        observation window from each engine.
+
+        Returns
+        -------
+        X : np.ndarray
+            Shape: (num_engines, window_size, num_features)
+
+        y_rul : np.ndarray
+            Official RUL associated with each engine's final window.
+
+        y_hi : np.ndarray
+            HI associated with each engine's final window.
+        """
+
+        logger.info(
+            "Generating final test windows..."
+        )
+
+        feature_columns = self.get_feature_columns(df)
+
+        X = []
+        y_rul = []
+        y_hi = []
+
+        engine_ids = sorted(
+            df["unit_number"].unique()
+        )
+
+        for engine in engine_ids:
+
+            engine_df = (
+                df[df["unit_number"] == engine]
+                .sort_values("time_in_cycles")
+            )
+
+            if len(engine_df) < self.window_size:
+
+                logger.warning(
+                    "Engine %s has only %d cycles. "
+                    "Skipping test window.",
+                    engine,
+                    len(engine_df),
+                )
+
+                continue
+
+            # --------------------------------------------------
+            # Final available sequence
+            # --------------------------------------------------
+
+            final_window = engine_df[
+                feature_columns
+            ].values[
+                -self.window_size:
+            ]
+
+            X.append(final_window)
+
+            # --------------------------------------------------
+            # Ground-truth RUL at final observation
+            # --------------------------------------------------
+
+            y_rul.append(
+                engine_df["RUL"].iloc[-1]
+            )
+
+            # --------------------------------------------------
+            # HI at final observation
+            # --------------------------------------------------
+
+            y_hi.append(
+                engine_df["HI"].iloc[-1]
+            )
+
+        X = np.asarray(
+            X,
+            dtype=np.float32,
+        )
+
+        y_rul = np.asarray(
+            y_rul,
+            dtype=np.float32,
+        )
+
+        y_hi = np.asarray(
+            y_hi,
+            dtype=np.float32,
+        )
+
+        logger.info(
+            "Generated %d final test windows.",
+            len(X),
+        )
+
+        return X, y_rul, y_hi

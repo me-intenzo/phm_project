@@ -165,8 +165,15 @@ def main() -> None:
     log.info("y_rul shape  : %s", y_rul_train.shape)
     log.info("y_hi shape   : %s", y_hi_train.shape)
 
-    X_test, y_rul_test, y_hi_test = win_gen.create_windows(test_df)
-    log.info("Test windows  : %s", X_test.shape)
+    X_test, y_rul_test, y_hi_test = (
+        win_gen.create_test_windows(test_df)
+    )
+    log.info(
+        "Test windows  : %s | RUL: %s | HI: %s", 
+        X_test.shape, 
+        y_rul_test.shape, 
+        y_hi_test.shape
+        )
 
     # ── Save Processed Dataset ────────────────────────────────────
     _step("Save Processed Dataset")

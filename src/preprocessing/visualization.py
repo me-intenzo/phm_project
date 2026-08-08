@@ -77,8 +77,11 @@ class DatasetVisualizer:
         self,
         df: pd.DataFrame,
         sensor: str,
-        engines: list[int],
+        engines: list[int] | None = None,
     ) -> None:
+
+        if engines is None:
+            engines = sorted(df["unit_number"].unique())[:5]
 
         logger.info("Plotting %s...", sensor)
 
