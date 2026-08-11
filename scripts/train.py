@@ -1,15 +1,22 @@
 """
 train.py
 
-Training pipeline for the baseline LSTM prognostics model.
+Generic training pipeline for prognostics models.
+
+Supported models
+----------------
+- LSTM
+- GRU
+- Transformer
+- Hybrid
 
 Workflow
 --------
-Load processed training data
+Load processed data
         ↓
 Train / validation split
         ↓
-Build LSTM model
+Select model
         ↓
 Multi-task loss
         ↓
@@ -18,8 +25,19 @@ ModelTrainer
 Best checkpoint
         ↓
 Training history
+
+Usage
+-----
+python scripts/train.py --model lstm
+python scripts/train.py --model gru
+python scripts/train.py --model transformer
+python scripts/train.py --model hybrid
+
 """
 
+from __future__ import annotations
+
+import argparse
 import logging
 import random
 import sys
@@ -41,7 +59,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
+from src.models.transformer import TransformerPrognosticsModel
+from src.models.hybrid import HybridPrognosticsModel
 from src.models.losses import MultiTaskLoss
 from src.models.trainer import ModelTrainer
 
@@ -52,14 +73,28 @@ from src.models.trainer import ModelTrainer
 
 SUBSET = "FD001"
 
-DATA_DIR = PROJECT_ROOT / "data" / "processed"
+DATA_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "processed"
+)
 
 CHECKPOINT_DIR = (
-    PROJECT_ROOT / "outputs" / "checkpoints"
+    PROJECT_ROOT
+    / "outputs"
+    / "checkpoints"
+)
+
+RESULTS_DIR = (
+    PROJECT_ROOT
+    / "outputs"
+    / "results"
 )
 
 LOG_DIR = (
-    PROJECT_ROOT / "outputs" / "logs"
+    PROJECT_ROOT
+    / "outputs"
+    / "logs"
 )
 
 SEED = 42
@@ -96,29 +131,76 @@ LOG_DIR.mkdir(
     exist_ok=True,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(
-            LOG_DIR / "train.log",
-            mode="w",
-        ),
-    ],
-)
 
-log = logging.getLogger(__name__)
+def configure_logging(model_name: str) -> logging.Logger:
+    """
+    Configure model-specific logging.
+    """
+
+    log_path = (
+        LOG_DIR
+        / f"train_{model_name}.log"
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s | "
+            "%(levelname)-8s | "
+            "%(message)s"
+        ),
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(
+                log_path,
+                mode="w",
+            ),
+        ],
+        force=True,
+    )
+
+    return logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# Argument Parser
+# ------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train a prognostics model "
+            "on NASA C-MAPSS."
+        )
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=[
+            "lstm",
+            "gru",
+            "transformer",
+            "hybrid",
+        ],
+        default="lstm",
+        help="Model architecture to train.",
+    )
+
+    return parser.parse_args()
 
 
 # ------------------------------------------------------------------
 # Reproducibility
 # ------------------------------------------------------------------
 
-def set_seed(seed: int) -> None:
+def set_seed(
+    seed: int,
+) -> None:
     """
-    Set random seeds for reproducible experiments.
+    Set random seeds for reproducibility.
     """
 
     random.seed(seed)
@@ -142,19 +224,21 @@ def get_device() -> torch.device:
 
     if torch.cuda.is_available():
 
-        device = torch.device("cuda")
+        device = torch.device(
+            "cuda"
+        )
 
     else:
 
-        device = torch.device("cpu")
-
-    log.info("Using device: %s", device)
+        device = torch.device(
+            "cpu"
+        )
 
     return device
 
 
 # ------------------------------------------------------------------
-# Load processed dataset
+# Data Loading
 # ------------------------------------------------------------------
 
 def load_training_data():
@@ -162,13 +246,20 @@ def load_training_data():
     Load processed training arrays.
     """
 
-    x_path = DATA_DIR / f"{SUBSET}_train_X.npy"
+    x_path = (
+        DATA_DIR
+        / f"{SUBSET}_train_X.npy"
+    )
 
-    rul_path = DATA_DIR / f"{SUBSET}_train_y_rul.npy"
+    rul_path = (
+        DATA_DIR
+        / f"{SUBSET}_train_y_rul.npy"
+    )
 
-    hi_path = DATA_DIR / f"{SUBSET}_train_y_hi.npy"
-
-    log.info("Loading processed training data...")
+    hi_path = (
+        DATA_DIR
+        / f"{SUBSET}_train_y_hi.npy"
+    )
 
     X = np.load(x_path)
 
@@ -176,30 +267,134 @@ def load_training_data():
 
     y_hi = np.load(hi_path)
 
-    log.info("X shape      : %s", X.shape)
-
-    log.info("RUL shape    : %s", y_rul.shape)
-
-    log.info("HI shape     : %s", y_hi.shape)
-
     return X, y_rul, y_hi
 
+
+# ------------------------------------------------------------------
+# Model Factory
+# ------------------------------------------------------------------
+
+def build_model(
+    model_name: str,
+    input_size: int,
+):
+    """
+    Construct the requested prognostics model.
+
+    All models use the same:
+        - input size
+        - hidden representation
+        - dropout
+        - multi-task output structure
+
+    The Transformer additionally uses:
+        - 4 attention heads
+    """
+
+    if model_name == "lstm":
+
+        return LSTMPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru":
+
+        return GRUPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "transformer":
+
+        return TransformerPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            num_heads=4,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "hybrid":
+
+        return HybridPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            num_heads=4,
+            dropout=DROPOUT,
+        )
+
+    raise ValueError(
+        f"Unsupported model: {model_name}"
+    )
 
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
 
-def main() -> None:
+def main():
+
+    args = parse_args()
+
+    model_name = args.model
+
+    log = configure_logging(
+        model_name
+    )
 
     set_seed(SEED)
 
     device = get_device()
 
+    log.info(
+        "=" * 60
+    )
+
+    log.info(
+        "TRAINING MODEL: %s",
+        model_name.upper(),
+    )
+
+    log.info(
+        "=" * 60
+    )
+
+    log.info(
+        "Using device: %s",
+        device,
+    )
+
     # --------------------------------------------------------------
     # Load data
     # --------------------------------------------------------------
 
-    X, y_rul, y_hi = load_training_data()
+    log.info(
+        "Loading processed training data..."
+    )
+
+    X, y_rul, y_hi = (
+        load_training_data()
+    )
+
+    log.info(
+        "X shape      : %s",
+        X.shape,
+    )
+
+    log.info(
+        "RUL shape    : %s",
+        y_rul.shape,
+    )
+
+    log.info(
+        "HI shape     : %s",
+        y_hi.shape,
+    )
 
     # --------------------------------------------------------------
     # Train / Validation Split
@@ -232,16 +427,20 @@ def main() -> None:
     )
 
     # --------------------------------------------------------------
-    # Model
+    # Build Model
     # --------------------------------------------------------------
 
     input_size = X.shape[-1]
 
-    model = LSTMPrognosticsModel(
+    model = build_model(
+        model_name=model_name,
         input_size=input_size,
-        hidden_size=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS,
-        dropout=DROPOUT,
+    )
+
+    parameter_count = sum(
+        parameter.numel()
+        for parameter in model.parameters()
+        if parameter.requires_grad
     )
 
     log.info(
@@ -251,11 +450,7 @@ def main() -> None:
 
     log.info(
         "Trainable parameters: %d",
-        sum(
-            parameter.numel()
-            for parameter in model.parameters()
-            if parameter.requires_grad
-        ),
+        parameter_count,
     )
 
     # --------------------------------------------------------------
@@ -278,7 +473,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------------
-    # Learning Rate Scheduler
+    # Scheduler
     # --------------------------------------------------------------
 
     scheduler = ReduceLROnPlateau(
@@ -286,6 +481,15 @@ def main() -> None:
         mode="min",
         factor=0.5,
         patience=3,
+    )
+
+    # --------------------------------------------------------------
+    # Model-specific checkpoint directory
+    # --------------------------------------------------------------
+
+    model_checkpoint_dir = (
+        CHECKPOINT_DIR
+        / model_name
     )
 
     # --------------------------------------------------------------
@@ -297,9 +501,9 @@ def main() -> None:
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
-        device=str(device),
+        device=device,
         batch_size=BATCH_SIZE,
-        checkpoint_dir=str(CHECKPOINT_DIR),
+        checkpoint_dir=model_checkpoint_dir,
     )
 
     # --------------------------------------------------------------
@@ -329,27 +533,35 @@ def main() -> None:
     )
 
     # --------------------------------------------------------------
-    # Save Training History
+    # Save history
     # --------------------------------------------------------------
 
-    history_path = (
-        PROJECT_ROOT
-        / "outputs"
-        / "results"
-        / f"{SUBSET}_lstm_history.npz"
-    )
-
-    history_path.parent.mkdir(
+    RESULTS_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    arrays: dict[str, np.ndarray] = {
-        key: np.asarray(value)
-        for key, value in history.items()
-    }
+    history_path = (
+        RESULTS_DIR
+        / f"{SUBSET}_{model_name}_history.npz"
+    )
 
-    np.savez(str(history_path), **arrays)
+    np.savez(
+        str(history_path),
+        **{
+            key: np.asarray(value)
+            for key, value in history.items()
+        },
+    )
+
+    # --------------------------------------------------------------
+    # Final logging
+    # --------------------------------------------------------------
+
+    log.info(
+        "Best validation loss: %.6f",
+        trainer.best_loss,
+    )
 
     log.info(
         "Training history saved to: %s",
@@ -357,8 +569,8 @@ def main() -> None:
     )
 
     log.info(
-        "Best validation loss: %.6f",
-        trainer.best_loss,
+        "Checkpoint saved to: %s",
+        model_checkpoint_dir,
     )
 
     log.info(

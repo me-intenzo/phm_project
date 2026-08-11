@@ -1,31 +1,26 @@
 """
 evaluate.py
 
-Evaluate the trained LSTM prognostics model on NASA C-MAPSS FD001.
+Generic evaluation pipeline for NASA C-MAPSS prognostics models.
 
-Evaluation protocol
--------------------
-For each test engine:
-    1. Select the final available sequence.
-    2. Predict RUL and HI.
-    3. Compare predicted RUL with the official RUL label.
+Supported models
+----------------
+- LSTM
+- GRU
+- Transformer
+- Hybrid
 
-Metrics
--------
-RUL:
-    - MAE
-    - RMSE
-    - R2
-    - NASA Score
-
-HI:
-    - MAE
-    - RMSE
-    - R2
+Usage
+-----
+python scripts/evaluate.py --model lstm
+python scripts/evaluate.py --model gru
+python scripts/evaluate.py --model transformer
+python scripts/evaluate.py --model hybrid
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -43,7 +38,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.evaluator import PrognosticsEvaluator
+from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
+from src.models.transformer import TransformerPrognosticsModel
+from src.models.hybrid import HybridPrognosticsModel
 
 
 # ------------------------------------------------------------------
@@ -52,13 +50,16 @@ from src.models.lstm import LSTMPrognosticsModel
 
 SUBSET = "FD001"
 
-DATA_DIR = PROJECT_ROOT / "data" / "processed"
+DATA_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "processed"
+)
 
-CHECKPOINT_PATH = (
+CHECKPOINT_DIR = (
     PROJECT_ROOT
     / "outputs"
     / "checkpoints"
-    / "best_model.pt"
 )
 
 RESULTS_DIR = (
@@ -75,30 +76,67 @@ LOG_DIR = (
 
 BATCH_SIZE = 64
 
+HIDDEN_SIZE = 128
+
+NUM_LAYERS = 2
+
+DROPOUT = 0.3
+
+
+# ------------------------------------------------------------------
+# Arguments
+# ------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser(
+        description="Evaluate a C-MAPSS prognostics model."
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["lstm", "gru", "transformer", "hybrid"],
+        required=True,
+        help="Model architecture to evaluate.",
+    )
+
+    return parser.parse_args()
+
 
 # ------------------------------------------------------------------
 # Logging
 # ------------------------------------------------------------------
 
-LOG_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
+def configure_logging(
+    model_name: str,
+) -> logging.Logger:
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(
-            LOG_DIR / "evaluate.log",
-            mode="w",
+    LOG_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s | "
+            "%(levelname)-8s | "
+            "%(message)s"
         ),
-    ],
-)
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(
+                LOG_DIR
+                / f"evaluate_{model_name}.log",
+                mode="w",
+            ),
+        ],
+        force=True,
+    )
 
-log = logging.getLogger(__name__)
+    return logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -108,13 +146,62 @@ log = logging.getLogger(__name__)
 def get_device() -> torch.device:
 
     if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
 
-    log.info("Using device: %s", device)
+        return torch.device("cuda")
 
-    return device
+    return torch.device("cpu")
+
+
+# ------------------------------------------------------------------
+# Model Factory
+# ------------------------------------------------------------------
+
+def build_model(
+    model_name: str,
+    input_size: int,
+):
+
+    if model_name == "lstm":
+
+        return LSTMPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru":
+
+        return GRUPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "transformer":
+
+        return TransformerPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            num_heads=4,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "hybrid":
+
+        return HybridPrognosticsModel(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+            num_heads=4,
+            dropout=DROPOUT,
+        )
+
+    raise ValueError(
+        f"Unsupported model: {model_name}"
+    )
 
 
 # ------------------------------------------------------------------
@@ -122,19 +209,31 @@ def get_device() -> torch.device:
 # ------------------------------------------------------------------
 
 def load_model(
+    model_name: str,
     input_size: int,
     device: torch.device,
-) -> LSTMPrognosticsModel:
+):
 
-    model = LSTMPrognosticsModel(
-        input_size=input_size,
-        hidden_size=128,
-        num_layers=2,
-        dropout=0.3,
+    model = build_model(
+        model_name,
+        input_size,
     )
 
+    checkpoint_path = (
+        CHECKPOINT_DIR
+        / model_name
+        / "best_model.pt"
+    )
+
+    if not checkpoint_path.exists():
+
+        raise FileNotFoundError(
+            f"Checkpoint not found: "
+            f"{checkpoint_path}"
+        )
+
     checkpoint = torch.load(
-        CHECKPOINT_PATH,
+        checkpoint_path,
         map_location=device,
     )
 
@@ -146,46 +245,45 @@ def load_model(
 
     model.eval()
 
-    log.info(
-        "Loaded checkpoint from epoch %d",
-        checkpoint["epoch"],
-    )
-
-    return model
+    return model, checkpoint
 
 
 # ------------------------------------------------------------------
-# Select final window from each test engine
+# Load test data
 # ------------------------------------------------------------------
 
 def load_test_data():
 
     X = np.load(
-        DATA_DIR / f"{SUBSET}_test_X.npy"
+        DATA_DIR
+        / f"{SUBSET}_test_X.npy"
     )
 
     y_rul = np.load(
-        DATA_DIR / f"{SUBSET}_test_y_rul.npy"
+        DATA_DIR
+        / f"{SUBSET}_test_y_rul.npy"
     )
 
     y_hi = np.load(
-        DATA_DIR / f"{SUBSET}_test_y_hi.npy"
+        DATA_DIR
+        / f"{SUBSET}_test_y_hi.npy"
     )
 
     return X, y_rul, y_hi
 
 
 # ------------------------------------------------------------------
-# Inference
+# Prediction
 # ------------------------------------------------------------------
 
 def predict(
     model,
-    X,
-    device,
+    X: np.ndarray,
+    device: torch.device,
 ):
 
     predictions_rul = []
+
     predictions_hi = []
 
     with torch.no_grad():
@@ -203,7 +301,9 @@ def predict(
                 ]
             ).float().to(device)
 
-            pred_rul, pred_hi = model(batch)
+            pred_rul, pred_hi = model(
+                batch
+            )
 
             predictions_rul.append(
                 pred_rul.cpu().numpy()
@@ -225,18 +325,28 @@ def predict(
 
 def main():
 
-    RESULTS_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
+    args = parse_args()
+
+    model_name = args.model
+
+    log = configure_logging(
+        model_name
     )
 
     device = get_device()
 
+    log.info(
+        "Using device: %s",
+        device,
+    )
+
     # --------------------------------------------------------------
-    # Load test data
+    # Test data
     # --------------------------------------------------------------
 
-    log.info("Loading processed test data...")
+    log.info(
+        "Loading processed test data..."
+    )
 
     X_test, y_rul_test, y_hi_test = (
         load_test_data()
@@ -251,18 +361,25 @@ def main():
     # Model
     # --------------------------------------------------------------
 
-    input_size = X_test.shape[-1]
-
-    model = load_model(
-        input_size=input_size,
+    model, checkpoint = load_model(
+        model_name=model_name,
+        input_size=X_test.shape[-1],
         device=device,
+    )
+
+    log.info(
+        "Loaded %s checkpoint from epoch %d",
+        model_name.upper(),
+        checkpoint["epoch"],
     )
 
     # --------------------------------------------------------------
     # Inference
     # --------------------------------------------------------------
 
-    log.info("Generating predictions...")
+    log.info(
+        "Generating predictions..."
+    )
 
     pred_rul, pred_hi = predict(
         model,
@@ -284,11 +401,16 @@ def main():
     )
 
     # --------------------------------------------------------------
-    # Display results
+    # Results
     # --------------------------------------------------------------
 
     log.info("=" * 60)
-    log.info("FINAL LSTM EVALUATION")
+
+    log.info(
+        "%s FINAL EVALUATION",
+        model_name.upper(),
+    )
+
     log.info("=" * 60)
 
     log.info("RUL metrics:")
@@ -315,8 +437,18 @@ def main():
     # Save predictions
     # --------------------------------------------------------------
 
+    prediction_path = (
+        RESULTS_DIR
+        / f"{SUBSET}_{model_name}_predictions.npz"
+    )
+
+    RESULTS_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     np.savez(
-        RESULTS_DIR / f"{SUBSET}_lstm_predictions.npz",
+        prediction_path,
         y_rul_true=y_rul_test,
         y_rul_pred=pred_rul,
         y_hi_true=y_hi_test,
@@ -324,8 +456,8 @@ def main():
     )
 
     log.info(
-        "Predictions saved to %s",
-        RESULTS_DIR,
+        "Predictions saved to: %s",
+        prediction_path,
     )
 
 

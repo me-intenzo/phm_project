@@ -93,7 +93,7 @@ def main() -> None:
     # ── Generate Labels ───────────────────────────────────────────
     _step("Generate Labels")
 
-    label_gen = LabelGenerator(max_rul=None)
+    label_gen = LabelGenerator(max_rul=125)
 
     train_df = label_gen.generate_labels(train_df)
 

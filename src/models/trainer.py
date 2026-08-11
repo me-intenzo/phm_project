@@ -36,7 +36,7 @@ class ModelTrainer:
         criterion,
         optimizer,
         scheduler=None,
-        device="cpu",
+        device: torch.device | str = "cpu",
         batch_size=64,
         checkpoint_dir="outputs/checkpoints",
     ):
