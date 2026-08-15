@@ -45,7 +45,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -71,7 +71,7 @@ from src.models.trainer import ModelTrainer
 # Configuration
 # ------------------------------------------------------------------
 
-SUBSET = "FD001"
+DEFAULT_SUBSET = "FD001"
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -132,15 +132,15 @@ LOG_DIR.mkdir(
 )
 
 
-def configure_logging(model_name: str) -> logging.Logger:
+def configure_logging(model_name: str, subset: str) -> logging.Logger:
     """
     Configure model-specific logging.
     """
 
-    log_path = (
-        LOG_DIR
-        / f"train_{model_name}.log"
-    )
+    log_dir = LOG_DIR / "training"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = log_dir / f"train_{subset}_{model_name}.log"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -187,6 +187,18 @@ def parse_args() -> argparse.Namespace:
         ],
         default="lstm",
         help="Model architecture to train.",
+    )
+    parser.add_argument(
+    "--subset",
+    type=str,
+    choices=[
+        "FD001",
+        "FD002",
+        "FD003",
+        "FD004",
+    ],
+    default=DEFAULT_SUBSET,
+    help="C-MAPSS subset to train.",
     )
 
     return parser.parse_args()
@@ -241,33 +253,37 @@ def get_device() -> torch.device:
 # Data Loading
 # ------------------------------------------------------------------
 
-def load_training_data():
+def load_training_data( subset:str ):
     """
-    Load processed training arrays.
+    Load processed training arrays and engine IDs.
+
+    Engine IDs are required for group-wise validation so that
+    windows from the same engine cannot appear in both training
+    and validation sets.
     """
 
-    x_path = (
-        DATA_DIR
-        / f"{SUBSET}_train_X.npy"
-    )
-
-    rul_path = (
-        DATA_DIR
-        / f"{SUBSET}_train_y_rul.npy"
-    )
-
-    hi_path = (
-        DATA_DIR
-        / f"{SUBSET}_train_y_hi.npy"
-    )
+    x_path = DATA_DIR / f"{subset}_train_X.npy"
+    rul_path = DATA_DIR / f"{subset}_train_y_rul.npy"
+    hi_path = DATA_DIR / f"{subset}_train_y_hi.npy"
+    engine_path = DATA_DIR / f"{subset}_train_engine_ids.npy"
 
     X = np.load(x_path)
-
     y_rul = np.load(rul_path)
-
     y_hi = np.load(hi_path)
+    engine_ids = np.load(engine_path)
 
-    return X, y_rul, y_hi
+    if not (
+        len(X)
+        == len(y_rul)
+        == len(y_hi)
+        == len(engine_ids)
+    ):
+        raise ValueError(
+            "X, RUL, HI and engine IDs must contain "
+            "the same number of samples."
+        )
+
+    return X, y_rul, y_hi, engine_ids
 
 
 # ------------------------------------------------------------------
@@ -342,9 +358,10 @@ def main():
     args = parse_args()
 
     model_name = args.model
+    subset = args.subset
 
     log = configure_logging(
-        model_name
+        model_name, subset
     )
 
     set_seed(SEED)
@@ -377,8 +394,8 @@ def main():
         "Loading processed training data..."
     )
 
-    X, y_rul, y_hi = (
-        load_training_data()
+    X, y_rul, y_hi, engine_ids = (
+        load_training_data( subset=subset )
     )
 
     log.info(
@@ -397,23 +414,75 @@ def main():
     )
 
     # --------------------------------------------------------------
-    # Train / Validation Split
+    # Engine-wise Train / Validation Split
     # --------------------------------------------------------------
 
-    (
-        X_train,
-        X_val,
-        y_rul_train,
-        y_rul_val,
-        y_hi_train,
-        y_hi_val,
-    ) = train_test_split(
-        X,
-        y_rul,
-        y_hi,
+    log.info(
+        "Creating engine-wise train/validation split..."
+    )
+
+    splitter = GroupShuffleSplit(
+        n_splits=1,
         test_size=VALIDATION_SIZE,
         random_state=SEED,
-        shuffle=True,
+    )
+
+    train_indices, val_indices = next(
+        splitter.split(
+            X,
+            y_rul,
+            groups=engine_ids,
+        )
+    )
+
+    X_train = X[train_indices]
+    X_val = X[val_indices]
+
+    y_rul_train = y_rul[train_indices]
+    y_rul_val = y_rul[val_indices]
+
+    y_hi_train = y_hi[train_indices]
+    y_hi_val = y_hi[val_indices]
+
+    train_engine_ids = engine_ids[train_indices]
+    val_engine_ids = engine_ids[val_indices]
+
+    # --------------------------------------------------------------
+    # Leakage Verification
+    # --------------------------------------------------------------
+
+    train_engines = set(
+        train_engine_ids.tolist()
+    )
+
+    val_engines = set(
+        val_engine_ids.tolist()
+    )
+
+    overlap = (
+        train_engines
+        & val_engines
+    )
+
+    if overlap:
+        raise RuntimeError(
+            "Engine leakage detected! "
+            f"Overlapping engines: {sorted(overlap)}"
+        )
+
+    log.info(
+        "Training engines   : %d",
+        len(train_engines),
+    )
+
+    log.info(
+        "Validation engines : %d",
+        len(val_engines),
+    )
+
+    log.info(
+        "Engine overlap     : %d",
+        len(overlap),
     )
 
     log.info(
@@ -480,7 +549,8 @@ def main():
         optimizer,
         mode="min",
         factor=0.5,
-        patience=3,
+        patience=5,
+        threshold=1e-4,
     )
 
     # --------------------------------------------------------------
@@ -543,7 +613,7 @@ def main():
 
     history_path = (
         RESULTS_DIR
-        / f"{SUBSET}_{model_name}_history.npz"
+        / f"{subset}_{model_name}_history.npz"
     )
 
     np.savez(

@@ -326,6 +326,7 @@ class ModelTrainer:
         val_loader,
         epochs=50,
         patience=10,
+        min_delta=1e-4,
     ):
 
         history = {
@@ -399,7 +400,7 @@ class ModelTrainer:
             # Save Best Model
             # ----------------------------
 
-            if val_metrics["loss"] < self.best_loss:
+            if val_metrics["loss"] < self.best_loss - min_delta:
 
                 self.best_loss = val_metrics["loss"]
 

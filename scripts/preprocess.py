@@ -10,6 +10,7 @@ Load → Validate → Summary → Visualize → Generate RUL/HI
 → Save → Logging → Done
 """
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -28,25 +29,10 @@ from src.preprocessing.windowing import WindowGenerator
 # Logging
 # ------------------------------------------------------------------ #
 
-LOG_DIR = Path("outputs/logs")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_DIR / "preprocess.log", mode="w"),
-    ],
-)
-
 log = logging.getLogger(__name__)
 
-SUBSET = "FD001"
+DEFAULT_SUBSET = "FD001"
 PROCESSED_DIR = Path("data/processed")
-REPORTS_DIR = Path("outputs/reports")
-FIGURES_DIR = Path("outputs/figures")
 MODELS_DIR = Path("outputs/models")
 
 
@@ -55,6 +41,94 @@ def _step(name: str) -> None:
     log.info("  %s", name)
     log.info("=" * 50)
 
+def parse_args() -> argparse.Namespace:
+    """
+    Parse preprocessing configuration from the command line.
+    """
+
+    parser = argparse.ArgumentParser(
+        description="Preprocess a NASA C-MAPSS dataset subset."
+    )
+
+    parser.add_argument(
+        "--subset",
+        type=str,
+        choices=[
+            "FD001",
+            "FD002",
+            "FD003",
+            "FD004",
+        ],
+        default=DEFAULT_SUBSET,
+        help="C-MAPSS subset to preprocess.",
+    )
+
+    return parser.parse_args()
+
+def setup_logging(subset: str) -> logging.Logger:
+
+    log_dir = (
+        Path("outputs")
+        / "logs"
+        / "preprocessing"
+    )
+
+    log_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    log_file = (
+        log_dir
+        / f"preprocess_{subset}.log"
+    )
+
+    logger = logging.getLogger(
+        "preprocessing"
+    )
+
+    logger.setLevel(
+        logging.INFO
+    )
+
+    logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s | "
+        "%(levelname)-8s | "
+        "%(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    console_handler = (
+        logging.StreamHandler(sys.stdout)
+    )
+
+    console_handler.setFormatter(
+        formatter
+    )
+
+    file_handler = (
+        logging.FileHandler(
+            log_file,
+            mode="w",
+            encoding="utf-8",
+        )
+    )
+
+    file_handler.setFormatter(
+        formatter
+    )
+
+    logger.addHandler(
+        console_handler
+    )
+
+    logger.addHandler(
+        file_handler
+    )
+
+    return logger
 
 # ------------------------------------------------------------------ #
 # Pipeline
@@ -62,28 +136,42 @@ def _step(name: str) -> None:
 
 def main() -> None:
 
+    args = parse_args()
+    subset = args.subset
+
+    log = setup_logging(subset)
+
+    figures_dir = Path("outputs") / "figures" / subset
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    viz = DatasetVisualizer(figures_dir)
+
+    reports_dir = Path("outputs") / "reports" / subset
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    log.info("Selected subset for C-MAPSS subset: %s", subset)
+
     # ── Load Dataset ──────────────────────────────────────────────
     _step("Load Dataset")
     loader = CMAPSSLoader()
-    train_df, test_df, rul_df = loader.load_dataset(SUBSET)
+    train_df, test_df, rul_df = loader.load_dataset(subset)
     log.info("Train: %s  |  Test: %s  |  RUL: %s",
              train_df.shape, test_df.shape, rul_df.shape)
 
     # ── Validate Dataset ──────────────────────────────────────────
     _step("Validate Dataset")
-    validator = DatasetValidator(REPORTS_DIR)
-    validator.validate(train_df, f"{SUBSET} Train")
-    validator.validate(test_df, f"{SUBSET} Test")
+    validator = DatasetValidator(reports_dir)
+    validator.validate(train_df, f"{subset} Train")
+    validator.validate(test_df, f"{subset} Test")
 
     # ── Dataset Summary ───────────────────────────────────────────
     _step("Dataset Summary")
-    summary = validator.summarize(train_df, f"{SUBSET} Train")
-    validator.save_report(summary, f"{SUBSET.lower()}_train_summary.csv")
+    summary = validator.summarize(train_df, f"{subset} Train")
+    validator.save_report(summary, f"{subset.lower()}_train_summary.csv")
     log.info("\n%s", summary.T.to_string(header=False))
 
     # ── Visualizations ────────────────────────────────────────────
     _step("Visualizations")
-    viz = DatasetVisualizer(FIGURES_DIR)
+    viz = DatasetVisualizer(figures_dir)
     viz.plot_engine_lifetime(train_df)
     viz.plot_sensor_trend(train_df, sensor="sensor_2", engines=[1, 2, 3])
     viz.plot_correlation(train_df)
@@ -135,7 +223,7 @@ def main() -> None:
     test_df = selector.transform(test_df)
 
     selector.save(
-        REPORTS_DIR / "selected_features.csv"
+        reports_dir / "selected_features.csv"
     )
 
     log.info(
@@ -158,34 +246,114 @@ def main() -> None:
 
     # ── Sliding Windows ───────────────────────────────────────────
     _step("Sliding Windows")
-    win_gen = WindowGenerator(window_size=30, stride=1)
-    X_train, y_rul_train, y_hi_train = win_gen.create_windows(train_df)
 
-    log.info("X_train shape : %s", X_train.shape)
-    log.info("y_rul shape  : %s", y_rul_train.shape)
-    log.info("y_hi shape   : %s", y_hi_train.shape)
-
-    X_test, y_rul_test, y_hi_test = (
-        win_gen.create_test_windows(test_df)
+    win_gen = WindowGenerator(
+        window_size=30,
+        stride=1,
     )
+
+    (
+        X_train,
+        y_rul_train,
+        y_hi_train,
+        train_engine_ids,
+    ) = win_gen.create_windows(
+        train_df
+    )
+
     log.info(
-        "Test windows  : %s | RUL: %s | HI: %s", 
-        X_test.shape, 
-        y_rul_test.shape, 
-        y_hi_test.shape
-        )
+        "X_train shape      : %s",
+        X_train.shape,
+    )
+
+    log.info(
+        "y_rul shape        : %s",
+        y_rul_train.shape,
+    )
+
+    log.info(
+        "y_hi shape         : %s",
+        y_hi_train.shape,
+    )
+
+    log.info(
+        "Engine IDs shape   : %s",
+        train_engine_ids.shape,
+    )
+
+    log.info(
+        "Training engines   : %d",
+        len(
+            set(
+                train_engine_ids
+            )
+        ),
+    )
+
+    # ── Test Windows ──────────────────────────────────────────────
+
+    (
+        X_test,
+        y_rul_test,
+        y_hi_test,
+        test_engine_ids,
+    ) = win_gen.create_test_windows(
+        test_df
+    )
+
+    log.info(
+        "X_test shape       : %s",
+        X_test.shape,
+    )
+
+    log.info(
+        "y_rul_test shape   : %s",
+        y_rul_test.shape,
+    )
+
+    log.info(
+        "y_hi_test shape    : %s",
+        y_hi_test.shape,
+    )
+
+    log.info(
+        "Test engines       : %d",
+        len(
+            set(
+                test_engine_ids
+            )
+        ),
+    )
 
     # ── Save Processed Dataset ────────────────────────────────────
     _step("Save Processed Dataset")
-    win_gen.save_dataset(X_train, y_rul_train, y_hi_train,
-                         PROCESSED_DIR, f"{SUBSET}_train")
-    win_gen.save_dataset(X_test, y_rul_test, y_hi_test,
-                         PROCESSED_DIR, f"{SUBSET}_test")
+
+    # Training dataset
+    win_gen.save_dataset(
+        X_train,
+        y_rul_train,
+        y_hi_train,
+        PROCESSED_DIR,
+        f"{subset}_train",
+        engine_ids=train_engine_ids,
+    )
+
+    # Test dataset
+    win_gen.save_dataset(
+        X_test,
+        y_rul_test,
+        y_hi_test,
+        PROCESSED_DIR,
+        f"{subset}_test",
+        engine_ids=test_engine_ids,
+    )
 
     # ── Done ──────────────────────────────────────────────────────
     _step("Done")
     log.info("Preprocessing completed successfully.")
     log.info("Outputs saved to: %s", PROCESSED_DIR.resolve())
+
+    
 
 
 if __name__ == "__main__":

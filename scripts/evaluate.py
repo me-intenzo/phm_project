@@ -100,6 +100,18 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Model architecture to evaluate.",
     )
+    parser.add_argument(
+    "--subset",
+    type=str,
+    choices=[
+        "FD001",
+        "FD002",
+        "FD003",
+        "FD004",
+    ],
+    default="FD001",
+    help="C-MAPSS subset to evaluate.",
+    )
 
     return parser.parse_args()
 
@@ -110,12 +122,11 @@ def parse_args() -> argparse.Namespace:
 
 def configure_logging(
     model_name: str,
+    subset: str,
 ) -> logging.Logger:
 
-    LOG_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    log_dir = LOG_DIR / "evaluation"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -128,8 +139,8 @@ def configure_logging(
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
-                LOG_DIR
-                / f"evaluate_{model_name}.log",
+                log_dir
+                / f"evaluate_{subset}_{model_name}.log",
                 mode="w",
             ),
         ],
@@ -214,11 +225,6 @@ def load_model(
     device: torch.device,
 ):
 
-    model = build_model(
-        model_name,
-        input_size,
-    )
-
     checkpoint_path = (
         CHECKPOINT_DIR
         / model_name
@@ -237,6 +243,13 @@ def load_model(
         map_location=device,
     )
 
+    ckpt_input_size = checkpoint.get("input_size", input_size)
+
+    model = build_model(
+        model_name,
+        ckpt_input_size,
+    )
+
     model.load_state_dict(
         checkpoint["model_state_dict"]
     )
@@ -252,21 +265,21 @@ def load_model(
 # Load test data
 # ------------------------------------------------------------------
 
-def load_test_data():
+def load_test_data(subset: str):
 
     X = np.load(
         DATA_DIR
-        / f"{SUBSET}_test_X.npy"
+        / f"{subset}_test_X.npy"
     )
 
     y_rul = np.load(
         DATA_DIR
-        / f"{SUBSET}_test_y_rul.npy"
+        / f"{subset}_test_y_rul.npy"
     )
 
     y_hi = np.load(
         DATA_DIR
-        / f"{SUBSET}_test_y_hi.npy"
+        / f"{subset}_test_y_hi.npy"
     )
 
     return X, y_rul, y_hi
@@ -329,8 +342,10 @@ def main():
 
     model_name = args.model
 
+    subset = args.subset
+
     log = configure_logging(
-        model_name
+        model_name, subset
     )
 
     device = get_device()
@@ -349,7 +364,7 @@ def main():
     )
 
     X_test, y_rul_test, y_hi_test = (
-        load_test_data()
+        load_test_data(subset)
     )
 
     log.info(
@@ -439,7 +454,7 @@ def main():
 
     prediction_path = (
         RESULTS_DIR
-        / f"{SUBSET}_{model_name}_predictions.npz"
+        / f"{subset}_{model_name}_predictions.npz"
     )
 
     RESULTS_DIR.mkdir(
