@@ -381,23 +381,6 @@ Default training hyperparameters (in `scripts/train.py`):
 
 ---
 
-## Testing
-
-Run the full test suite:
-
-```bash
-pytest tests/ -v
-```
-
-Run specific modules:
-
-```bash
-pytest tests/test_preprocessing.py -v
-pytest tests/test_models.py -v
-```
-
----
-
 ## Future Development
 
 The following research objectives are planned as extensions to the completed prognostics core:
@@ -428,8 +411,12 @@ The following research objectives are planned as extensions to the completed pro
 
 ### Phase 6 — Multi-Dimensional Evaluation (O6)
 
-- [ ] Benchmarking framework across models and subsets
-- [ ] Ablation studies and robustness testing
+- [ ] Benchmark predictive accuracy across models and C-MAPSS subsets
+- [ ] Evaluate uncertainty reliability and calibration
+- [ ] Evaluate explainability quality
+- [ ] Evaluate maintenance decision effectiveness
+- [ ] Conduct ablation studies and robustness testing
+- [ ] Assess usability and user trust
 
 ---
 

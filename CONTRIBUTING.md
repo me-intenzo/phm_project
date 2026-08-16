@@ -269,13 +269,8 @@ window_size: 30
 batch_size: 64
 epochs: 50
 learning_rate: 0.001
-hidden_size: 128
-num_layers: 2
-dropout: 0.3
-rul_loss_weight: 1.0
-hi_loss_weight: 0.5
-device: cuda
 random_seed: 42
+device: cuda
 ```
 
 Avoid hard-coding experiment-specific values in source files when they can be configured externally.
@@ -342,18 +337,23 @@ Verify:
 
 ```markdown
 ## What changed?
+
 Brief description of the implementation.
 
 ## Why?
+
 Problem or research requirement being addressed.
 
 ## Testing
+
 Commands run and results (e.g. pytest, train/eval on FD001).
 
 ## Results
+
 Metrics or screenshots if applicable.
 
 ## Notes
+
 Limitations, assumptions, or follow-up work.
 ```
 
@@ -367,14 +367,14 @@ Use conventional commit format:
 <type>: <description>
 ```
 
-| Type | Use |
-|------|-----|
-| `feat` | New functionality |
-| `fix` | Bug fix |
-| `refactor` | Code restructuring |
-| `test` | Tests |
-| `docs` | Documentation |
-| `perf` | Performance improvement |
+| Type       | Use                     |
+| ---------- | ----------------------- |
+| `feat`     | New functionality       |
+| `fix`      | Bug fix                 |
+| `refactor` | Code restructuring      |
+| `test`     | Tests                   |
+| `docs`     | Documentation           |
+| `perf`     | Performance improvement |
 
 Examples:
 
@@ -406,13 +406,13 @@ These paths are excluded via `.gitignore`.
 
 The following modules are reserved for upcoming research phases and are not yet part of the active pipeline. Contributions in these areas should follow the same modular conventions described above.
 
-| Phase | Module | Planned Focus |
-|-------|--------|---------------|
-| O2 | `src/uncertainty/` | Conformal prediction, calibration |
-| O3 | `src/explainability/` | SHAP, Integrated Gradients, attention |
-| O4 | `src/decision_engine/` | Maintenance rules and recommendations |
-| O5 | `src/hitl/` | Expert feedback and model refinement |
-| O6 | `src/evaluation/` | Benchmarking, ablation, robustness |
+| Phase | Module                 | Planned Focus                         |
+| ----- | ---------------------- | ------------------------------------- |
+| O2    | `src/uncertainty/`     | Conformal prediction, calibration     |
+| O3    | `src/explainability/`  | SHAP, Integrated Gradients, attention |
+| O4    | `src/decision_engine/` | Maintenance rules and recommendations |
+| O5    | `src/hitl/`            | Expert feedback and model refinement  |
+| O6    | `src/evaluation/`      | Benchmarking, ablation, robustness    |
 
 Refer to the **Future Development** section in `README.md` for the full roadmap.
 
