@@ -1,675 +1,441 @@
 # Contributing to PHM-XAI
 
-Thank you for contributing to **PHM-XAI**, an Explainable AI framework for Prognostics and Health Monitoring of aircraft engines.
+Thank you for your interest in contributing to **PHM-XAI** — a prognostics and health monitoring framework for aircraft engine degradation modeling using the NASA C-MAPSS dataset.
 
-This guide explains how to set up the project, understand its structure, develop new components, run tests, and submit changes.
-
----
-
-## 1. Project Overview
-
-PHM-XAI processes multivariate sensor time-series data from the NASA C-MAPSS dataset and supports:
-
-- Remaining Useful Life (RUL) prediction
-- Health Index (HI) prediction
-- LSTM, GRU, Transformer, and Hybrid models
-- Explainable AI
-- Uncertainty quantification
-- Maintenance decision support
-- Human-in-the-loop learning
-
-The project follows a modular architecture so new models, XAI methods, uncertainty techniques, and decision policies can be added independently.
+This guide covers development setup, project conventions, and the contribution workflow for the **currently implemented pipeline** (data preprocessing, multi-task model training, and evaluation).
 
 ---
 
-## 2. Development Setup
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Development Setup](#development-setup)
+- [Project Structure](#project-structure)
+- [Architecture](#architecture)
+- [Development Workflow](#development-workflow)
+- [Adding a New Model](#adding-a-new-model)
+- [Adding a Preprocessing Component](#adding-a-preprocessing-component)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Code Standards](#code-standards)
+- [Pull Request Guidelines](#pull-request-guidelines)
+- [Commit Messages](#commit-messages)
+- [What Not to Commit](#what-not-to-commit)
+- [Future Contribution Areas](#future-contribution-areas)
+- [Getting Help](#getting-help)
+
+---
+
+## Project Overview
+
+PHM-XAI currently implements a complete **Objective 1** pipeline:
+
+- Load and validate NASA C-MAPSS sensor data (FD001–FD004)
+- Generate RUL and Health Index labels
+- Preprocess features (selection, scaling, windowing)
+- Train multi-task prognostics models (LSTM, GRU, Transformer, Hybrid)
+- Evaluate predictions with standard and NASA-specific metrics
+
+The codebase is modular so future components (explainability, uncertainty, decision support) can be added without modifying the core pipeline.
+
+---
+
+## Development Setup
 
 ### Prerequisites
 
 - Python 3.9+
 - Git
-- pip or conda
-- CUDA-compatible GPU (optional)
+- pip (or conda)
+- CUDA-compatible GPU (optional, recommended for training)
 
-### Clone the Repository
+### Clone and Install
 
 ```bash
 git clone <repository-url>
 cd phm_project
+
+python -m venv .venv
 ```
 
-### Create a Virtual Environment
-
-#### Windows
+**Windows:**
 
 ```bash
-python -m venv .venv
-.venv\Scriptsctivate
+.venv\Scripts\activate
 ```
 
-#### Linux/macOS
+**Linux / macOS:**
 
 ```bash
-python -m venv .venv
 source .venv/bin/activate
 ```
-
-### Install Dependencies
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Verify PyTorch
+### Verify Installation
 
 ```bash
 python -c "import torch; print(torch.__version__)"
-python -c "import torch; print(torch.cuda.is_available())"
+python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+pytest tests/ -v
+```
+
+### Dataset
+
+Place NASA C-MAPSS files in `data/raw/` before running preprocessing:
+
+```
+data/raw/train_FD001.txt
+data/raw/test_FD001.txt
+data/raw/RUL_FD001.txt
 ```
 
 ---
 
-## 3. Project Structure
+## Project Structure
 
-```text
+```
 phm_project/
-│
-├── data/
-│   ├── raw/                  # Original C-MAPSS data
-│   └── processed/            # Preprocessed datasets
-│
 ├── configs/                  # YAML experiment configurations
-│
+├── data/
+│   ├── raw/                  # Original C-MAPSS data (not committed)
+│   └── processed/            # Preprocessed .npy arrays (not committed)
+├── scripts/
+│   ├── preprocess.py         # Preprocessing pipeline
+│   ├── train.py              # Model training
+│   └── evaluate.py           # Model evaluation
 ├── src/
-│   ├── preprocessing/        # Data preparation pipeline
-│   ├── models/               # Prognostics models
-│   ├── explainability/       # XAI methods
-│   ├── uncertainty/          # Uncertainty estimation
-│   ├── decision_engine/      # Maintenance decisions
-│   ├── hitl/                 # Human-in-the-loop components
-│   └── utils/                # Shared utilities
-│
-├── scripts/                  # Main execution scripts
-├── tests/                    # Automated tests
-├── outputs/                  # Reports, figures, checkpoints, logs
+│   ├── preprocessing/        # Loader, validator, labeling, windowing
+│   ├── models/               # LSTM, GRU, Transformer, Hybrid, trainer
+│   ├── evaluation/           # Metrics utilities
+│   └── utils/                # Config, logging, seed, I/O
+├── tests/                    # pytest test suite
+├── outputs/                  # Generated artifacts (not committed)
+├── main.py                   # EDA entry point
 ├── requirements.txt
-├── LICENSE
 └── README.md
 ```
 
 ---
 
-## 4. Architecture
+## Architecture
 
-The main development flow is:
+### Implemented Pipeline
 
-```text
-Raw Sensor Data
-      │
-      ▼
+```
+Raw Sensor Data (C-MAPSS)
+        │
+        ▼
 Preprocessing
-      │
-      ├── Validation
-      ├── Scaling
-      ├── Label Generation
-      ├── Feature Selection
-      └── Windowing
-      │
-      ▼
-Prognostics Model
-      │
-      ├── LSTM
-      ├── GRU
-      ├── Transformer
-      └── Hybrid
-      │
-      ▼
-RUL + Health Index
-      │
-      ├── Explainability
-      ├── Uncertainty
-      └── Decision Support
-               │
-               ▼
-        Human Feedback
+  ├── Validation
+  ├── RUL / HI Label Generation
+  ├── Feature Selection
+  ├── StandardScaler
+  └── Sliding-Window Generation
+        │
+        ▼
+Multi-Task Prognostics Model
+  ├── LSTM
+  ├── GRU
+  ├── Transformer
+  └── Hybrid
+        │
+        ▼
+RUL + Health Index Predictions
+        │
+        ▼
+Evaluation (MAE, RMSE, R², NASA Score)
 ```
 
-Keep new components consistent with this modular flow.
+### Model Interface Convention
+
+All prognostics models must implement:
+
+```python
+def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    x: (batch, window_size, num_features)
+    Returns: (pred_rul, pred_hi) each of shape (batch,)
+    """
+```
+
+Keep new models consistent with this interface so they work with `ModelTrainer`, `MultiTaskLoss`, and `scripts/evaluate.py`.
 
 ---
 
-## 5. Development Workflow
+## Development Workflow
 
-Before making changes:
+1. Pull the latest changes:
 
 ```bash
 git pull
 ```
 
-Create a feature branch:
+2. Create a feature branch:
 
 ```bash
 git checkout -b feature/your-feature-name
 ```
 
-Examples:
+Example branch names:
 
-```text
-feature/shap-explanations
-feature/conformal-prediction
+```
 feature/new-model
-feature/decision-engine
+feature/improved-windowing
 fix/preprocessing-validation
+test/add-transformer-coverage
+docs/update-readme
 ```
 
-Make your changes, test them, and commit them:
+3. Make changes and run tests:
+
+```bash
+pytest tests/ -v
+```
+
+4. Commit and push:
 
 ```bash
 git add .
-git commit -m "Add SHAP explanation module"
-```
-
-Push your branch:
-
-```bash
+git commit -m "feat: add improved feature selection"
 git push origin feature/your-feature-name
 ```
 
-Then open a Pull Request.
+5. Open a Pull Request with a clear description of what changed and why.
 
 ---
 
-## 6. Adding a New Model
+## Adding a New Model
 
-New prognostics models should be placed in:
+Place new models in `src/models/`:
 
-```text
-src/models/
 ```
-
-For example:
-
-```text
 src/models/
 ├── lstm.py
 ├── gru.py
 ├── transformer.py
 ├── hybrid.py
-└── new_model.py
+└── your_model.py
 ```
 
-### Recommended Process
+### Checklist
 
-1. Implement the model in `src/models/`.
-2. Follow the existing model structure.
-3. Support the RUL and HI prediction tasks where applicable.
-4. Add configuration parameters to the YAML configuration.
-5. Add the model option to the training workflow.
-6. Add appropriate tests.
-7. Train the model on at least one C-MAPSS subset.
-8. Evaluate its performance.
-9. Document the model and its configuration.
+1. Implement the model in `src/models/your_model.py`
+2. Follow the shared encoder + dual-head pattern (RUL + HI)
+3. Match the `forward()` return signature used by existing models
+4. Register the model in `scripts/train.py` and `scripts/evaluate.py`
+5. Add configuration parameters to `configs/` if needed
+6. Add tests in `tests/test_models.py`
+7. Train and evaluate on at least one C-MAPSS subset (e.g. FD001)
+8. Document the architecture and hyperparameters
 
-Example:
+### Example
 
 ```bash
-python scripts/train.py --model new_model --subset FD001
+python scripts/train.py --model your_model --subset FD001
+python scripts/evaluate.py --model your_model --subset FD001
 ```
 
 ---
 
-## 7. Adding a New Preprocessing Component
+## Adding a Preprocessing Component
 
-Preprocessing modules belong in:
+Preprocessing modules live in `src/preprocessing/`. The current pipeline order is:
 
-```text
-src/preprocessing/
+```
+Loader → Validator → Label Generator → Feature Selector → Scaler → Window Generator
 ```
 
-The current pipeline follows:
+When adding a new step:
 
-```text
-Loader
-   ↓
-Validator
-   ↓
-Label Generator
-   ↓
-Scaler
-   ↓
-Feature Selection
-   ↓
-Window Generator
-```
-
-A new preprocessing component should:
-
-- Have a clearly defined responsibility.
-- Avoid modifying unrelated pipeline stages.
-- Support configuration where appropriate.
-- Validate its inputs.
-- Produce predictable outputs.
-- Include tests.
+- Assign a single, clear responsibility
+- Fit on training data only; transform test data separately
+- Do not break engine-level grouping used for train/validation splits
+- Add tests in `tests/test_preprocessing.py`
+- Update `scripts/preprocess.py` if the step belongs in the main pipeline
 
 ---
 
-## 8. Adding Explainability Methods
+## Configuration
 
-Explainability components belong in:
-
-```text
-src/explainability/
-```
-
-The project plans to support:
-
-- SHAP
-- Integrated Gradients
-- Temporal attention visualization
-
-New XAI methods should clearly specify:
-
-- Model input requirements
-- Explanation output
-- Local/global scope
-- Feature or temporal importance
-- Visualization requirements
-- Computational limitations
-
-Example structure:
-
-```text
-src/explainability/
-├── shap_explainer.py
-├── integrated_gradients.py
-└── attention.py
-```
-
----
-
-## 9. Adding Uncertainty Methods
-
-Uncertainty-related components belong in:
-
-```text
-src/uncertainty/
-```
-
-The research framework includes conformal prediction and calibration.
-
-New uncertainty methods should document:
-
-- Type of uncertainty
-- Required model outputs
-- Calibration procedure
-- Prediction interval format
-- Coverage or reliability metrics
-
-Example:
-
-```text
-src/uncertainty/
-├── conformal.py
-├── calibration.py
-└── metrics.py
-```
-
----
-
-## 10. Decision Engine Development
-
-Maintenance decision logic belongs in:
-
-```text
-src/decision_engine/
-```
-
-Decision components may use:
-
-- RUL predictions
-- Health Index
-- Uncertainty
-- Explainability information
-- Operational constraints
-- Maintenance cost or risk
-
-Decision outputs should be understandable and traceable.
-
-A recommendation should provide enough information to explain why an action was selected.
-
----
-
-## 11. Human-in-the-Loop Development
-
-Human-in-the-loop components belong in:
-
-```text
-src/hitl/
-```
-
-The intended workflow is:
-
-```text
-AI Prediction
-     ↓
-Explanation + Uncertainty
-     ↓
-Maintenance Recommendation
-     ↓
-Expert Review
-     ↓
-Accept / Modify / Override
-     ↓
-Feedback Logging
-     ↓
-Model or Decision Refinement
-```
-
-Human feedback should be recorded with appropriate metadata so that decisions can be analyzed and reproduced.
-
----
-
-## 12. Configuration Management
-
-Experiment parameters should be stored in:
-
-```text
-configs/
-```
-
-Do not hard-code experiment-specific values inside source files when they can be configured externally.
-
-Example:
+Experiment parameters belong in `configs/`:
 
 ```yaml
 dataset: FD001
 window_size: 30
-max_rul: 125
-
 batch_size: 64
 epochs: 50
 learning_rate: 0.001
-
 hidden_size: 128
 num_layers: 2
 dropout: 0.3
-
 rul_loss_weight: 1.0
 hi_loss_weight: 0.5
-
 device: cuda
 random_seed: 42
 ```
 
-This keeps experiments reproducible and makes comparisons easier.
+Avoid hard-coding experiment-specific values in source files when they can be configured externally.
 
 ---
 
-## 13. Reproducibility
+## Testing
 
-Use fixed random seeds when running experiments:
-
-```python
-SEED = 42
-```
-
-The project uses seeded randomness for:
-
-- Python
-- NumPy
-- PyTorch
-- CUDA when available
-
-When reporting experimental results, record:
-
-- Dataset subset
-- Model
-- Configuration
-- Random seed
-- Training settings
-- Evaluation metrics
-
----
-
-## 14. Testing
-
-Tests are located in:
-
-```text
-tests/
-```
-
-Run the complete test suite:
+Tests are in `tests/`:
 
 ```bash
+# Full suite
 pytest tests/ -v
-```
 
-Run a specific test module:
-
-```bash
+# Specific modules
 pytest tests/test_preprocessing.py -v
 pytest tests/test_models.py -v
 ```
 
-When adding a new feature, add or update tests where appropriate.
-
-A Pull Request should not be submitted with known failing tests unless the failure is clearly documented.
+When adding features, include or update tests. Do not open a PR with known failing tests unless the failure is documented and intentional.
 
 ---
 
-## 15. Code Quality
+## Code Standards
 
-Contributions should follow these principles:
+- Follow **PEP 8** for Python style
+- Use **type hints** where practical
+- Keep modules focused on a single responsibility
+- Prefer readable code over clever abstractions
+- Use Python `logging` instead of `print()` in pipeline code
+- Document non-obvious business logic only
+- Match naming and structure of surrounding code
 
-- Keep modules focused on a single responsibility.
-- Prefer readable code over clever code.
-- Use meaningful variable and function names.
-- Add type hints where practical.
-- Document non-obvious logic.
-- Avoid unnecessary duplication.
-- Keep configuration outside the source code.
-- Do not commit generated datasets or large model files.
-
----
-
-## 16. Logging
-
-Use Python's logging system rather than unnecessary `print()` statements for application and experiment logs.
-
-Example:
+### Logging Example
 
 ```python
 import logging
 
 logger = logging.getLogger(__name__)
-
-logger.info("Processing dataset")
-logger.warning("Missing sensor values detected")
-logger.error("Dataset file not found")
+logger.info("Loading processed training data...")
+logger.warning("Engine %s has insufficient cycles", engine_id)
 ```
-
-Logs should provide enough information to diagnose failures without exposing sensitive information.
 
 ---
 
-## 17. Data and Generated Files
+## Pull Request Guidelines
 
-Do not commit:
-
-- Raw NASA C-MAPSS datasets
-- Large generated `.npy` files
-- Model checkpoints
-- Temporary files
-- Local virtual environments
-- Generated logs
-
-Use the appropriate directories locally:
-
-```text
-data/raw/
-data/processed/
-outputs/checkpoints/
-outputs/logs/
-outputs/figures/
-outputs/reports/
-```
-
-Ensure large or generated files are excluded through `.gitignore`.
-
----
-
-## 18. Pull Request Guidelines
-
-Before opening a Pull Request:
+Before submitting:
 
 ```bash
 pytest tests/ -v
 ```
 
-Check that:
+Verify:
 
-- [ ] The code runs successfully.
-- [ ] Relevant tests pass.
-- [ ] New functionality has appropriate tests.
-- [ ] Configuration is not unnecessarily hard-coded.
-- [ ] Documentation has been updated.
-- [ ] No datasets or large generated files are included.
-- [ ] Experimental results are reproducible.
-- [ ] The PR description clearly explains the change.
+- [ ] Code runs without errors on at least one C-MAPSS subset
+- [ ] Relevant tests pass
+- [ ] New functionality includes tests where appropriate
+- [ ] Documentation is updated (README or this file if needed)
+- [ ] No datasets, checkpoints, or large generated files are included
+- [ ] Configuration is not unnecessarily hard-coded
 
-### Pull Request Description
+### PR Description Template
 
-Use:
-
-```text
+```markdown
 ## What changed?
-
 Brief description of the implementation.
 
 ## Why?
-
-Explain the problem or research requirement.
+Problem or research requirement being addressed.
 
 ## Testing
-
-Describe tests performed.
+Commands run and results (e.g. pytest, train/eval on FD001).
 
 ## Results
-
-Include relevant metrics or screenshots if applicable.
+Metrics or screenshots if applicable.
 
 ## Notes
-
-Mention limitations, assumptions, or future work.
+Limitations, assumptions, or follow-up work.
 ```
 
 ---
 
-## 19. Commit Messages
+## Commit Messages
 
-Use short and descriptive commit messages.
+Use conventional commit format:
 
-Recommended format:
-
-```text
+```
 <type>: <description>
 ```
 
+| Type | Use |
+|------|-----|
+| `feat` | New functionality |
+| `fix` | Bug fix |
+| `refactor` | Code restructuring |
+| `test` | Tests |
+| `docs` | Documentation |
+| `perf` | Performance improvement |
+
 Examples:
 
-```text
-feat: add SHAP explanation module
-feat: add conformal prediction
-fix: correct FD002 preprocessing
-refactor: simplify model trainer
-test: add transformer tests
-docs: update contributor guide
+```
+feat: add TCN prognostics model
+fix: correct test RUL label assignment for FD002
+test: add hybrid model forward pass tests
+docs: update quick start in README
 ```
 
-Common types:
+---
 
-- `feat` — New functionality
-- `fix` — Bug fix
-- `refactor` — Code restructuring
-- `test` — Tests
-- `docs` — Documentation
-- `perf` — Performance improvement
+## What Not to Commit
+
+Do not commit:
+
+- Raw NASA C-MAPSS datasets (`data/raw/`)
+- Processed `.npy` files (`data/processed/`)
+- Model checkpoints (`outputs/checkpoints/`)
+- Log files and generated figures
+- Virtual environments (`.venv/`)
+- Local IDE or OS files
+
+These paths are excluded via `.gitignore`.
 
 ---
 
-## 20. Research Contributions
+## Future Contribution Areas
 
-Because PHM-XAI is a research project, contributions should distinguish between:
+The following modules are reserved for upcoming research phases and are not yet part of the active pipeline. Contributions in these areas should follow the same modular conventions described above.
 
-- New implementation
-- Experimental improvement
-- Research hypothesis
-- Evaluation result
-- Infrastructure change
+| Phase | Module | Planned Focus |
+|-------|--------|---------------|
+| O2 | `src/uncertainty/` | Conformal prediction, calibration |
+| O3 | `src/explainability/` | SHAP, Integrated Gradients, attention |
+| O4 | `src/decision_engine/` | Maintenance rules and recommendations |
+| O5 | `src/hitl/` | Expert feedback and model refinement |
+| O6 | `src/evaluation/` | Benchmarking, ablation, robustness |
 
-For research-related changes, document the experiment configuration and evaluation methodology so results can be reproduced.
-
-Do not claim performance improvements without supporting experimental evidence.
-
----
-
-## 21. Current Development Areas
-
-The core prognostics pipeline currently includes:
-
-- Data loading and validation
-- RUL and HI labeling
-- Feature preprocessing
-- Sliding-window generation
-- LSTM
-- GRU
-- Transformer
-- Hybrid models
-- Training
-- Evaluation
-- Checkpointing
-- Configuration management
-
-The following areas are under active development:
-
-- Explainability
-- Uncertainty quantification
-- Decision intelligence
-- Human-in-the-loop learning
-- Comprehensive multi-dimensional evaluation
-
-Refer to `README.md` for the current project status.
+Refer to the **Future Development** section in `README.md` for the full roadmap.
 
 ---
 
-## 22. Getting Help
+## Getting Help
 
 Before opening an issue:
 
-1. Check the README.
-2. Check the `docs/` directory.
-3. Review existing issues.
-4. Verify the dataset and configuration.
-5. Check logs under `outputs/logs/`.
-6. Reproduce the problem with the smallest possible example.
+1. Read `README.md` and this guide
+2. Check existing issues
+3. Verify dataset files are in `data/raw/`
+4. Review logs under `outputs/logs/`
 
 When reporting a bug, include:
 
-- Operating system
-- Python version
-- PyTorch version
-- Dataset subset
-- Model
-- Configuration
-- Error message
-- Steps to reproduce
+- Operating system and Python version
+- PyTorch version and CUDA availability
+- C-MAPSS subset and model used
+- Full error message and steps to reproduce
 
 ---
 
-## 23. License
+## Questions?
 
-By contributing to PHM-XAI, you agree that your contributions will be licensed under the project's MIT License.
-
-See `LICENSE` for details.
+Open a GitHub issue for discussion, bug reports, or feature proposals.
