@@ -62,6 +62,8 @@ class ModelTrainer:
 
         self.best_loss = float("inf")
 
+        self.input_size: int | None = None
+
         logger.info(
             "Using device: %s",
             self.device,
@@ -131,6 +133,7 @@ class ModelTrainer:
         self,
         epoch,
         loss,
+        input_size: int | None = None,
         ):
 
         checkpoint = {
@@ -151,6 +154,9 @@ class ModelTrainer:
             "loss": loss,
 
         }
+
+        if input_size is not None:
+            checkpoint["input_size"] = input_size
 
         torch.save(
 
@@ -409,6 +415,8 @@ class ModelTrainer:
                     epoch,
 
                     self.best_loss,
+
+                    self.input_size,
 
                 )
 
