@@ -8,10 +8,7 @@ This guide covers development setup, project conventions, and the contribution w
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
 - [Development Setup](#development-setup)
-- [Project Structure](#project-structure)
-- [Architecture](#architecture)
 - [Development Workflow](#development-workflow)
 - [Adding a New Model](#adding-a-new-model)
 - [Adding a Preprocessing Component](#adding-a-preprocessing-component)
@@ -23,20 +20,6 @@ This guide covers development setup, project conventions, and the contribution w
 - [What Not to Commit](#what-not-to-commit)
 - [Future Contribution Areas](#future-contribution-areas)
 - [Getting Help](#getting-help)
-
----
-
-## Project Overview
-
-PHM-XAI currently implements a complete **Objective 1** pipeline:
-
-- Load and validate NASA C-MAPSS sensor data (FD001–FD004)
-- Generate RUL and Health Index labels
-- Preprocess features (selection, scaling, windowing)
-- Train multi-task prognostics models (LSTM, GRU, Transformer, Hybrid)
-- Evaluate predictions with standard and NASA-specific metrics
-
-The codebase is modular so future components (explainability, uncertainty, decision support) can be added without modifying the core pipeline.
 
 ---
 
@@ -94,61 +77,6 @@ data/raw/RUL_FD001.txt
 ```
 
 ---
-
-## Project Structure
-
-```
-phm_project/
-├── configs/                  # YAML experiment configurations
-├── data/
-│   ├── raw/                  # Original C-MAPSS data (not committed)
-│   └── processed/            # Preprocessed .npy arrays (not committed)
-├── scripts/
-│   ├── preprocess.py         # Preprocessing pipeline
-│   ├── train.py              # Model training
-│   └── evaluate.py           # Model evaluation
-├── src/
-│   ├── preprocessing/        # Loader, validator, labeling, windowing
-│   ├── models/               # LSTM, GRU, Transformer, Hybrid, trainer
-│   ├── evaluation/           # Metrics utilities
-│   └── utils/                # Config, logging, seed, I/O
-├── tests/                    # pytest test suite
-├── outputs/                  # Generated artifacts (not committed)
-├── main.py                   # EDA entry point
-├── requirements.txt
-└── README.md
-```
-
----
-
-## Architecture
-
-### Implemented Pipeline
-
-```
-Raw Sensor Data (C-MAPSS)
-        │
-        ▼
-Preprocessing
-  ├── Validation
-  ├── RUL / HI Label Generation
-  ├── Feature Selection
-  ├── StandardScaler
-  └── Sliding-Window Generation
-        │
-        ▼
-Multi-Task Prognostics Model
-  ├── LSTM
-  ├── GRU
-  ├── Transformer
-  └── Hybrid
-        │
-        ▼
-RUL + Health Index Predictions
-        │
-        ▼
-Evaluation (MAE, RMSE, R², NASA Score)
-```
 
 ### Model Interface Convention
 

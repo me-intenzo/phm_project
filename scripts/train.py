@@ -560,6 +560,7 @@ def main():
     model_checkpoint_dir = (
         CHECKPOINT_DIR
         / model_name
+        / subset
     )
 
     # --------------------------------------------------------------
@@ -575,6 +576,8 @@ def main():
         batch_size=BATCH_SIZE,
         checkpoint_dir=model_checkpoint_dir,
     )
+
+    trainer.input_size = input_size
 
     # --------------------------------------------------------------
     # DataLoaders
