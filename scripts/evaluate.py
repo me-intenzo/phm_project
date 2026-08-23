@@ -317,9 +317,11 @@ def predict(
                 ]
             ).float().to(device)
 
-            pred_rul, pred_hi, _ = model(
-                batch
-            )
+            pred = model(batch)
+            if isinstance(pred, tuple) and len(pred) == 3:
+                pred_rul, pred_hi, _ = pred
+            else:
+                pred_rul, pred_hi = pred
 
             predictions_rul.append(
                 pred_rul.cpu().numpy()
