@@ -117,16 +117,19 @@ class PrognosticsEvaluator:
 
         for error in errors:
 
-            if error < 0:
+            # Ensure error is handled regardless of array dimensionality or size
+            err_val = float(np.mean(error))
+
+            if err_val < 0:
 
                 score += np.exp(
-                    -error / 13.0
+                    -err_val / 13.0
                 ) - 1.0
 
             else:
 
                 score += np.exp(
-                    error / 10.0
+                    err_val / 10.0
                 ) - 1.0
 
         return float(score)

@@ -205,7 +205,8 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
+            num_gru_layers=NUM_LAYERS,
+            num_transformer_layers=NUM_LAYERS,
             num_heads=4,
             dropout=DROPOUT,
         )
@@ -223,11 +224,13 @@ def load_model(
     model_name: str,
     input_size: int,
     device: torch.device,
+    subset: str,
 ):
 
     checkpoint_path = (
         CHECKPOINT_DIR
         / model_name
+        / subset
         / "best_model.pt"
     )
 
@@ -314,7 +317,7 @@ def predict(
                 ]
             ).float().to(device)
 
-            pred_rul, pred_hi = model(
+            pred_rul, pred_hi, _ = model(
                 batch
             )
 
@@ -380,6 +383,7 @@ def main():
         model_name=model_name,
         input_size=X_test.shape[-1],
         device=device,
+        subset=subset,
     )
 
     log.info(
