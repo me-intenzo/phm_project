@@ -22,23 +22,7 @@ def calculate_calibration_scores(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> np.ndarray:
-    """
-    Calculate nonconformity scores on the calibration set.
-
-    Parameters
-    ----------
-    y_true:
-        True RUL values from calibration/validation engines.
-
-    y_pred:
-        GRU-predicted RUL values for the same samples.
-
-    Returns
-    -------
-    np.ndarray
-        Absolute residual scores.
-    """
-
+    """Calculate absolute residual nonconformity scores."""
     return absolute_nonconformity(
         y_true=y_true,
         y_pred=y_pred,
@@ -84,7 +68,6 @@ def calibrate_quantile(
         alpha=alpha,
     )
 
-
 def calibrate_multiple_levels(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -117,7 +100,6 @@ def calibrate_multiple_levels(
                 -> alpha
                 -> q_hat
     """
-
     scores = calculate_calibration_scores(
         y_true=y_true,
         y_pred=y_pred,

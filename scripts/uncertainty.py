@@ -1,7 +1,7 @@
 """
 uncertainty.py
 
-Conformal uncertainty estimation for the GRU prognostics model.
+Conformal uncertainty estimation for trained prognostics models.
 
 Workflow
 --------
@@ -9,7 +9,7 @@ Processed training data
         ↓
 Reproduce engine-wise train/validation split
         ↓
-Load trained GRU checkpoint
+Load trained model checkpoint
         ↓
 Predict validation RUL
         ↓
@@ -26,6 +26,11 @@ Evaluate coverage / interval width
 Important
 ---------
 The final test targets are NEVER used during calibration.
+
+python scripts/uncertainty.py --model lstm --subset FD001 --method split
+python scripts/uncertainty.py --model lstm --subset FD001 --method cqr
+python scripts/uncertainty.py --model lstm --subset FD001 --method adaptive
+python scripts/uncertainty.py --model lstm --subset FD001 --method engine_joint
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 from sklearn.model_selection import GroupShuffleSplit
 
 
@@ -55,14 +61,20 @@ if str(PROJECT_ROOT) not in sys.path:
 # ------------------------------------------------------------------
 
 from src.models.gru import GRUPrognosticsModel
+from src.models.hybrid import CNNGRUTransformerPrognostics
+from src.models.lstm import LSTMPrognosticsModel
+from src.models.transformer import TransformerPrognosticsModel
+from src.models.uncertainty_heads import QuantileHead, ScaleHead
 
 from src.uncertainty.calibration import (
     calibrate_multiple_levels,
 )
 
-from src.uncertainty.conformal import (
-    prediction_interval,
+from src.uncertainty.adaptive import (
+    adaptive_quantile,
+    prediction_interval as adaptive_prediction_interval,
 )
+from src.uncertainty.conformal import conformal_quantile, prediction_interval
 
 from src.uncertainty.coverage import (
     evaluate_interval,
@@ -125,8 +137,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Conformal uncertainty estimation "
-            "for the GRU prognostics model."
+            "for a trained prognostics model."
         )
+    )
+
+    parser.add_argument(
+        "--model",
+        choices=["lstm", "gru", "transformer", "hybrid"],
+        default="gru",
+        help="Model architecture whose checkpoint will be evaluated.",
     )
 
     parser.add_argument(
@@ -142,6 +161,18 @@ def parse_args() -> argparse.Namespace:
         help="C-MAPSS subset.",
     )
 
+    parser.add_argument(
+        "--method",
+        choices=["split", "cqr", "adaptive", "engine_joint"],
+        default="split",
+        help=(
+            "Uncertainty method: global split conformal ('split'), "
+            "conformalized quantile regression ('cqr'), or normalized "
+            "adaptive conformal ('adaptive'), or engine-block joint "
+            "conformal ('engine_joint')."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -150,7 +181,9 @@ def parse_args() -> argparse.Namespace:
 # ------------------------------------------------------------------
 
 def configure_logging(
+    model_name: str,
     subset: str,
+    method: str,
 ) -> logging.Logger:
 
     log_dir = LOG_DIR / "uncertainty"
@@ -172,7 +205,7 @@ def configure_logging(
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
                 log_dir
-                / f"uncertainty_{subset}.log",
+                / f"uncertainty_{model_name}_{subset}_{method}.log",
                 mode="w",
             ),
         ],
@@ -338,45 +371,62 @@ def create_calibration_split(
 # Model
 # ------------------------------------------------------------------
 
-def build_gru(
+def build_model(
+    model_name: str,
     input_size: int,
-):
-    """
-    Reconstruct the exact GRU architecture
-    used during O1 training.
-    """
-
-    return GRUPrognosticsModel(
-        input_size=input_size,
-        hidden_size=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS,
-        dropout=DROPOUT,
-    )
+ ) -> torch.nn.Module:
+    """Reconstruct the architecture used by ``scripts/train.py``."""
+    if model_name == "lstm":
+        return LSTMPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, DROPOUT)
+    if model_name == "gru":
+        return GRUPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, DROPOUT)
+    if model_name == "transformer":
+        return TransformerPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, 4, DROPOUT)
+    if model_name == "hybrid":
+        return CNNGRUTransformerPrognostics(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_gru_layers=NUM_LAYERS,
+            num_transformer_layers=NUM_LAYERS,
+            num_heads=4,
+            dropout=DROPOUT,
+        )
+    raise ValueError(f"Unsupported model: {model_name}")
 
 
 def load_model(
+    model_name: str,
     input_size: int,
     device: torch.device,
     subset: str = "",
 ):
     """
-    Load the trained GRU checkpoint.
+    Load a trained architecture-specific checkpoint.
     """
 
     checkpoint_path = (
         CHECKPOINT_DIR
-        / "gru"
+        / model_name
         / subset
         / "best_model.pt"
     )
 
     if not checkpoint_path.exists():
+        legacy_checkpoint_path = (
+            CHECKPOINT_DIR
+            / model_name
+            / "best_model.pt"
+        )
+        if legacy_checkpoint_path.exists():
+            checkpoint_path = legacy_checkpoint_path
+
+    if not checkpoint_path.exists():
 
         raise FileNotFoundError(
-            f"GRU checkpoint not found:\n"
+            f"{model_name.upper()} checkpoint not found:\n"
             f"{checkpoint_path}\n\n"
-            "Train the GRU first using:\n"
-            "python scripts/train.py --model gru"
+            f"Train the model first using:\n"
+            f"python scripts/train.py --model {model_name} --subset {subset}"
         )
 
     checkpoint = torch.load(
@@ -390,17 +440,25 @@ def load_model(
         raise RuntimeError(
             f"Checkpoint input_size={checkpoint_input_size} does not match "
             f"data input_size={input_size}. "
-            f"Re-train the GRU for {subset} using:\n"
-            f"python scripts/train.py --model gru --subset {subset}"
+            f"Re-train {model_name} for {subset} using:\n"
+            f"python scripts/train.py --model {model_name} --subset {subset}"
         )
 
-    model = build_gru(
+    model = build_model(
+        model_name=model_name,
         input_size=input_size,
     )
 
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
-    )
+    state_dict = checkpoint["model_state_dict"]
+
+    # Adaptive conformal trains its own ScaleHead separately.
+    state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if not key.startswith("scale_head.")
+    }
+
+    model.load_state_dict(state_dict)
 
     model.to(device)
 
@@ -439,19 +497,392 @@ def predict_rul(
                 ]
             ).float().to(device)
 
-            pred_rul, _ = model(
-                batch
-            )
+            pred = model(batch)
+
+            if isinstance(pred, tuple) and len(pred) == 3:
+                pred_rul, pred_hi, _ = pred
+            else:
+                pred_rul, _ = pred
 
             predictions.append(
                 pred_rul
                 .cpu()
                 .numpy()
+                .reshape(-1)
             )
 
     return np.concatenate(
         predictions
     )
+
+
+def predict_rul_hi(
+    model: torch.nn.Module,
+    X: np.ndarray,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate both model outputs for joint RUL/HI conformal scoring."""
+    rul_predictions, hi_predictions = [], []
+    with torch.no_grad():
+        for start in range(0, len(X), BATCH_SIZE):
+            batch = torch.from_numpy(X[start:start + BATCH_SIZE]).float().to(device)
+            # Handle variable return counts from hybrid model
+            outputs = model(batch)
+            if isinstance(outputs, (tuple, list)):
+                pred_rul, pred_hi = outputs[0], outputs[1]
+            else:
+                pred_rul = outputs
+                pred_hi = torch.zeros_like(pred_rul)
+            rul_predictions.append(pred_rul.cpu().numpy().reshape(-1))
+            hi_predictions.append(pred_hi.cpu().numpy().reshape(-1))
+    return np.concatenate(rul_predictions), np.concatenate(hi_predictions)
+
+
+def run_engine_joint_conformal(
+    model: torch.nn.Module,
+    model_name: str,
+    subset: str,
+    X_train: np.ndarray,
+    y_rul_train: np.ndarray,
+    y_hi_train: np.ndarray,
+    X_calibration: np.ndarray,
+    y_rul_calibration: np.ndarray,
+    y_hi_calibration: np.ndarray,
+    calibration_engine_ids: np.ndarray,
+    device: torch.device,
+    log: logging.Logger,
+) -> None:
+    """Evaluate Solution 2's engine-block joint RUL/HI score.
+
+    This first implementation uses robust training residual scales instead of
+    new distributional heads, so it isolates the effect of engine-block joint
+    calibration before adding another learned component.
+    """
+    train_rul, train_hi = predict_rul_hi(model, X_train, device)
+    rul_scale = max(float(np.median(np.abs(y_rul_train - train_rul))), 1e-6)
+    hi_scale = max(float(np.median(np.abs(y_hi_train - train_hi))), 1e-6)
+    cal_rul, cal_hi = predict_rul_hi(model, X_calibration, device)
+    window_scores = np.maximum(
+        np.abs(y_rul_calibration - cal_rul) / rul_scale,
+        np.abs(y_hi_calibration - cal_hi) / hi_scale,
+    )
+    engine_scores = np.asarray([
+        np.quantile(window_scores[calibration_engine_ids == engine], 0.90)
+        for engine in np.unique(calibration_engine_ids)
+    ])
+    log.info(
+        "Engine-joint calibration: %d engines; RUL scale %.4f; HI scale %.4f",
+        len(engine_scores), rul_scale, hi_scale,
+    )
+
+    X_test, y_rul_test, y_hi_test = load_test_data(subset)
+    test_rul, test_hi = predict_rul_hi(model, X_test, device)
+    save_data: dict[str, np.ndarray] = {
+        "y_rul_test": y_rul_test,
+        "y_hi_test": y_hi_test,
+        "y_rul_pred": test_rul,
+        "y_hi_pred": test_hi,
+        "engine_scores": engine_scores,
+    }
+    for coverage in COVERAGE_LEVELS:
+        q_hat = conformal_quantile(engine_scores, 1.0 - coverage)
+        lower, upper = prediction_interval(test_rul, q_hat * rul_scale)
+        metrics = evaluate_interval(y_rul_test, lower, upper, coverage)
+        suffix = int(coverage * 100)
+        save_data[f"lower_{suffix}"] = lower
+        save_data[f"upper_{suffix}"] = upper
+        save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+        log.info(
+            "Engine-joint %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
+            coverage * 100.0,
+            metrics["empirical_coverage"],
+            metrics["coverage_error"],
+            metrics["mean_interval_width"],
+        )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RESULTS_DIR / f"{subset}_{model_name}_engine_joint_conformal.npz"
+    np.savez(output_path, **save_data)
+    log.info("Engine-joint results saved to: %s", output_path)
+
+
+def extract_model_features(
+    model: torch.nn.Module,
+    X: np.ndarray,
+    device: torch.device,
+) -> torch.Tensor:
+    """Extract the input to each architecture's RUL head via a safe hook."""
+    features = []
+    captured: list[torch.Tensor] = []
+
+    def capture_head_input(
+        _module: torch.nn.Module,
+        inputs: tuple[torch.Tensor, ...],
+    ) -> None:
+        captured.append(inputs[0].detach().cpu())
+
+    handle = model.rul_head.register_forward_pre_hook(capture_head_input)
+    model.eval()
+    try:
+        with torch.no_grad():
+            for start in range(0, len(X), BATCH_SIZE):
+                captured.clear()
+                batch = torch.from_numpy(X[start:start + BATCH_SIZE]).float().to(device)
+                model(batch)
+                if len(captured) != 1:
+                    raise RuntimeError("Could not capture one RUL-head feature batch.")
+                features.append(captured[0])
+    finally:
+        handle.remove()
+    return torch.cat(features, dim=0)
+
+
+def pinball_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    quantile: float,
+) -> torch.Tensor:
+    residual = target - prediction
+    return torch.maximum(
+        quantile * residual,
+        (quantile - 1.0) * residual,
+    ).mean()
+
+
+def train_quantile_head(
+    features: torch.Tensor,
+    y_true: np.ndarray,
+    device: torch.device,
+    lower_quantile: float,
+    upper_quantile: float,
+    epochs: int = 50,
+) -> QuantileHead:
+    """Fit a quantile head using only the training-engine features."""
+    torch.manual_seed(SEED)
+    head = QuantileHead(HIDDEN_SIZE).to(device)
+    optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
+    targets = torch.from_numpy(y_true).float()
+
+    head.train()
+    optimization_batch_size = 2048
+    for _ in range(epochs):
+        for start in torch.randperm(len(features)).split(optimization_batch_size):
+            x_batch = features[start].to(device)
+            y_batch = targets[start].to(device)
+            lower, upper = head(x_batch)
+            loss = (
+                pinball_loss(lower, y_batch, lower_quantile)
+                + pinball_loss(upper, y_batch, upper_quantile)
+            )
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+    return head.eval()
+
+
+def predict_quantiles(
+    head: QuantileHead,
+    features: torch.Tensor,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    lowers, uppers = [], []
+    with torch.no_grad():
+        for start in range(0, len(features), BATCH_SIZE):
+            lower, upper = head(features[start:start + BATCH_SIZE].to(device))
+            lowers.append(lower.cpu().numpy())
+            uppers.append(upper.cpu().numpy())
+    return np.concatenate(lowers), np.concatenate(uppers)
+
+
+def cqr_quantile(scores: np.ndarray, alpha: float) -> float:
+    """Finite-sample conformal quantile for signed CQR scores."""
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    if scores.size == 0 or not np.all(np.isfinite(scores)):
+        raise ValueError("CQR calibration scores must be finite and non-empty.")
+    rank = int(np.ceil((len(scores) + 1) * (1.0 - alpha)))
+    return float(np.sort(scores)[min(max(rank, 1), len(scores)) - 1])
+
+
+def train_scale_head(
+    features: torch.Tensor,
+    residuals: np.ndarray,
+    device: torch.device,
+    epochs: int = 50,
+) -> ScaleHead:
+    """Fit a positive residual-scale model on training engines only."""
+    torch.manual_seed(SEED)
+    head = ScaleHead(HIDDEN_SIZE).to(device)
+    optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
+    # Ensure targets are a tensor and correctly shaped
+    targets = torch.from_numpy(np.asarray(residuals, dtype=np.float32)).to(device)
+    optimization_batch_size = 2048
+
+    # Ensure targets are a tensor and flattened for easy indexing
+    targets = torch.from_numpy(np.asarray(residuals, dtype=np.float32)).flatten().to(device)
+    optimization_batch_size = 2048
+
+    head.train()
+    for _ in range(epochs):
+        perm = torch.randperm(len(features))
+        # Use range based indexing to correctly slice both features and targets
+        for start_idx in range(0, len(features), optimization_batch_size):
+            end_idx = min(start_idx + optimization_batch_size, len(features))
+            indices = perm[start_idx : end_idx]
+            
+            batch_features = features[indices].to(device)
+            batch_targets = targets[indices]
+            
+            # Ensure batch_targets is at least 1D (if batch_size=1)
+            if batch_targets.dim() == 0:
+                batch_targets = batch_targets.unsqueeze(0)
+            
+            prediction = head(batch_features).squeeze()
+            
+            # Ensure prediction has at least one dimension for safety (e.g. if batch_size is 1)
+            if prediction.dim() == 0:
+                prediction = prediction.unsqueeze(0)
+            
+            # Ensure shapes are consistent (N,)
+            loss = nn.functional.l1_loss(prediction.view(-1), batch_targets.view(-1))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+    return head.eval()
+
+
+def predict_scales(
+    head: ScaleHead,
+    features: torch.Tensor,
+    device: torch.device,
+) -> np.ndarray:
+    scales = []
+    head.eval()
+    with torch.no_grad():
+        for start in range(0, len(features), BATCH_SIZE):
+            batch = features[start:start + BATCH_SIZE].to(device)
+            scales.append(head(batch).cpu().numpy().flatten())
+    return np.concatenate(scales)
+
+
+def run_adaptive_conformal(
+    model: torch.nn.Module,
+    model_name: str,
+    subset: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_calibration: np.ndarray,
+    y_calibration: np.ndarray,
+    device: torch.device,
+    log: logging.Logger,
+) -> None:
+    """Run normalized conformal prediction with a frozen-GRU scale head."""
+    log.info("Extracting frozen GRU features for adaptive conformal...")
+    train_features = extract_model_features(model, X_train, device)
+    calibration_features = extract_model_features(model, X_calibration, device)
+    train_predictions = predict_rul(model, X_train, device)
+    log.info("Training residual-scale head on training engines only...")
+    head = train_scale_head(train_features, np.abs(y_train - train_predictions), device)
+
+    calibration_predictions = predict_rul(model, X_calibration, device)
+    calibration_scales = predict_scales(head, calibration_features, device)
+
+    X_test, y_test, _ = load_test_data(subset)
+    test_features = extract_model_features(model, X_test, device)
+    test_predictions = predict_rul(model, X_test, device)
+    test_scales = predict_scales(head, test_features, device)
+    save_data: dict[str, np.ndarray] = {
+        "y_rul_test": y_test,
+        "y_rul_pred": test_predictions,
+        "scales": test_scales,
+    }
+    for coverage in COVERAGE_LEVELS:
+        q_hat = adaptive_quantile(
+            y_calibration,
+            calibration_predictions,
+            calibration_scales,
+            1.0 - coverage,
+        )
+        lower, upper = adaptive_prediction_interval(test_predictions, q_hat, test_scales)
+        metrics = evaluate_interval(y_test, lower, upper, coverage)
+        suffix = int(coverage * 100)
+        save_data[f"lower_{suffix}"] = lower
+        save_data[f"upper_{suffix}"] = upper
+        save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+        log.info(
+            "Adaptive %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
+            coverage * 100.0,
+            metrics["empirical_coverage"],
+            metrics["coverage_error"],
+            metrics["mean_interval_width"],
+        )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RESULTS_DIR / f"{subset}_{model_name}_adaptive_conformal.npz"
+    np.savez(output_path, **save_data)
+    log.info("Adaptive results saved to: %s", output_path)
+
+
+def run_cqr(
+    model: torch.nn.Module,
+    model_name: str,
+    subset: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_calibration: np.ndarray,
+    y_calibration: np.ndarray,
+    device: torch.device,
+    log: logging.Logger,
+) -> None:
+    """Run CQR with quantile-head fitting and conformal calibration."""
+    log.info("Extracting frozen model features for CQR...")
+    train_features = extract_model_features(model, X_train, device)
+    calibration_features = extract_model_features(model, X_calibration, device)
+    X_test, y_test, _ = load_test_data(subset)
+    test_features = extract_model_features(model, X_test, device)
+    save_data: dict[str, np.ndarray] = {"y_rul_test": y_test}
+
+    for coverage in COVERAGE_LEVELS:
+        alpha = 1.0 - coverage
+        lower_quantile = alpha / 2.0
+        upper_quantile = 1.0 - lower_quantile
+        log.info(
+            "Training CQR quantile head for %.0f%% coverage...",
+            coverage * 100.0,
+        )
+        head = train_quantile_head(
+            train_features,
+            y_train,
+            device,
+            lower_quantile,
+            upper_quantile,
+        )
+        cal_lower, cal_upper = predict_quantiles(head, calibration_features, device)
+        calibration_scores = np.maximum(
+            cal_lower - y_calibration,
+            y_calibration - cal_upper,
+        )
+        test_lower, test_upper = predict_quantiles(head, test_features, device)
+        q_hat = cqr_quantile(calibration_scores, alpha)
+        lower, upper = test_lower - q_hat, test_upper + q_hat
+        metrics = evaluate_interval(y_test, lower, upper, coverage)
+        suffix = int(coverage * 100)
+        save_data[f"lower_{suffix}"] = lower
+        save_data[f"upper_{suffix}"] = upper
+        save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+        save_data[f"quantile_lower_{suffix}"] = test_lower
+        save_data[f"quantile_upper_{suffix}"] = test_upper
+        log.info(
+            "CQR %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
+            coverage * 100.0,
+            metrics["empirical_coverage"],
+            metrics["coverage_error"],
+            metrics["mean_interval_width"],
+        )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RESULTS_DIR / f"{subset}_{model_name}_cqr.npz"
+    np.savez(output_path, **save_data)
+    log.info("CQR results saved to: %s", output_path)
 
 
 # ------------------------------------------------------------------
@@ -463,9 +894,12 @@ def main():
     args = parse_args()
 
     subset = args.subset
+    model_name = args.model
 
     log = configure_logging(
+        model_name,
         subset
+        , args.method
     )
 
     device = get_device()
@@ -486,6 +920,16 @@ def main():
     log.info(
         "Device: %s",
         device,
+    )
+
+    log.info(
+        "Method: %s",
+        args.method,
+    )
+
+    log.info(
+        "Model: %s",
+        model_name,
     )
 
     log.info(
@@ -544,6 +988,10 @@ def main():
         calibration_indices
     ]
 
+    y_hi_calibration = y_hi_all[
+        calibration_indices
+    ]
+
     calibration_engines = np.unique(
         engine_ids[
             calibration_indices
@@ -572,14 +1020,16 @@ def main():
     )
 
     # --------------------------------------------------------------
-    # Load trained GRU
+    # Load trained model
     # --------------------------------------------------------------
 
     log.info(
-        "Loading trained GRU..."
+        "Loading trained %s...",
+        model_name.upper(),
     )
 
     model, checkpoint = load_model(
+        model_name=model_name,
         input_size=X_train_all.shape[-1],
         device=device,
         subset=subset,
@@ -716,7 +1166,7 @@ def main():
 
     output_path = (
         RESULTS_DIR
-        / f"{subset}_gru_conformal.npz"
+        / f"{subset}_{model_name}_conformal.npz"
     )
 
     save_data = {

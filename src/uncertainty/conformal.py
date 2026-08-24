@@ -11,7 +11,7 @@ Calibration:
     Split-conformal prediction
 
 Output:
-    Symmetric prediction intervals around the GRU point prediction.
+    Symmetric prediction intervals around a point prediction.
 
 author: me-intenzo
 """
@@ -143,37 +143,23 @@ def prediction_interval(
     y_pred: np.ndarray,
     q_hat: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Construct symmetric prediction intervals.
+    """Construct symmetric split-conformal prediction intervals.
 
-    lower = prediction - q_hat
-    upper = prediction + q_hat
+    ``q_hat`` is the calibration residual quantile, so it must be a
+    finite, non-negative scalar.
     """
-
-    y_pred = np.asarray(
-        y_pred,
-        dtype=np.float64,
-    )
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    q_hat = float(q_hat)
 
     if not np.all(np.isfinite(y_pred)):
+        raise ValueError("y_pred must contain only finite values.")
+
+    if not np.isfinite(q_hat) or q_hat < 0.0:
         raise ValueError(
-            "y_pred contains non-finite values."
+            "q_hat must be a finite, non-negative scalar."
         )
 
-    if not np.isfinite(q_hat):
-        raise ValueError(
-            "q_hat must be finite."
-        )
-
-    if q_hat < 0:
-        raise ValueError(
-            "q_hat must be non-negative."
-        )
-
-    lower = y_pred - q_hat
-    upper = y_pred + q_hat
-
-    return lower, upper
+    return y_pred - q_hat, y_pred + q_hat
 
 
 def conformal_predict(
