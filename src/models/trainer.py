@@ -237,7 +237,7 @@ class ModelTrainer:
 
             self.optimizer.zero_grad()
 
-            pred_rul, pred_hi = self.model(x)
+            pred_rul, pred_hi, _scale = self.model(x)
 
             losses = self.criterion(
                 pred_rul,
@@ -295,7 +295,7 @@ class ModelTrainer:
 
             hi = hi.to(self.device)
 
-            pred_rul, pred_hi = self.model(x)
+            pred_rul, pred_hi, _scale = self.model(x)
 
             losses = self.criterion(
                 pred_rul,

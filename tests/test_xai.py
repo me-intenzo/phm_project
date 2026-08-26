@@ -1,4 +1,4 @@
-"""Placeholder XAI tests."""
+"""Placeholder explainability tests."""
 
 
 def test_placeholder():

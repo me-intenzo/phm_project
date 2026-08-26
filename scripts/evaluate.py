@@ -16,6 +16,7 @@ python scripts/evaluate.py --model lstm
 python scripts/evaluate.py --model gru
 python scripts/evaluate.py --model transformer
 python scripts/evaluate.py --model hybrid
+python scripts/evaluate.py --model gru_att_deg
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
+from src.models.gru_att_deg import GruAttDeg
 
 
 # ------------------------------------------------------------------
@@ -96,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["lstm", "gru", "transformer", "hybrid"],
+        choices=["lstm", "gru", "transformer", "hybrid", "gru_att_deg"],
         required=True,
         help="Model architecture to evaluate.",
     )
@@ -206,7 +208,16 @@ def build_model(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
             num_layers=NUM_LAYERS,
-            num_heads=4,
+            kernel_size=3,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru_att_deg":
+
+        return GruAttDeg(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
             dropout=DROPOUT,
         )
 
@@ -223,11 +234,13 @@ def load_model(
     model_name: str,
     input_size: int,
     device: torch.device,
+    subset: str = "FD001",
 ):
 
     checkpoint_path = (
         CHECKPOINT_DIR
         / model_name
+        / subset
         / "best_model.pt"
     )
 
@@ -314,7 +327,7 @@ def predict(
                 ]
             ).float().to(device)
 
-            pred_rul, pred_hi = model(
+            pred_rul, pred_hi, *_ = model(
                 batch
             )
 
@@ -380,6 +393,7 @@ def main():
         model_name=model_name,
         input_size=X_test.shape[-1],
         device=device,
+        subset=subset,
     )
 
     log.info(

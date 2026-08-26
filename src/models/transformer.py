@@ -229,6 +229,11 @@ class TransformerPrognosticsModel(nn.Module):
             1,
         )
 
+        self.scale_head = nn.Linear(
+            hidden_size,
+            1,
+        )
+
     # ------------------------------------------------------
     # Forward Pass
     # ------------------------------------------------------
@@ -307,9 +312,14 @@ class TransformerPrognosticsModel(nn.Module):
             features
         )
 
+        pred_scale = torch.nn.functional.softplus(
+            self.scale_head(features)
+        )
+
         return (
             pred_rul.squeeze(-1),
             pred_hi.squeeze(-1),
+            pred_scale.squeeze(-1),
         )
 
 

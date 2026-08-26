@@ -32,6 +32,7 @@ python scripts/train.py --model lstm
 python scripts/train.py --model gru
 python scripts/train.py --model transformer
 python scripts/train.py --model hybrid
+python scripts/train.py --model gru_att_deg
 
 """
 
@@ -63,6 +64,7 @@ from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
+from src.models.gru_att_deg import GruAttDeg
 from src.models.losses import MultiTaskLoss
 from src.models.trainer import ModelTrainer
 
@@ -184,6 +186,7 @@ def parse_args() -> argparse.Namespace:
             "gru",
             "transformer",
             "hybrid",
+            "gru_att_deg",
         ],
         default="lstm",
         help="Model architecture to train.",
@@ -341,7 +344,16 @@ def build_model(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
             num_layers=NUM_LAYERS,
-            num_heads=4,
+            kernel_size=3,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru_att_deg":
+
+        return GruAttDeg(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
             dropout=DROPOUT,
         )
 
