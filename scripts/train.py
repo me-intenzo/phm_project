@@ -334,17 +334,15 @@ def build_model(
             num_heads=4,
             dropout=DROPOUT,
         )
-
     if model_name == "hybrid":
 
         return HybridPrognosticsModel(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
-            num_heads=4,
-            dropout=DROPOUT,
+                input_size=input_size,
+                hidden_size=HIDDEN_SIZE,
+                num_layers=NUM_LAYERS,
+                num_heads=4,
+                dropout=DROPOUT,
         )
-
     raise ValueError(
         f"Unsupported model: {model_name}"
     )

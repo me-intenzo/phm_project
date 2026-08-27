@@ -1,30 +1,35 @@
 """
 hybrid.py
 
-Hybrid LSTM + Transformer prognostics model for joint
+Hybrid CNN + GRU + Transformer prognostics model for joint
 Remaining Useful Life (RUL) and Health Index (HI) prediction.
 
 Architecture
 ------------
-Input sequence
+Input Sequence
       │
-      ├───────────────┐
-      │               │
-      ▼               ▼
-   LSTM Branch    Transformer Branch
-      │               │
-      ▼               ▼
- Temporal State   Temporal Representation
-      │               │
-      └───────┬───────┘
-              ▼
-       Feature Fusion
-              │
-       Shared Representation
-              │
-        ┌─────┴─────┐
-        ▼           ▼
-       RUL          HI
+      ├──────────────────────┬──────────────────────┐
+      │                      │                      │
+      ▼                      ▼                      ▼
+   1D CNN                  GRU               Transformer
+      │                      │                      │
+      ▼                      ▼                      ▼
+Local Temporal         Sequential          Long-Range
+  Features             Features            Dependencies
+      │                      │                      │
+      └──────────────────────┼──────────────────────┘
+                             ▼
+                     Feature Concatenation
+                             │
+                             ▼
+                       Fusion Layer
+                             │
+                             ▼
+                   Shared Representation
+                             │
+                       ┌─────┴─────┐
+                       ▼           ▼
+                      RUL         HI
 
 Author: me-intenzo
 """
@@ -37,9 +42,13 @@ import torch
 import torch.nn as nn
 
 
+# ==============================================================
+# POSITIONAL ENCODING
+# ==============================================================
+
 class PositionalEncoding(nn.Module):
     """
-    Sinusoidal positional encoding.
+    Sinusoidal positional encoding for Transformer input.
     """
 
     def __init__(
@@ -51,9 +60,7 @@ class PositionalEncoding(nn.Module):
 
         super().__init__()
 
-        self.dropout = nn.Dropout(
-            dropout
-        )
+        self.dropout = nn.Dropout(dropout)
 
         position = torch.arange(
             max_len,
@@ -86,6 +93,8 @@ class PositionalEncoding(nn.Module):
             position * div_term
         )
 
+        # Shape:
+        # (1, max_len, d_model)
         self.register_buffer(
             "pe",
             pe.unsqueeze(0),
@@ -96,33 +105,45 @@ class PositionalEncoding(nn.Module):
         x: torch.Tensor,
     ) -> torch.Tensor:
 
-        x = x + self.pe[ # type: ignore[index]
+        x = x + self.pe[
             :, :x.size(1), :
         ]
 
         return self.dropout(x)
 
 
+# ==============================================================
+# HYBRID CNN + GRU + TRANSFORMER MODEL
+# ==============================================================
+
 class HybridPrognosticsModel(nn.Module):
     """
-    Parallel LSTM + Transformer multi-task prognostics model.
+    Parallel CNN + GRU + Transformer multi-task prognostics model.
 
     Parameters
     ----------
     input_size : int
-        Number of sensor features.
+        Number of input sensor features.
 
     hidden_size : int
-        Hidden representation size.
+        Shared hidden representation size.
 
     num_layers : int
-        Number of LSTM/Transformer layers.
+        Number of GRU and Transformer layers.
 
     num_heads : int
         Number of Transformer attention heads.
 
     dropout : float
         Dropout probability.
+
+    Outputs
+    -------
+    pred_rul : torch.Tensor
+        Predicted Remaining Useful Life.
+
+    pred_hi : torch.Tensor
+        Predicted Health Index.
     """
 
     def __init__(
@@ -136,11 +157,66 @@ class HybridPrognosticsModel(nn.Module):
 
         super().__init__()
 
-        # --------------------------------------------------
-        # LSTM Branch
-        # --------------------------------------------------
+        # ----------------------------------------------------------
+        # 1. CNN BRANCH
+        # ----------------------------------------------------------
+        #
+        # Input:
+        #   (batch, sequence, features)
+        #
+        # Conv1D requires:
+        #   (batch, channels, sequence)
+        #
+        # Therefore the input is permuted in forward().
+        #
 
-        self.lstm = nn.LSTM(
+        self.cnn = nn.Sequential(
+
+            nn.Conv1d(
+                in_channels=input_size,
+                out_channels=64,
+                kernel_size=3,
+                padding=1,
+            ),
+
+            nn.BatchNorm1d(64),
+
+            nn.ReLU(),
+
+            nn.Dropout(dropout),
+
+            nn.Conv1d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=3,
+                padding=1,
+            ),
+
+            nn.BatchNorm1d(128),
+
+            nn.ReLU(),
+
+            nn.Dropout(dropout),
+        )
+
+        # Reduce temporal dimension
+        self.cnn_pool = nn.MaxPool1d(
+            kernel_size=2,
+            stride=2,
+        )
+
+        # Convert temporal features to fixed vector
+        self.cnn_global_pool = nn.AdaptiveAvgPool1d(
+            1
+        )
+
+        cnn_output_size = 128
+
+        # ----------------------------------------------------------
+        # 2. GRU BRANCH
+        # ----------------------------------------------------------
+
+        self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -152,65 +228,69 @@ class HybridPrognosticsModel(nn.Module):
             ),
         )
 
-        # --------------------------------------------------
-        # Transformer Branch
-        # --------------------------------------------------
+        gru_output_size = hidden_size
 
-        self.transformer_projection = (
-            nn.Linear(
-                input_size,
-                hidden_size,
-            )
+        # ----------------------------------------------------------
+        # 3. TRANSFORMER BRANCH
+        # ----------------------------------------------------------
+
+        self.transformer_projection = nn.Linear(
+            input_size,
+            hidden_size,
         )
 
-        self.positional_encoding = (
-            PositionalEncoding(
-                d_model=hidden_size,
-                max_len=500,
-                dropout=dropout,
-            )
+        self.positional_encoding = PositionalEncoding(
+            d_model=hidden_size,
+            max_len=500,
+            dropout=dropout,
         )
 
-        encoder_layer = (
-            nn.TransformerEncoderLayer(
-                d_model=hidden_size,
-                nhead=num_heads,
-                dim_feedforward=hidden_size * 4,
-                dropout=dropout,
-                activation="gelu",
-                batch_first=True,
-                norm_first=True,
-            )
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=num_heads,
+            dim_feedforward=hidden_size * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
         )
 
-        self.transformer = (
-            nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=num_layers,
-            )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
         )
 
-        # --------------------------------------------------
-        # Fusion Layer
-        # --------------------------------------------------
+        transformer_output_size = hidden_size
 
-        fusion_size = hidden_size * 2
+        # ----------------------------------------------------------
+        # 4. FEATURE FUSION
+        # ----------------------------------------------------------
+
+        fusion_input_size = (
+            cnn_output_size
+            + gru_output_size
+            + transformer_output_size
+        )
 
         self.fusion = nn.Sequential(
+
             nn.Linear(
-                fusion_size,
+                fusion_input_size,
                 hidden_size,
             ),
+
             nn.BatchNorm1d(
                 hidden_size,
             ),
+
             nn.ReLU(),
+
             nn.Dropout(dropout),
         )
 
-        # --------------------------------------------------
-        # Multi-task Heads
-        # --------------------------------------------------
+        # ----------------------------------------------------------
+        # 5. MULTI-TASK OUTPUT HEADS
+        # ----------------------------------------------------------
 
         self.rul_head = nn.Linear(
             hidden_size,
@@ -222,9 +302,9 @@ class HybridPrognosticsModel(nn.Module):
             1,
         )
 
-    # ------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------
+    # ==============================================================
+    # FORWARD PASS
+    # ==============================================================
 
     def forward(
         self,
@@ -234,71 +314,137 @@ class HybridPrognosticsModel(nn.Module):
         torch.Tensor,
     ]:
 
-        # ==================================================
-        # LSTM branch
-        # ==================================================
+        # ==========================================================
+        # CNN BRANCH
+        # ==========================================================
 
-        _, (lstm_hidden, _) = (
-            self.lstm(x)
+        # Input:
+        # (batch, sequence, features)
+
+        cnn_x = x.permute(
+            0,
+            2,
+            1,
         )
 
-        lstm_features = (
-            lstm_hidden[-1]
+        # CNN feature extraction
+        cnn_x = self.cnn(
+            cnn_x
         )
 
-        # ==================================================
-        # Transformer branch
-        # ==================================================
-
-        transformer_x = (
-            self.transformer_projection(x)
+        # Temporal downsampling
+        cnn_x = self.cnn_pool(
+            cnn_x
         )
 
-        transformer_x = (
-            self.positional_encoding(
-                transformer_x
-            )
+        # Global average pooling
+        # (batch, 128, sequence)
+        #            ↓
+        # (batch, 128, 1)
+
+        cnn_x = self.cnn_global_pool(
+            cnn_x
         )
 
-        transformer_x = (
-            self.transformer(
-                transformer_x
-            )
+        # (batch, 128, 1)
+        #       ↓
+        # (batch, 128)
+
+        cnn_features = cnn_x.squeeze(
+            -1
         )
 
-        transformer_features = (
-            transformer_x.mean(
-                dim=1
-            )
+        # ==========================================================
+        # GRU BRANCH
+        # ==========================================================
+
+        _, gru_hidden = self.gru(x)
+
+        # Last GRU layer hidden state
+        #
+        # Shape:
+        # (num_layers, batch, hidden_size)
+        #
+        # Take the final layer:
+
+        gru_features = gru_hidden[-1]
+
+        # Shape:
+        # (batch, hidden_size)
+
+        # ==========================================================
+        # TRANSFORMER BRANCH
+        # ==========================================================
+
+        transformer_x = self.transformer_projection(
+            x
         )
 
-        # ==================================================
-        # Feature Fusion
-        # ==================================================
+        transformer_x = self.positional_encoding(
+            transformer_x
+        )
+
+        transformer_x = self.transformer(
+            transformer_x
+        )
+
+        # Global average pooling across time
+        #
+        # (batch, sequence, hidden)
+        #          ↓
+        # (batch, hidden)
+
+        transformer_features = transformer_x.mean(
+            dim=1
+        )
+
+        # ==========================================================
+        # FEATURE FUSION
+        # ==========================================================
 
         fused_features = torch.cat(
             [
-                lstm_features,
+                cnn_features,
+                gru_features,
                 transformer_features,
             ],
             dim=1,
         )
 
+        # Shape:
+        #
+        # CNN        = 128
+        # GRU        = hidden_size
+        # Transformer= hidden_size
+        #
+        # For hidden_size=128:
+        # 128 + 128 + 128 = 384
+
         features = self.fusion(
             fused_features
         )
 
-        # ==================================================
-        # Multi-task prediction
-        # ==================================================
+        # ==========================================================
+        # RUL PREDICTION
+        # ==========================================================
 
         pred_rul = self.rul_head(
             features
         )
 
+        # ==========================================================
+        # HI PREDICTION
+        # ==========================================================
+
         pred_hi = self.hi_head(
             features
         )
+
+        # Remove final dimension:
+        #
+        # (batch, 1)
+        #    ↓
+        # (batch,)
 
         return (
             pred_rul.squeeze(-1),
@@ -306,11 +452,19 @@ class HybridPrognosticsModel(nn.Module):
         )
 
 
-# ----------------------------------------------------------
-# Standalone Test
-# ----------------------------------------------------------
+# ==============================================================
+# STANDALONE MODEL TEST
+# ==============================================================
 
 if __name__ == "__main__":
+
+    print("=" * 60)
+    print("Testing Hybrid CNN + GRU + Transformer Model")
+    print("=" * 60)
+
+    # ----------------------------------------------------------
+    # Model configuration
+    # ----------------------------------------------------------
 
     model = HybridPrognosticsModel(
         input_size=14,
@@ -320,23 +474,76 @@ if __name__ == "__main__":
         dropout=0.3,
     )
 
+    # ----------------------------------------------------------
+    # Example input
+    # ----------------------------------------------------------
+
+    # Batch size = 64
+    # Sequence length = 30
+    # Sensor features = 14
+
     x = torch.randn(
         64,
         30,
         14,
     )
 
-    rul, hi = model(x)
+    # ----------------------------------------------------------
+    # Forward pass
+    # ----------------------------------------------------------
+
+    with torch.no_grad():
+
+        rul, hi = model(x)
+
+    # ----------------------------------------------------------
+    # Output information
+    # ----------------------------------------------------------
 
     print(
-        f"RUL Output Shape : {rul.shape}"
+        f"Input Shape        : {x.shape}"
     )
 
     print(
-        f"HI Output Shape  : {hi.shape}"
+        f"RUL Output Shape   : {rul.shape}"
     )
 
     print(
-        "Trainable Parameters : "
-        f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
+        f"HI Output Shape    : {hi.shape}"
     )
+
+    # ----------------------------------------------------------
+    # Parameter count
+    # ----------------------------------------------------------
+
+    total_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+    print(
+        f"Trainable Parameters: {total_params:,}"
+    )
+
+    # ----------------------------------------------------------
+    # Expected checks
+    # ----------------------------------------------------------
+
+    assert x.shape == (
+        64,
+        30,
+        14,
+    )
+
+    assert rul.shape == (
+        64,
+    )
+
+    assert hi.shape == (
+        64,
+    )
+
+    print()
+    print("Model forward-pass test: PASSED")
+    print("=" * 60)

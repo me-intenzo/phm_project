@@ -32,8 +32,11 @@ from src.preprocessing.windowing import WindowGenerator
 log = logging.getLogger(__name__)
 
 DEFAULT_SUBSET = "FD001"
-PROCESSED_DIR = Path("data/processed")
-MODELS_DIR = Path("outputs/models")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+MODELS_DIR = PROJECT_ROOT / "outputs" / "models"
 
 
 def _step(name: str) -> None:
