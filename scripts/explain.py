@@ -183,7 +183,9 @@ def setup_logger(subset: str, model_name: str, target: str) -> logging.Logger:
     )
     fh = logging.FileHandler(log_file, mode="w")
     fh.setFormatter(fmt)
-    sh = logging.StreamHandler(sys.stdout)
+    sh = logging.StreamHandler(
+        open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
+    )
     sh.setFormatter(fmt)
     logger.addHandler(fh)
     logger.addHandler(sh)
@@ -431,7 +433,7 @@ def run_model_xai(
     log.info("Computing ERI...")
     eri_result = compute_eri(ig_result, shap_result, attn_result, top_k=5)
     log.info(
-        "ERI=%.3f | ρ(IG,Attn)=%.3f | ρ(IG,SHAP)=%.3f | Consensus@5=%.3f",
+        "ERI=%.3f | r(IG,Attn)=%.3f | r(IG,SHAP)=%.3f | Consensus@5=%.3f",
         eri_result["eri"],
         eri_result["rho_ig_attn"],
         eri_result["rho_ig_shap"],

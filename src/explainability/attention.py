@@ -40,21 +40,18 @@ def temporal_gradient_relevance(
     -------
     torch.Tensor  shape (batch, timesteps)
     """
-    model.train()
     x = x.detach().clone()
     x.requires_grad_(True)
 
-    output = _select_output(model=model, x=x, target=target)
-    scalar_output = output.sum()
-
-    gradients = torch.autograd.grad(
-        outputs=scalar_output,
-        inputs=x,
-        retain_graph=False,
-        create_graph=False,
-    )[0]
-
-    model.eval()
+    with torch.enable_grad(), torch.backends.cudnn.flags(enabled=False):
+        output = _select_output(model=model, x=x, target=target)
+        scalar_output = output.sum()
+        gradients = torch.autograd.grad(
+            outputs=scalar_output,
+            inputs=x,
+            retain_graph=False,
+            create_graph=False,
+        )[0]
 
     relevance = gradients.abs().mean(dim=2)
     denominator = relevance.sum(dim=1, keepdim=True).clamp_min(1e-12)
