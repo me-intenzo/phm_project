@@ -74,6 +74,8 @@ from src.models.trainer import ModelTrainer
 # ------------------------------------------------------------------
 
 DEFAULT_SUBSET = "FD001"
+ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
+ALL_MODELS  = ["lstm", "gru", "transformer", "hybrid", "gru_att_deg"]
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -101,11 +103,11 @@ LOG_DIR = (
 
 SEED = 42
 
-BATCH_SIZE = 64
+BATCH_SIZE = 256
 
-EPOCHS = 50
+EPOCHS = 300
 
-PATIENCE = 10
+PATIENCE = 20
 
 VALIDATION_SIZE = 0.20
 
@@ -181,27 +183,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=[
-            "lstm",
-            "gru",
-            "transformer",
-            "hybrid",
-            "gru_att_deg",
-        ],
         default="lstm",
-        help="Model architecture to train.",
+        help="Model architecture to train, or 'all'.",
     )
     parser.add_argument(
-    "--subset",
-    type=str,
-    choices=[
-        "FD001",
-        "FD002",
-        "FD003",
-        "FD004",
-    ],
-    default=DEFAULT_SUBSET,
-    help="C-MAPSS subset to train.",
+        "--subset",
+        type=str,
+        default=DEFAULT_SUBSET,
+        help="C-MAPSS subset to train, or 'all'.",
     )
 
     return parser.parse_args()
@@ -365,16 +354,9 @@ def build_model(
 # Main
 # ------------------------------------------------------------------
 
-def main():
-
-    args = parse_args()
-
-    model_name = args.model
-    subset = args.subset
-
-    log = configure_logging(
-        model_name, subset
-    )
+def run(model_name: str, subset: str) -> None:
+    """Run the full training pipeline for a single model/subset combination."""
+    log = configure_logging(model_name, subset)
 
     set_seed(SEED)
 
@@ -661,6 +643,15 @@ def main():
     log.info(
         "Training completed successfully."
     )
+
+
+def main():
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    models  = ALL_MODELS  if args.model  == "all" else [args.model]
+    for subset in subsets:
+        for model_name in models:
+            run(model_name, subset)
 
 
 # ------------------------------------------------------------------

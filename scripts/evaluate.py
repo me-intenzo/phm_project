@@ -50,7 +50,9 @@ from src.models.gru_att_deg import GruAttDeg
 # Configuration
 # ------------------------------------------------------------------
 
-SUBSET = "FD001"
+SUBSET      = "FD001"
+ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
+ALL_MODELS  = ["lstm", "gru", "transformer", "hybrid", "gru_att_deg"]
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -98,21 +100,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["lstm", "gru", "transformer", "hybrid", "gru_att_deg"],
-        required=True,
-        help="Model architecture to evaluate.",
+        default="lstm",
+        help="Model architecture to evaluate, or 'all'.",
     )
     parser.add_argument(
-    "--subset",
-    type=str,
-    choices=[
-        "FD001",
-        "FD002",
-        "FD003",
-        "FD004",
-    ],
-    default="FD001",
-    help="C-MAPSS subset to evaluate.",
+        "--subset",
+        type=str,
+        default="FD001",
+        help="C-MAPSS subset to evaluate, or 'all'.",
     )
 
     return parser.parse_args()
@@ -349,17 +344,9 @@ def predict(
 # Main
 # ------------------------------------------------------------------
 
-def main():
-
-    args = parse_args()
-
-    model_name = args.model
-
-    subset = args.subset
-
-    log = configure_logging(
-        model_name, subset
-    )
+def run(model_name: str, subset: str) -> None:
+    """Run the full evaluation pipeline for a single model/subset combination."""
+    log = configure_logging(model_name, subset)
 
     device = get_device()
 
@@ -488,6 +475,15 @@ def main():
         "Predictions saved to: %s",
         prediction_path,
     )
+
+
+def main():
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    models  = ALL_MODELS  if args.model  == "all" else [args.model]
+    for subset in subsets:
+        for model_name in models:
+            run(model_name, subset)
 
 
 if __name__ == "__main__":

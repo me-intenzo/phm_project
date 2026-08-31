@@ -32,6 +32,7 @@ from src.preprocessing.windowing import WindowGenerator
 log = logging.getLogger(__name__)
 
 DEFAULT_SUBSET = "FD001"
+ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 PROCESSED_DIR = Path("data/processed")
 MODELS_DIR = Path("outputs/models")
 
@@ -53,14 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--subset",
         type=str,
-        choices=[
-            "FD001",
-            "FD002",
-            "FD003",
-            "FD004",
-        ],
         default=DEFAULT_SUBSET,
-        help="C-MAPSS subset to preprocess.",
+        help="C-MAPSS subset to preprocess, or 'all'.",
     )
 
     return parser.parse_args()
@@ -134,11 +129,8 @@ def setup_logging(subset: str) -> logging.Logger:
 # Pipeline
 # ------------------------------------------------------------------ #
 
-def main() -> None:
-
-    args = parse_args()
-    subset = args.subset
-
+def run(subset: str) -> None:
+    """Run the full preprocessing pipeline for a single subset."""
     log = setup_logging(subset)
 
     figures_dir = Path("outputs") / "figures" / subset
@@ -248,7 +240,7 @@ def main() -> None:
     _step("Sliding Windows")
 
     win_gen = WindowGenerator(
-        window_size=30,
+        window_size=40,
         stride=1,
     )
 
@@ -353,7 +345,12 @@ def main() -> None:
     log.info("Preprocessing completed successfully.")
     log.info("Outputs saved to: %s", PROCESSED_DIR.resolve())
 
-    
+
+def main() -> None:
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    for subset in subsets:
+        run(subset)
 
 
 if __name__ == "__main__":

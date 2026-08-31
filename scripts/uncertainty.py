@@ -73,6 +73,7 @@ NUM_LAYERS      = 2
 DROPOUT         = 0.3
 N_REGIMES       = 6
 COVERAGE_LEVELS = (0.80, 0.90, 0.95)
+ALL_SUBSETS     = ["FD001", "FD002", "FD003", "FD004"]
 
 
 # ------------------------------------------------------------------
@@ -85,8 +86,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--subset",
-        choices=["FD001", "FD002", "FD003", "FD004"],
         default="FD001",
+        help="C-MAPSS subset, or 'all'.",
     )
     parser.add_argument(
         "--n_regimes",
@@ -218,11 +219,8 @@ def predict(model, X: np.ndarray, device: torch.device):
 # Main
 # ------------------------------------------------------------------
 
-def main():
-    args   = parse_args()
-    subset = args.subset
-    n_reg  = args.n_regimes
-
+def run(subset: str, n_reg: int) -> None:
+    """Run EARA-Conformal estimation for a single subset."""
     log    = configure_logging(subset)
     device = get_device()
 
@@ -350,6 +348,13 @@ def main():
     log.info("=" * 60)
     log.info("EARA-CONFORMAL ESTIMATION COMPLETE")
     log.info("=" * 60)
+
+
+def main():
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    for subset in subsets:
+        run(subset, args.n_regimes)
 
 
 if __name__ == "__main__":
