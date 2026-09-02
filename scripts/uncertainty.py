@@ -538,6 +538,121 @@ def predict_rul_hi(
     return np.concatenate(rul_predictions), np.concatenate(hi_predictions)
 
 
+def _robust_scale(values: np.ndarray, floor: float = 1e-6) -> float:
+    """Robust residual scale estimate."""
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        return floor
+    return max(float(np.median(np.abs(values))), floor)
+
+
+def _build_training_engine_profiles(
+    features: torch.Tensor,
+    residuals: np.ndarray,
+    engine_ids: np.ndarray,
+    predicted_rul: np.ndarray,
+) -> dict:
+    """
+    Build engine/regime profiles using TRAINING ENGINES ONLY.
+
+    This is deliberately constructed before conformal calibration. Therefore
+    the calibration scores and final test intervals are evaluated against a
+    fixed, learned scale function, preserving the split-conformal separation.
+    """
+    feature_np = features.detach().cpu().numpy().astype(np.float64)
+    residuals = np.asarray(residuals, dtype=np.float64).reshape(-1)
+    predicted_rul = np.asarray(predicted_rul, dtype=np.float64).reshape(-1)
+    engine_ids = np.asarray(engine_ids)
+
+    center = np.median(feature_np, axis=0)
+    mad = np.median(np.abs(feature_np - center), axis=0)
+    mad[mad < 1e-8] = 1.0
+    z = (feature_np - center) / mad
+
+    # Regimes are learned ONLY from training predictions.
+    q1, q2 = np.quantile(predicted_rul, [1.0 / 3.0, 2.0 / 3.0])
+    regimes = np.digitize(predicted_rul, [q1, q2], right=False)
+
+    profiles = []
+    for engine in np.unique(engine_ids):
+        mask = engine_ids == engine
+        if not np.any(mask):
+            continue
+
+        engine_residuals = np.abs(residuals[mask])
+        engine_z = z[mask]
+        regime_scales = {}
+
+        for regime in range(3):
+            values = engine_residuals[regimes[mask] == regime]
+            if len(values) >= 8:
+                regime_scales[regime] = _robust_scale(values)
+
+        profiles.append(
+            {
+                "engine_id": int(engine),
+                "centroid": np.mean(engine_z, axis=0),
+                "global_scale": _robust_scale(engine_residuals),
+                "regime_scales": regime_scales,
+            }
+        )
+
+    if not profiles:
+        raise RuntimeError("EARA-Conformal could not build training-engine profiles.")
+
+    return {
+        "profiles": profiles,
+        "center": center,
+        "mad": mad,
+        "regime_edges": np.asarray([q1, q2], dtype=np.float64),
+    }
+
+
+def _nearest_engine_regime_scale(
+    feature: np.ndarray,
+    predicted_rul: float,
+    profile_data: dict,
+    top_k: int = 5,
+) -> tuple[float, list[int], np.ndarray, int]:
+    """Retrieve nearest training engines and produce a regime-aware scale."""
+    center = profile_data["center"]
+    mad = profile_data["mad"]
+    q = (np.asarray(feature, dtype=np.float64) - center) / mad
+
+    profiles = profile_data["profiles"]
+    centroids = np.stack([p["centroid"] for p in profiles], axis=0)
+    distances = np.linalg.norm(centroids - q[None, :], axis=1)
+
+    k = min(top_k, len(profiles))
+    indices = np.argsort(distances)[:k]
+    d = distances[indices]
+
+    # Soft nearest-engine weighting.
+    weights = 1.0 / (d + 1e-6)
+    weights /= weights.sum()
+
+    regime = int(
+        np.digitize(
+            predicted_rul,
+            profile_data["regime_edges"],
+            right=False,
+        )
+    )
+
+    scales = []
+    for idx in indices:
+        profile = profiles[idx]
+        scales.append(
+            profile["regime_scales"].get(
+                regime,
+                profile["global_scale"],
+            )
+        )
+
+    scale = float(np.sum(weights * np.asarray(scales)))
+    return max(scale, 1e-6), [profiles[i]["engine_id"] for i in indices], weights, regime
+
+
 def run_engine_joint_conformal(
     model: torch.nn.Module,
     model_name: str,
@@ -551,59 +666,186 @@ def run_engine_joint_conformal(
     calibration_engine_ids: np.ndarray,
     device: torch.device,
     log: logging.Logger,
+    training_engine_ids: np.ndarray | None = None,
 ) -> None:
-    """Evaluate Solution 2's engine-block joint RUL/HI score.
-
-    This first implementation uses robust training residual scales instead of
-    new distributional heads, so it isolates the effect of engine-block joint
-    calibration before adding another learned component.
     """
-    train_rul, train_hi = predict_rul_hi(model, X_train, device)
-    rul_scale = max(float(np.median(np.abs(y_rul_train - train_rul))), 1e-6)
-    hi_scale = max(float(np.median(np.abs(y_hi_train - train_hi))), 1e-6)
-    cal_rul, cal_hi = predict_rul_hi(model, X_calibration, device)
-    window_scores = np.maximum(
-        np.abs(y_rul_calibration - cal_rul) / rul_scale,
-        np.abs(y_hi_calibration - cal_hi) / hi_scale,
-    )
-    engine_scores = np.asarray([
-        np.quantile(window_scores[calibration_engine_ids == engine], 0.90)
-        for engine in np.unique(calibration_engine_ids)
-    ])
+    Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal).
+
+    ``engine_joint`` is retained as the CLI compatibility endpoint.
+
+    Novel mechanism:
+      1. Learn engine profiles from training engines only.
+      2. Extract a frozen prognostic representation from the backbone.
+      3. Retrieve the nearest training-engine profiles at each query.
+      4. Condition the residual scale on a learned RUL degradation regime.
+      5. Normalize calibration residuals by that query-specific scale.
+      6. Apply split-conformal calibration to the normalized scores.
+      7. Produce query-specific RUL intervals using the calibrated q-hat.
+
+    No calibration or test target is used to learn the scale function.
+    """
+    if training_engine_ids is None:
+        raise ValueError(
+            "EARA-Conformal requires training_engine_ids for engine-aware profiles."
+        )
+
     log.info(
-        "Engine-joint calibration: %d engines; RUL scale %.4f; HI scale %.4f",
-        len(engine_scores), rul_scale, hi_scale,
+        "============================================================"
+    )
+    log.info(
+        "ENGINE-AWARE REGIME-ADAPTIVE CONFORMAL PREDICTION (EARA)"
+    )
+    log.info(
+        "Building engine/regime profiles from training engines only..."
     )
 
+    train_features = extract_model_features(model, X_train, device)
+    calibration_features = extract_model_features(model, X_calibration, device)
+
+    train_rul = predict_rul(model, X_train, device)
+    calibration_predictions = predict_rul(model, X_calibration, device)
+
+    train_residuals = np.abs(y_rul_train - train_rul)
+    calibration_residuals = np.abs(
+        y_rul_calibration - calibration_predictions
+    )
+
+    profile_data = _build_training_engine_profiles(
+        train_features,
+        train_residuals,
+        training_engine_ids,
+        train_rul,
+    )
+
+    # --------------------------------------------------------------
+    # Engine/regime-adaptive calibration scores
+    # --------------------------------------------------------------
+    calibration_scales = np.empty(len(X_calibration), dtype=np.float64)
+    calibration_regimes = np.empty(len(X_calibration), dtype=np.int64)
+
+    for i, (feature, pred) in enumerate(
+        zip(
+            calibration_features.detach().cpu().numpy(),
+            calibration_predictions,
+        )
+    ):
+        scale, _, _, regime = _nearest_engine_regime_scale(
+            feature,
+            float(pred),
+            profile_data,
+            top_k=5,
+        )
+        calibration_scales[i] = scale
+        calibration_regimes[i] = regime
+
+    normalized_scores = calibration_residuals / np.maximum(
+        calibration_scales,
+        1e-6,
+    )
+
+    log.info(
+        "EARA calibration: %d training engines -> %d calibration engines",
+        len(np.unique(training_engine_ids)),
+        len(np.unique(calibration_engine_ids)),
+    )
+    log.info(
+        "EARA retrieval: top-k=5; degradation regimes=3; "
+        "normalized-score calibration enabled"
+    )
+    log.info(
+        "Normalized calibration score median=%.6f, 90th percentile=%.6f",
+        float(np.median(normalized_scores)),
+        float(np.quantile(normalized_scores, 0.90)),
+    )
+
+    # --------------------------------------------------------------
+    # Final test predictions
+    # --------------------------------------------------------------
     X_test, y_rul_test, y_hi_test = load_test_data(subset)
-    test_rul, test_hi = predict_rul_hi(model, X_test, device)
+    test_features = extract_model_features(model, X_test, device)
+    test_predictions = predict_rul(model, X_test, device)
+
+    test_scales = np.empty(len(X_test), dtype=np.float64)
+    test_regimes = np.empty(len(X_test), dtype=np.int64)
+    test_neighbors = []
+
+    for feature, pred in zip(
+        test_features.detach().cpu().numpy(),
+        test_predictions,
+    ):
+        scale, neighbors, _, regime = _nearest_engine_regime_scale(
+            feature,
+            float(pred),
+            profile_data,
+            top_k=5,
+        )
+        test_scales[len(test_neighbors)] = scale
+        test_regimes[len(test_neighbors)] = regime
+        test_neighbors.append(neighbors)
+
     save_data: dict[str, np.ndarray] = {
         "y_rul_test": y_rul_test,
         "y_hi_test": y_hi_test,
-        "y_rul_pred": test_rul,
-        "y_hi_pred": test_hi,
-        "engine_scores": engine_scores,
+        "y_rul_pred": test_predictions,
+        "test_scales": test_scales,
+        "test_regimes": test_regimes,
+        "calibration_scales": calibration_scales,
+        "calibration_regimes": calibration_regimes,
+        "normalized_calibration_scores": normalized_scores,
     }
+
+    # --------------------------------------------------------------
+    # Conformal prediction
+    # --------------------------------------------------------------
     for coverage in COVERAGE_LEVELS:
-        q_hat = conformal_quantile(engine_scores, 1.0 - coverage)
-        lower, upper = prediction_interval(test_rul, q_hat * rul_scale)
-        metrics = evaluate_interval(y_rul_test, lower, upper, coverage)
+        alpha = 1.0 - coverage
+
+        # This is the only learned conformal quantile. It is calibrated on
+        # held-out engines after the EARA scale function has been fixed using
+        # training engines only.
+        q_hat = conformal_quantile(
+            normalized_scores,
+            alpha,
+        )
+
+        radius = q_hat * test_scales
+        lower = test_predictions - radius
+        upper = test_predictions + radius
+
+        metrics = evaluate_interval(
+            y_true=y_rul_test,
+            lower=lower,
+            upper=upper,
+            nominal_coverage=coverage,
+        )
+
         suffix = int(coverage * 100)
         save_data[f"lower_{suffix}"] = lower
         save_data[f"upper_{suffix}"] = upper
         save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+
         log.info(
-            "Engine-joint %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
+            "EARA-Conformal %.0f%% | q_hat %.6f | "
+            "Empirical %.4f | Error %.4f | MPIW %.4f | "
+            "MeanScale %.4f",
             coverage * 100.0,
+            q_hat,
             metrics["empirical_coverage"],
             metrics["coverage_error"],
             metrics["mean_interval_width"],
+            float(np.mean(test_scales)),
         )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_engine_joint_conformal.npz"
+    output_path = (
+        RESULTS_DIR
+        / f"{subset}_{model_name}_engine_joint_conformal.npz"
+    )
     np.savez(output_path, **save_data)
-    log.info("Engine-joint results saved to: %s", output_path)
+    log.info("EARA-Conformal results saved to: %s", output_path)
+    log.info(
+        "EARA complete: intervals are regime- and engine-neighbor adaptive."
+    )
 
 
 def extract_model_features(
@@ -1041,39 +1283,81 @@ def main():
     )
 
     # --------------------------------------------------------------
-    # Calibration predictions
+    # Method dispatch
     # --------------------------------------------------------------
+    # IMPORTANT: method-specific implementations must return here.
+    # Otherwise every method falls through to the original global split
+    # conformal path and produces identical results.
+    X_train = X_train_all[train_indices]
+    y_rul_train = y_rul_all[train_indices]
+    y_hi_train = y_hi_all[train_indices]
+    training_engine_ids = engine_ids[train_indices]
+    calibration_engine_ids = engine_ids[calibration_indices]
 
-    log.info(
-        "Generating calibration predictions..."
-    )
+    if args.method == "adaptive":
+        run_adaptive_conformal(
+            model=model,
+            model_name=model_name,
+            subset=subset,
+            X_train=X_train,
+            y_train=y_rul_train,
+            X_calibration=X_calibration,
+            y_calibration=y_rul_calibration,
+            device=device,
+            log=log,
+        )
+        return
 
+    if args.method == "cqr":
+        run_cqr(
+            model=model,
+            model_name=model_name,
+            subset=subset,
+            X_train=X_train,
+            y_train=y_rul_train,
+            X_calibration=X_calibration,
+            y_calibration=y_rul_calibration,
+            device=device,
+            log=log,
+        )
+        return
+
+    if args.method == "engine_joint":
+        run_engine_joint_conformal(
+            model=model,
+            model_name=model_name,
+            subset=subset,
+            X_train=X_train,
+            y_rul_train=y_rul_train,
+            y_hi_train=y_hi_train,
+            X_calibration=X_calibration,
+            y_rul_calibration=y_rul_calibration,
+            y_hi_calibration=y_hi_calibration,
+            calibration_engine_ids=calibration_engine_ids,
+            training_engine_ids=training_engine_ids,
+            device=device,
+            log=log,
+        )
+        return
+
+    # --------------------------------------------------------------
+    # Global split conformal
+    # --------------------------------------------------------------
+    log.info("Generating calibration predictions...")
     calibration_predictions = predict_rul(
         model=model,
         X=X_calibration,
         device=device,
     )
 
-    # --------------------------------------------------------------
-    # Conformal calibration
-    # --------------------------------------------------------------
-
-    log.info(
-        "Calibrating conformal intervals..."
+    log.info("Calibrating global split-conformal intervals...")
+    calibration_results = calibrate_multiple_levels(
+        y_true=y_rul_calibration,
+        y_pred=calibration_predictions,
+        coverage_levels=COVERAGE_LEVELS,
     )
 
-    calibration_results = (
-        calibrate_multiple_levels(
-            y_true=y_rul_calibration,
-            y_pred=calibration_predictions,
-            coverage_levels=COVERAGE_LEVELS,
-        )
-    )
-
-    for coverage, result in (
-        calibration_results.items()
-    ):
-
+    for coverage, result in calibration_results.items():
         log.info(
             "Nominal %.0f%% | alpha %.2f | q_hat %.6f",
             coverage * 100.0,
@@ -1084,32 +1368,19 @@ def main():
     # --------------------------------------------------------------
     # Load final test set
     # --------------------------------------------------------------
-
-    log.info(
-        "Loading final test data..."
-    )
-
+    log.info("Loading final test data...")
     (
         X_test,
         y_rul_test,
         y_hi_test,
-    ) = load_test_data(
-        subset
-    )
+    ) = load_test_data(subset)
 
-    log.info(
-        "Test samples: %d",
-        len(X_test),
-    )
+    log.info("Test samples: %d", len(X_test))
 
     # --------------------------------------------------------------
     # Test predictions
     # --------------------------------------------------------------
-
-    log.info(
-        "Generating test predictions..."
-    )
-
+    log.info("Generating test predictions...")
     test_predictions = predict_rul(
         model=model,
         X=X_test,
@@ -1119,15 +1390,14 @@ def main():
     # --------------------------------------------------------------
     # Evaluate intervals
     # --------------------------------------------------------------
-
     results = {}
+    save_data = {
+        "y_rul_test": y_rul_test,
+        "y_rul_pred": test_predictions,
+    }
 
-    for coverage, calibration in (
-        calibration_results.items()
-    ):
-
+    for coverage, calibration in calibration_results.items():
         q_hat = calibration["q_hat"]
-
         lower, upper = prediction_interval(
             y_pred=test_predictions,
             q_hat=q_hat,
@@ -1139,79 +1409,25 @@ def main():
             upper=upper,
             nominal_coverage=coverage,
         )
-
         results[coverage] = metrics
 
+        suffix = int(coverage * 100)
+        save_data[f"lower_{suffix}"] = lower
+        save_data[f"upper_{suffix}"] = upper
+        save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+
         log.info(
-            (
-                "Coverage %.0f%% | "
-                "Empirical %.4f | "
-                "Error %.4f | "
-                "MPIW %.4f"
-            ),
+            "Coverage %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
             coverage * 100.0,
             metrics["empirical_coverage"],
             metrics["coverage_error"],
             metrics["mean_interval_width"],
         )
 
-    # --------------------------------------------------------------
-    # Save results
-    # --------------------------------------------------------------
-
-    RESULTS_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    output_path = (
-        RESULTS_DIR
-        / f"{subset}_{model_name}_conformal.npz"
-    )
-
-    save_data = {
-        "y_rul_test": y_rul_test,
-        "y_rul_pred": test_predictions,
-    }
-
-    for coverage, calibration in (
-        calibration_results.items()
-    ):
-
-        q_hat = calibration["q_hat"]
-
-        lower, upper = prediction_interval(
-            test_predictions,
-            q_hat,
-        )
-
-        suffix = int(
-            coverage * 100
-        )
-
-        save_data[
-            f"lower_{suffix}"
-        ] = lower
-
-        save_data[
-            f"upper_{suffix}"
-        ] = upper
-
-        save_data[
-            f"q_hat_{suffix}"
-        ] = np.asarray(
-            [q_hat]
-        )
-
-    np.savez(
-        output_path,
-        **save_data,
-    )
-
-    log.info(
-        "Results saved to: %s",
-        output_path,
-    )
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RESULTS_DIR / f"{subset}_{model_name}_conformal.npz"
+    np.savez(output_path, **save_data)
+    log.info("Results saved to: %s", output_path)
 
     log.info(
         "=" * 60
