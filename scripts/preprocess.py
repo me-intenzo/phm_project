@@ -166,8 +166,12 @@ def run(subset: str) -> None:
     viz = DatasetVisualizer(figures_dir)
     viz.plot_engine_lifetime(train_df)
     viz.plot_sensor_trend(train_df, sensor="sensor_2", engines=[1, 2, 3])
+    viz.plot_sensor_trends_grid(train_df)
     viz.plot_correlation(train_df)
     viz.sensor_variance(train_df)
+    viz.plot_sensor_variance(train_df)
+    viz.plot_sensor_distributions_grid(train_df)
+    viz.plot_operating_conditions(train_df)
     viz.plot_sensor_distribution(train_df, sensor="sensor_2")
 
     # ── Generate Labels ───────────────────────────────────────────
@@ -176,6 +180,8 @@ def run(subset: str) -> None:
     label_gen = LabelGenerator(max_rul=125)
 
     train_df = label_gen.generate_labels(train_df)
+
+    viz.plot_label_distributions(train_df)
 
     log.info(
         "\n%s",

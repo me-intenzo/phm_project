@@ -441,16 +441,10 @@ def plot_temporal_importance(
 
     ax.plot(
         timesteps,
-        ig,
-        marker="o",
-        label="Integrated Gradients",
-    )
-
-    ax.plot(
-        timesteps,
         shap,
         marker="s",
         label="SHAP",
+        zorder=2,
     )
 
     ax.plot(
@@ -458,6 +452,19 @@ def plot_temporal_importance(
         attention,
         marker="^",
         label="Temporal Relevance",
+        zorder=3,
+    )
+
+    # Draw IG last so exact agreement with SHAP remains visible.
+    ax.plot(
+        timesteps,
+        ig,
+        marker="o",
+        markerfacecolor="white",
+        markeredgewidth=1.5,
+        linewidth=2.2,
+        label="Integrated Gradients",
+        zorder=4,
     )
 
     ax.set_xlabel(

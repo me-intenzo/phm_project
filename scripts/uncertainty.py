@@ -47,7 +47,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.gru import GRUPrognosticsModel
+from src.models.gru_att_deg import GruAttDeg
 from src.models.hybrid import HybridPrognosticsModel
+from src.models.lstm import LSTMPrognosticsModel
+from src.models.transformer import TransformerPrognosticsModel
 from src.uncertainty.calibration import calibrate_eara_levels
 from src.uncertainty.conformal import (
     adaptive_prediction_interval,
@@ -75,6 +78,29 @@ N_REGIMES       = 6
 COVERAGE_LEVELS = (0.80, 0.90, 0.95)
 ALL_SUBSETS     = ["FD001", "FD002", "FD003", "FD004"]
 
+MODEL_REGISTRY: dict[str, tuple] = {
+    "gru": (
+        GRUPrognosticsModel,
+        {"hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS, "dropout": DROPOUT},
+    ),
+    "gru_att_deg": (
+        GruAttDeg,
+        {"hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS, "dropout": DROPOUT},
+    ),
+    "lstm": (
+        LSTMPrognosticsModel,
+        {"hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS, "dropout": DROPOUT},
+    ),
+    "transformer": (
+        TransformerPrognosticsModel,
+        {"hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS, "num_heads": 4, "dropout": DROPOUT},
+    ),
+    "hybrid": (
+        HybridPrognosticsModel,
+        {"hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS, "dropout": DROPOUT},
+    ),
+}
+
 
 # ------------------------------------------------------------------
 # CLI
@@ -82,12 +108,17 @@ ALL_SUBSETS     = ["FD001", "FD002", "FD003", "FD004"]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="EARA-Conformal uncertainty estimation for the Hybrid model."
+        description="EARA-Conformal uncertainty estimation."
     )
     parser.add_argument(
         "--subset",
         default="FD001",
-        help="C-MAPSS subset, or 'all'.",
+        help="C-MAPSS subset or 'all'. Choices: FD001 FD002 FD003 FD004 all",
+    )
+    parser.add_argument(
+        "--model",
+        default="hybrid",
+        help=f"Model name or 'all'. Choices: {list(MODEL_REGISTRY)} all",
     )
     parser.add_argument(
         "--n_regimes",
@@ -102,20 +133,26 @@ def parse_args() -> argparse.Namespace:
 # Logging
 # ------------------------------------------------------------------
 
-def configure_logging(subset: str) -> logging.Logger:
+def configure_logging(subset: str, model_name: str) -> logging.Logger:
     log_dir = LOG_DIR / "uncertainty"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
+
+    logger = logging.getLogger(f"uncertainty.{subset}.{model_name}")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_dir / f"uncertainty_{subset}.log", mode="w"),
-        ],
-        force=True,
     )
-    return logging.getLogger(__name__)
+    fh = logging.FileHandler(log_dir / f"uncertainty_{subset}_{model_name}.log", mode="w")
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+    logger.propagate = False
+    return logger
 
 
 # ------------------------------------------------------------------
@@ -166,12 +203,12 @@ def create_calibration_split(X, y_rul, engine_ids):
 # Model
 # ------------------------------------------------------------------
 
-def load_model(input_size: int, device: torch.device, subset: str):
-    ckpt_path = CHECKPOINT_DIR / "hybrid" / subset / "best_model.pt"
+def load_model(model_name: str, input_size: int, device: torch.device, subset: str):
+    ckpt_path = CHECKPOINT_DIR / model_name / subset / "best_model.pt"
     if not ckpt_path.exists():
         raise FileNotFoundError(
-            f"Hybrid checkpoint not found: {ckpt_path}\n"
-            "Train first: python scripts/train.py --model hybrid"
+            f"Checkpoint not found: {ckpt_path}\n"
+            f"Train first: python scripts/train.py --model {model_name}"
         )
     ckpt = torch.load(ckpt_path, map_location=device)
     ckpt_input = ckpt.get("input_size", input_size)
@@ -179,15 +216,10 @@ def load_model(input_size: int, device: torch.device, subset: str):
         raise RuntimeError(
             f"Checkpoint input_size={ckpt_input} != data input_size={input_size}."
         )
-    model = HybridPrognosticsModel(
-        input_size=input_size,
-        hidden_size=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS,
-        dropout=DROPOUT,
-    )
-    missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
-    # scale_head is absent in checkpoints trained before EARA-Conformal.
-    # Initialize it so softplus(bias) ≈ 1.0 (neutral constant scale).
+    cls, kwargs = MODEL_REGISTRY[model_name]
+    model = cls(input_size=input_size, **kwargs)
+    missing, _ = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    # scale_head absent in older checkpoints — init to neutral scale ≈ 1.0
     if missing:
         import math
         nn.init.zeros_(model.scale_head.weight)
@@ -219,14 +251,15 @@ def predict(model, X: np.ndarray, device: torch.device):
 # Main
 # ------------------------------------------------------------------
 
-def run(subset: str, n_reg: int) -> None:
-    """Run EARA-Conformal estimation for a single subset."""
-    log    = configure_logging(subset)
+def run(subset: str, model_name: str, n_reg: int) -> None:
+    """Run EARA-Conformal estimation for a single subset/model combination."""
+    log    = configure_logging(subset, model_name)
     device = get_device()
 
     log.info("=" * 60)
     log.info("EARA-CONFORMAL UNCERTAINTY ESTIMATION")
     log.info("Subset   : %s", subset)
+    log.info("Model    : %s", model_name)
     log.info("Device   : %s", device)
     log.info("Regimes  : %d", n_reg)
     log.info("=" * 60)
@@ -252,7 +285,7 @@ def run(subset: str, n_reg: int) -> None:
     log.info("Test windows : %d", len(X_test))
 
     # ── Model ─────────────────────────────────────────────────────
-    model, ckpt = load_model(X_all.shape[-1], device, subset)
+    model, ckpt = load_model(model_name, X_all.shape[-1], device, subset)
     log.info("Loaded checkpoint from epoch %d", ckpt["epoch"])
 
     # ── Regime detection (fit on training windows only) ───────────
@@ -326,7 +359,7 @@ def run(subset: str, n_reg: int) -> None:
 
     # ── Save ──────────────────────────────────────────────────────
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"{subset}_hybrid_eara_conformal.npz"
+    out_path = RESULTS_DIR / f"{subset}_{model_name}_eara_conformal.npz"
 
     save_data: dict[str, np.ndarray] = {
         "y_rul_test":    y_rul_test,
@@ -353,8 +386,15 @@ def run(subset: str, n_reg: int) -> None:
 def main():
     args = parse_args()
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    models  = list(MODEL_REGISTRY.keys()) if args.model == "all" else [args.model]
     for subset in subsets:
-        run(subset, args.n_regimes)
+        for model_name in models:
+            try:
+                run(subset, model_name, args.n_regimes)
+            except FileNotFoundError as e:
+                print(f"[SKIP] {model_name}/{subset}: {e}")
+            except Exception as e:
+                print(f"[ERROR] {model_name}/{subset}: {e}")
 
 
 if __name__ == "__main__":
