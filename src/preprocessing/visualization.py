@@ -138,10 +138,12 @@ class DatasetVisualizer:
         plt.figure(figsize=(14, 10))
 
         sns.heatmap(
-            corr,
-            cmap="coolwarm",
-            center=0,
-        )
+        corr,
+        cmap="coolwarm",
+        center=0,
+        annot=True,
+        fmt=".2f",
+)
 
         plt.title("Sensor Correlation")
 
@@ -153,6 +155,122 @@ class DatasetVisualizer:
 
         plt.close()
 
+
+    # ---------------------------------------------------- #
+    # Sensor vs RUL Correlation
+    # ---------------------------------------------------- #
+
+    def plot_sensor_rul_correlation(
+        self,
+        df: pd.DataFrame,
+        filename: str = "sensor_rul_correlation.png",
+    ) -> None:
+
+        logger.info(
+            "Generating sensor vs RUL correlation heatmap..."
+        )
+
+        sensor_cols = [
+            c for c in df.columns
+            if c.startswith("sensor_")
+        ]
+
+        # Pearson correlation between every sensor
+        # and the RUL target.
+        correlations = (
+            df[sensor_cols + ["RUL"]]
+            .corr()["RUL"]
+            .drop("RUL")
+            .to_frame()
+        )
+
+        plt.figure(figsize=(6, 10))
+
+        sns.heatmap(
+            correlations,
+            cmap="coolwarm",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            annot=True,
+            fmt=".2f",
+            linewidths=0.5,
+        )
+
+        plt.title(
+            "Pearson Correlation Between "
+            "Sensor Readings and RUL"
+        )
+
+        plt.xlabel("Target")
+        plt.ylabel("Sensor")
+
+        plt.tight_layout()
+
+        plt.savefig(
+            self.output_dir / filename,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+        plt.close()
+
+    # ---------------------------------------------------- #
+    # Sensor vs HI Correlation
+    # ---------------------------------------------------- #
+
+    def plot_sensor_hi_correlation(
+        self,
+        df: pd.DataFrame,
+        filename: str = "sensor_hi_correlation.png",
+    ) -> None:
+
+        logger.info(
+            "Generating sensor vs HI correlation heatmap..."
+        )
+
+        sensor_cols = [
+            c for c in df.columns
+            if c.startswith("sensor_")
+        ]
+
+        correlations = (
+            df[sensor_cols + ["HI"]]
+            .corr()["HI"]
+            .drop("HI")
+            .to_frame()
+        )
+
+        plt.figure(figsize=(6, 10))
+
+        sns.heatmap(
+            correlations,
+            cmap="coolwarm",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            annot=True,
+            fmt=".2f",
+            linewidths=0.5,
+        )
+
+        plt.title(
+            "Pearson Correlation Between "
+            "Sensor Readings and HI"
+        )
+
+        plt.xlabel("Target")
+        plt.ylabel("Sensor")
+
+        plt.tight_layout()
+
+        plt.savefig(
+            self.output_dir / filename,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+        plt.close()
     # ---------------------------------------------------- #
     # Variance
     # ---------------------------------------------------- #

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  
 
 
 class GRUPrognosticsModel(nn.Module):
@@ -104,6 +105,13 @@ class GRUPrognosticsModel(nn.Module):
             1,
         )
 
+        # Heteroscedastic scale head for EARA-Conformal.
+        # Outputs log-scale to ensure positivity via softplus.
+        self.scale_head = nn.Linear(
+            hidden_size,
+            1,
+        )
+
     # ------------------------------------------------------
     # Forward Pass
     # ------------------------------------------------------
@@ -142,9 +150,15 @@ class GRUPrognosticsModel(nn.Module):
 
         pred_hi = self.hi_head(features)
 
+        # Softplus ensures scale > 0
+        pred_scale = torch.nn.functional.softplus(
+            self.scale_head(features)
+        )
+
         return (
             pred_rul.squeeze(-1),
             pred_hi.squeeze(-1),
+            pred_scale.squeeze(-1),
         )
 
 

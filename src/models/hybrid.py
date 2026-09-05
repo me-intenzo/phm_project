@@ -1,6 +1,7 @@
 """
 hybrid.py
 
+Hybrid TCN + GRU prognostics model for joint
 Hybrid CNN + GRU + Transformer prognostics model for joint
 Remaining Useful Life (RUL) and Health Index (HI) prediction.
 
@@ -8,6 +9,23 @@ Architecture
 ------------
 Input Sequence
       │
+      ├───────────────┐
+      │               │
+      ▼               ▼
+  TCN Branch      GRU Branch
+      │               │
+      ▼               ▼
+ Local Patterns   Sequential State
+      │               │
+      └───────┬───────┘
+              ▼
+       Feature Fusion
+              │
+       Shared Representation
+              │
+        ┌─────┴─────┐
+        ▼           ▼
+       RUL          HI
       ├──────────────────────┬──────────────────────┐
       │                      │                      │
       ▼                      ▼                      ▼
@@ -36,8 +54,6 @@ Author: me-intenzo
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 
@@ -46,20 +62,62 @@ import torch.nn as nn
 # POSITIONAL ENCODING
 # ==============================================================
 
-class PositionalEncoding(nn.Module):
+class TemporalBlock(nn.Module):
     """
+    Single TCN block: two dilated causal Conv1d layers with residual connection.
     Sinusoidal positional encoding for Transformer input.
     """
 
     def __init__(
         self,
-        d_model: int,
-        max_len: int = 500,
-        dropout: float = 0.3,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int,
+        dropout: float,
     ) -> None:
 
         super().__init__()
 
+        padding = (kernel_size - 1) * dilation
+
+        self.conv1 = nn.utils.weight_norm(
+            nn.Conv1d(in_channels, out_channels, kernel_size, dilation=dilation, padding=padding)
+        )
+        self.conv2 = nn.utils.weight_norm(
+            nn.Conv1d(out_channels, out_channels, kernel_size, dilation=dilation, padding=padding)
+        )
+
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+
+        self.downsample = (
+            nn.Conv1d(in_channels, out_channels, 1)
+            if in_channels != out_channels
+            else None
+        )
+
+    def _causal_trim(self, x: torch.Tensor, size: int) -> torch.Tensor:
+        return x[:, :, :size]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        T = x.size(2)
+
+        out = self.relu(self._causal_trim(self.conv1(x), T))
+        out = self.dropout(out)
+        out = self.relu(self._causal_trim(self.conv2(out), T))
+        out = self.dropout(out)
+
+        res = x if self.downsample is None else self.downsample(x)
+        return self.relu(out + res)
+
+
+class TCN(nn.Module):
+    """
+    Temporal Convolutional Network with exponentially increasing dilations.
+    """
+
+    def __init__(
         self.dropout = nn.Dropout(dropout)
 
         position = torch.arange(
@@ -102,6 +160,27 @@ class PositionalEncoding(nn.Module):
 
     def forward(
         self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        kernel_size: int = 3,
+        dropout: float = 0.3,
+    ) -> None:
+
+        super().__init__()
+
+        layers = []
+        for i in range(num_layers):
+            in_ch = input_size if i == 0 else hidden_size
+            layers.append(
+                TemporalBlock(in_ch, hidden_size, kernel_size, dilation=2**i, dropout=dropout)
+            )
+
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C) → (B, C, T) for Conv1d
+        return self.network(x.permute(0, 2, 1))
         x: torch.Tensor,
     ) -> torch.Tensor:
 
@@ -118,6 +197,7 @@ class PositionalEncoding(nn.Module):
 
 class HybridPrognosticsModel(nn.Module):
     """
+    Parallel TCN + GRU multi-task prognostics model.
     Parallel CNN + GRU + Transformer multi-task prognostics model.
 
     Parameters
@@ -129,10 +209,11 @@ class HybridPrognosticsModel(nn.Module):
         Shared hidden representation size.
 
     num_layers : int
+        Number of TCN blocks / GRU layers.
         Number of GRU and Transformer layers.
 
-    num_heads : int
-        Number of Transformer attention heads.
+    kernel_size : int
+        Kernel size for TCN convolutions.
 
     dropout : float
         Dropout probability.
@@ -151,12 +232,17 @@ class HybridPrognosticsModel(nn.Module):
         input_size: int,
         hidden_size: int = 128,
         num_layers: int = 2,
-        num_heads: int = 4,
+        kernel_size: int = 3,
         dropout: float = 0.3,
     ) -> None:
 
         super().__init__()
 
+        # --------------------------------------------------
+        # TCN Branch
+        # --------------------------------------------------
+
+        self.tcn = TCN(
         # ----------------------------------------------------------
         # 1. CNN BRANCH
         # ----------------------------------------------------------
@@ -220,20 +306,26 @@ class HybridPrognosticsModel(nn.Module):
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            batch_first=True,
-            dropout=(
-                dropout
-                if num_layers > 1
-                else 0.0
-            ),
+            kernel_size=kernel_size,
+            dropout=dropout,
         )
 
+        # --------------------------------------------------
+        # GRU Branch
+        # --------------------------------------------------
         gru_output_size = hidden_size
 
         # ----------------------------------------------------------
         # 3. TRANSFORMER BRANCH
         # ----------------------------------------------------------
 
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
         self.transformer_projection = nn.Linear(
             input_size,
             hidden_size,
@@ -262,6 +354,9 @@ class HybridPrognosticsModel(nn.Module):
 
         transformer_output_size = hidden_size
 
+        # --------------------------------------------------
+        # Fusion Layer
+        # --------------------------------------------------
         # ----------------------------------------------------------
         # 4. FEATURE FUSION
         # ----------------------------------------------------------
@@ -273,6 +368,8 @@ class HybridPrognosticsModel(nn.Module):
         )
 
         self.fusion = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.BatchNorm1d(hidden_size),
 
             nn.Linear(
                 fusion_input_size,
@@ -292,15 +389,9 @@ class HybridPrognosticsModel(nn.Module):
         # 5. MULTI-TASK OUTPUT HEADS
         # ----------------------------------------------------------
 
-        self.rul_head = nn.Linear(
-            hidden_size,
-            1,
-        )
-
-        self.hi_head = nn.Linear(
-            hidden_size,
-            1,
-        )
+        self.rul_head = nn.Linear(hidden_size, 1)
+        self.hi_head = nn.Linear(hidden_size, 1)
+        self.scale_head = nn.Linear(hidden_size, 1)
 
     # ==============================================================
     # FORWARD PASS
@@ -309,11 +400,13 @@ class HybridPrognosticsModel(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-    ]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
 
+        # ==================================================
+        # TCN branch  →  last time-step of (B, C, T)
+        # ==================================================
+
+        tcn_features = self.tcn(x)[:, :, -1]
         # ==========================================================
         # CNN BRANCH
         # ==========================================================
@@ -354,10 +447,15 @@ class HybridPrognosticsModel(nn.Module):
             -1
         )
 
+        # ==================================================
+        # GRU branch  →  last hidden state
+        # ==================================================
         # ==========================================================
         # GRU BRANCH
         # ==========================================================
 
+        _, gru_hidden = self.gru(x)
+        gru_features = gru_hidden[-1]
         _, gru_hidden = self.gru(x)
 
         # Last GRU layer hidden state
@@ -398,6 +496,9 @@ class HybridPrognosticsModel(nn.Module):
             dim=1
         )
 
+        # ==================================================
+        # Feature Fusion
+        # ==================================================
         # ==========================================================
         # FEATURE FUSION
         # ==========================================================
@@ -421,13 +522,14 @@ class HybridPrognosticsModel(nn.Module):
         # 128 + 128 + 128 = 384
 
         features = self.fusion(
-            fused_features
+            torch.cat([tcn_features, gru_features], dim=1)
         )
 
         # ==========================================================
         # RUL PREDICTION
         # ==========================================================
 
+        pred_scale = torch.nn.functional.softplus(self.scale_head(features))
         pred_rul = self.rul_head(
             features
         )
@@ -447,8 +549,9 @@ class HybridPrognosticsModel(nn.Module):
         # (batch,)
 
         return (
-            pred_rul.squeeze(-1),
-            pred_hi.squeeze(-1),
+            self.rul_head(features).squeeze(-1),
+            self.hi_head(features).squeeze(-1),
+            pred_scale.squeeze(-1),
         )
 
 
@@ -470,7 +573,7 @@ if __name__ == "__main__":
         input_size=14,
         hidden_size=128,
         num_layers=2,
-        num_heads=4,
+        kernel_size=3,
         dropout=0.3,
     )
 
@@ -482,6 +585,7 @@ if __name__ == "__main__":
     # Sequence length = 30
     # Sensor features = 14
 
+    x = torch.randn(64, 30, 14)
     x = torch.randn(
         64,
         30,
@@ -494,8 +598,12 @@ if __name__ == "__main__":
 
     with torch.no_grad():
 
+    rul, hi, scale = model(x)
         rul, hi = model(x)
 
+    print(f"RUL Output Shape   : {rul.shape}")
+    print(f"HI Output Shape    : {hi.shape}")
+    print(f"Scale Output Shape : {scale.shape}")
     # ----------------------------------------------------------
     # Output information
     # ----------------------------------------------------------
@@ -523,6 +631,10 @@ if __name__ == "__main__":
     )
 
     print(
+        "Trainable Parameters : "
+        f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
+    )
+
         f"Trainable Parameters: {total_params:,}"
     )
 

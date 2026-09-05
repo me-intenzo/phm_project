@@ -1,31 +1,33 @@
 """
-uncertainty.py
-
-Conformal uncertainty estimation for the GRU prognostics model.
+uncertainty.py — Engine-Aware Regime-Adaptive Conformal Prediction
+                 (EARA-Conformal)
 
 Workflow
 --------
 Processed training data
         ↓
-Reproduce engine-wise train/validation split
+Engine-disjoint train / calibration split  (same seed as train.py)
         ↓
-Load trained GRU checkpoint
+Load trained Model checkpoint
         ↓
-Predict validation RUL
+Fit k-means regime detector on training windows
         ↓
-Calibrate conformal quantiles
+Assign regime labels to calibration and test windows
         ↓
-Load final test data
+Predict calibration RUL + scale
         ↓
-Predict test RUL
+Calibrate per-regime normalised quantiles  q̂_k
         ↓
-Generate prediction intervals
+Predict test RUL + scale
         ↓
-Evaluate coverage / interval width
+Generate adaptive intervals  C(x) = [ŷ ± q̂_k · s(x)]  clipped [0,125]
+        ↓
+Evaluate coverage / MPIW / PINAW / per-regime coverage
 
 Important
 ---------
-The final test targets are NEVER used during calibration.
+Final test targets are NEVER used during calibration.
+Engine-disjoint split is reproduced with the same seed as training.
 """
 
 from __future__ import annotations
@@ -37,111 +39,61 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 from sklearn.model_selection import GroupShuffleSplit
 
-
-# ------------------------------------------------------------------
-# Project root
-# ------------------------------------------------------------------
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-# ------------------------------------------------------------------
-# Project imports
-# ------------------------------------------------------------------
-
 from src.models.gru import GRUPrognosticsModel
-
-from src.uncertainty.calibration import (
-    calibrate_multiple_levels,
-)
-
+from src.models.hybrid import HybridPrognosticsModel
+from src.uncertainty.calibration import calibrate_eara_levels
 from src.uncertainty.conformal import (
-    prediction_interval,
+    adaptive_prediction_interval,
+    assign_regimes,
+    fit_regime_detector,
 )
-
-from src.uncertainty.coverage import (
-    evaluate_interval,
-)
-
+from src.uncertainty.coverage import evaluate_interval
 
 # ------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------
 
-DATA_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-)
+DATA_DIR       = PROJECT_ROOT / "data" / "processed"
+CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
+RESULTS_DIR    = PROJECT_ROOT / "outputs" / "results"
+LOG_DIR        = PROJECT_ROOT / "outputs" / "logs"
 
-CHECKPOINT_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "checkpoints"
-)
-
-RESULTS_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "results"
-)
-
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
-)
-
-SEED = 42
-
-BATCH_SIZE = 64
-
+SEED            = 42
+BATCH_SIZE      = 64
 VALIDATION_SIZE = 0.20
-
-HIDDEN_SIZE = 128
-
-NUM_LAYERS = 2
-
-DROPOUT = 0.3
-
-COVERAGE_LEVELS = (
-    0.80,
-    0.90,
-    0.95,
-)
+HIDDEN_SIZE     = 128
+NUM_LAYERS      = 2
+DROPOUT         = 0.3
+N_REGIMES       = 6
+COVERAGE_LEVELS = (0.80, 0.90, 0.95)
 
 
 # ------------------------------------------------------------------
-# Arguments
+# CLI
 # ------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-
     parser = argparse.ArgumentParser(
-        description=(
-            "Conformal uncertainty estimation "
-            "for the GRU prognostics model."
-        )
+        description="EARA-Conformal uncertainty estimation for the Hybrid model."
     )
-
     parser.add_argument(
         "--subset",
-        type=str,
-        choices=[
-            "FD001",
-            "FD002",
-            "FD003",
-            "FD004",
-        ],
+        choices=["FD001", "FD002", "FD003", "FD004"],
         default="FD001",
-        help="C-MAPSS subset.",
     )
-
+    parser.add_argument(
+        "--n_regimes",
+        type=int,
+        default=N_REGIMES,
+        help="Number of operating-condition regimes (k-means clusters).",
+    )
     return parser.parse_args()
 
 
@@ -149,36 +101,19 @@ def parse_args() -> argparse.Namespace:
 # Logging
 # ------------------------------------------------------------------
 
-def configure_logging(
-    subset: str,
-) -> logging.Logger:
-
+def configure_logging(subset: str) -> logging.Logger:
     log_dir = LOG_DIR / "uncertainty"
-
-    log_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
+    log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)-8s | "
-            "%(message)s"
-        ),
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(
-                log_dir
-                / f"uncertainty_{subset}.log",
-                mode="w",
-            ),
+            logging.FileHandler(log_dir / f"uncertainty_{subset}.log", mode="w"),
         ],
         force=True,
     )
-
     return logging.getLogger(__name__)
 
 
@@ -187,271 +122,96 @@ def configure_logging(
 # ------------------------------------------------------------------
 
 def get_device() -> torch.device:
-
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-
-    return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ------------------------------------------------------------------
-# Data Loading
+# Data
 # ------------------------------------------------------------------
 
-def load_training_data(
-    subset: str,
-):
-    """
-    Load processed training data.
-
-    Engine IDs are required to reproduce the
-    engine-wise validation split.
-    """
-
-    X = np.load(
-        DATA_DIR
-        / f"{subset}_train_X.npy"
-    )
-
-    y_rul = np.load(
-        DATA_DIR
-        / f"{subset}_train_y_rul.npy"
-    )
-
-    y_hi = np.load(
-        DATA_DIR
-        / f"{subset}_train_y_hi.npy"
-    )
-
-    engine_ids = np.load(
-        DATA_DIR
-        / f"{subset}_train_engine_ids.npy"
-    )
-
-    if not (
-        len(X)
-        == len(y_rul)
-        == len(y_hi)
-        == len(engine_ids)
-    ):
-        raise ValueError(
-            "Training arrays must contain "
-            "the same number of samples."
-        )
-
-    return (
-        X,
-        y_rul,
-        y_hi,
-        engine_ids,
-    )
+def load_training_data(subset: str):
+    X          = np.load(DATA_DIR / f"{subset}_train_X.npy")
+    y_rul      = np.load(DATA_DIR / f"{subset}_train_y_rul.npy")
+    y_hi       = np.load(DATA_DIR / f"{subset}_train_y_hi.npy")
+    engine_ids = np.load(DATA_DIR / f"{subset}_train_engine_ids.npy")
+    return X, y_rul, y_hi, engine_ids
 
 
-def load_test_data(
-    subset: str,
-):
-    """
-    Load untouched final test data.
-    """
-
-    X = np.load(
-        DATA_DIR
-        / f"{subset}_test_X.npy"
-    )
-
-    y_rul = np.load(
-        DATA_DIR
-        / f"{subset}_test_y_rul.npy"
-    )
-
-    y_hi = np.load(
-        DATA_DIR
-        / f"{subset}_test_y_hi.npy"
-    )
-
-    return (
-        X,
-        y_rul,
-        y_hi,
-    )
+def load_test_data(subset: str):
+    X     = np.load(DATA_DIR / f"{subset}_test_X.npy")
+    y_rul = np.load(DATA_DIR / f"{subset}_test_y_rul.npy")
+    y_hi  = np.load(DATA_DIR / f"{subset}_test_y_hi.npy")
+    return X, y_rul, y_hi
 
 
 # ------------------------------------------------------------------
-# Reproduce Validation Split
+# Engine-disjoint calibration split
 # ------------------------------------------------------------------
 
-def create_calibration_split(
-    X: np.ndarray,
-    y_rul: np.ndarray,
-    engine_ids: np.ndarray,
-):
-    """
-    Reproduce the engine-wise validation split used
-    by scripts/train.py.
-
-    random_state=42 must remain identical to training.
-    """
-
+def create_calibration_split(X, y_rul, engine_ids):
     splitter = GroupShuffleSplit(
-        n_splits=1,
-        test_size=VALIDATION_SIZE,
-        random_state=SEED,
+        n_splits=1, test_size=VALIDATION_SIZE, random_state=SEED
     )
+    train_idx, cal_idx = next(splitter.split(X, y_rul, groups=engine_ids))
 
-    train_indices, calibration_indices = next(
-        splitter.split(
-            X,
-            y_rul,
-            groups=engine_ids,
-        )
-    )
-
-    train_engines = set(
-        engine_ids[train_indices].tolist()
-    )
-
-    calibration_engines = set(
-        engine_ids[
-            calibration_indices
-        ].tolist()
-    )
-
-    overlap = (
-        train_engines
-        & calibration_engines
-    )
-
+    overlap = set(engine_ids[train_idx]) & set(engine_ids[cal_idx])
     if overlap:
-        raise RuntimeError(
-            "Engine leakage detected between "
-            "training and calibration sets: "
-            f"{sorted(overlap)}"
-        )
+        raise RuntimeError(f"Engine leakage detected: {sorted(overlap)}")
 
-    return (
-        train_indices,
-        calibration_indices,
-    )
+    return train_idx, cal_idx
 
 
 # ------------------------------------------------------------------
 # Model
 # ------------------------------------------------------------------
 
-def build_gru(
-    input_size: int,
-):
-    """
-    Reconstruct the exact GRU architecture
-    used during O1 training.
-    """
-
-    return GRUPrognosticsModel(
+def load_model(input_size: int, device: torch.device, subset: str):
+    ckpt_path = CHECKPOINT_DIR / "hybrid" / subset / "best_model.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(
+            f"Hybrid checkpoint not found: {ckpt_path}\n"
+            "Train first: python scripts/train.py --model hybrid"
+        )
+    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt_input = ckpt.get("input_size", input_size)
+    if ckpt_input != input_size:
+        raise RuntimeError(
+            f"Checkpoint input_size={ckpt_input} != data input_size={input_size}."
+        )
+    model = HybridPrognosticsModel(
         input_size=input_size,
         hidden_size=HIDDEN_SIZE,
         num_layers=NUM_LAYERS,
         dropout=DROPOUT,
     )
-
-
-def load_model(
-    input_size: int,
-    device: torch.device,
-    subset: str = "",
-):
-    """
-    Load the trained GRU checkpoint.
-    """
-
-    checkpoint_path = (
-        CHECKPOINT_DIR
-        / "gru"
-        / subset
-        / "best_model.pt"
-    )
-
-    if not checkpoint_path.exists():
-
-        raise FileNotFoundError(
-            f"GRU checkpoint not found:\n"
-            f"{checkpoint_path}\n\n"
-            "Train the GRU first using:\n"
-            "python scripts/train.py --model gru"
-        )
-
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-    )
-
-    checkpoint_input_size = checkpoint.get("input_size", input_size)
-
-    if checkpoint_input_size != input_size:
-        raise RuntimeError(
-            f"Checkpoint input_size={checkpoint_input_size} does not match "
-            f"data input_size={input_size}. "
-            f"Re-train the GRU for {subset} using:\n"
-            f"python scripts/train.py --model gru --subset {subset}"
-        )
-
-    model = build_gru(
-        input_size=input_size,
-    )
-
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
-    )
-
-    model.to(device)
-
-    model.eval()
-
-    return model, checkpoint
+    missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    # scale_head is absent in checkpoints trained before EARA-Conformal.
+    # Initialize it so softplus(bias) ≈ 1.0 (neutral constant scale).
+    if missing:
+        import math
+        nn.init.zeros_(model.scale_head.weight)
+        nn.init.constant_(model.scale_head.bias, math.log(math.exp(1.0) - 1.0))
+    model.to(device).eval()
+    return model, ckpt
 
 
 # ------------------------------------------------------------------
-# Prediction
+# Inference — returns (rul_pred, scale_pred)
 # ------------------------------------------------------------------
 
-def predict_rul(
-    model,
-    X: np.ndarray,
-    device: torch.device,
-) -> np.ndarray:
-    """
-    Generate GRU RUL predictions.
-    """
-
-    predictions = []
-
+def predict(model, X: np.ndarray, device: torch.device):
+    rul_preds, scale_preds = [], []
     with torch.no_grad():
-
-        for start in range(
-            0,
-            len(X),
-            BATCH_SIZE,
-        ):
-
-            batch = torch.from_numpy(
-                X[
-                    start:
-                    start + BATCH_SIZE
-                ]
-            ).float().to(device)
-
-            pred_rul, _ = model(
-                batch
+        for start in range(0, len(X), BATCH_SIZE):
+            batch = (
+                torch.from_numpy(X[start : start + BATCH_SIZE])
+                .float()
+                .to(device)
             )
-
-            predictions.append(
-                pred_rul
-                .cpu()
-                .numpy()
-            )
-
-    return np.concatenate(
-        predictions
-    )
+            rul, _hi, scale = model(batch)
+            rul_preds.append(rul.cpu().numpy())
+            scale_preds.append(scale.cpu().numpy())
+    return np.concatenate(rul_preds), np.concatenate(scale_preds)
 
 
 # ------------------------------------------------------------------
@@ -459,321 +219,137 @@ def predict_rul(
 # ------------------------------------------------------------------
 
 def main():
-
-    args = parse_args()
-
+    args   = parse_args()
     subset = args.subset
+    n_reg  = args.n_regimes
 
-    log = configure_logging(
-        subset
-    )
-
+    log    = configure_logging(subset)
     device = get_device()
 
-    log.info(
-        "=" * 60
-    )
+    log.info("=" * 60)
+    log.info("EARA-CONFORMAL UNCERTAINTY ESTIMATION")
+    log.info("Subset   : %s", subset)
+    log.info("Device   : %s", device)
+    log.info("Regimes  : %d", n_reg)
+    log.info("=" * 60)
+
+    # ── Data ──────────────────────────────────────────────────────
+    X_all, y_rul_all, _, engine_ids = load_training_data(subset)
+    log.info("Training windows : %d  |  features : %d", len(X_all), X_all.shape[-1])
+
+    train_idx, cal_idx = create_calibration_split(X_all, y_rul_all, engine_ids)
+
+    X_cal     = X_all[cal_idx]
+    y_rul_cal = y_rul_all[cal_idx]
+    X_train   = X_all[train_idx]
 
     log.info(
-        "CONFORMAL UNCERTAINTY ESTIMATION"
+        "Train engines : %d  |  Cal engines : %d  |  Cal windows : %d",
+        len(np.unique(engine_ids[train_idx])),
+        len(np.unique(engine_ids[cal_idx])),
+        len(X_cal),
     )
 
-    log.info(
-        "Subset: %s",
-        subset,
+    X_test, y_rul_test, _ = load_test_data(subset)
+    log.info("Test windows : %d", len(X_test))
+
+    # ── Model ─────────────────────────────────────────────────────
+    model, ckpt = load_model(X_all.shape[-1], device, subset)
+    log.info("Loaded checkpoint from epoch %d", ckpt["epoch"])
+
+    # ── Regime detection (fit on training windows only) ───────────
+    log.info("Fitting regime detector (k=%d) on training windows...", n_reg)
+    km = fit_regime_detector(X_train, n_regimes=n_reg, random_state=SEED)
+
+    regimes_cal  = assign_regimes(km, X_cal)
+    regimes_test = assign_regimes(km, X_test)
+
+    unique, counts = np.unique(regimes_cal, return_counts=True)
+    for r, c in zip(unique, counts):
+        flag = "  [< 30, global fallback]" if c < 30 else ""
+        log.info("  Calibration regime %d : %d windows%s", r, c, flag)
+
+    # ── Calibration predictions ───────────────────────────────────
+    log.info("Generating calibration predictions...")
+    rul_cal, scale_cal = predict(model, X_cal, device)
+
+    # ── EARA-Conformal calibration ────────────────────────────────
+    log.info("Calibrating per-regime quantiles...")
+    cal_results = calibrate_eara_levels(
+        y_true=y_rul_cal,
+        y_pred=rul_cal,
+        scale=scale_cal,
+        regimes=regimes_cal,
+        n_regimes=n_reg,
+        coverage_levels=COVERAGE_LEVELS,
     )
 
-    log.info(
-        "Device: %s",
-        device,
-    )
-
-    log.info(
-        "=" * 60
-    )
-
-    # --------------------------------------------------------------
-    # Load training data
-    # --------------------------------------------------------------
-
-    log.info(
-        "Loading training data..."
-    )
-
-    (
-        X_train_all,
-        y_rul_all,
-        y_hi_all,
-        engine_ids,
-    ) = load_training_data(
-        subset
-    )
-
-    log.info(
-        "Training samples: %d",
-        len(X_train_all),
-    )
-
-    log.info(
-        "Input shape: %s",
-        X_train_all.shape,
-    )
-
-    # --------------------------------------------------------------
-    # Reproduce calibration split
-    # --------------------------------------------------------------
-
-    log.info(
-        "Creating engine-wise calibration split..."
-    )
-
-    (
-        train_indices,
-        calibration_indices,
-    ) = create_calibration_split(
-        X=X_train_all,
-        y_rul=y_rul_all,
-        engine_ids=engine_ids,
-    )
-
-    X_calibration = X_train_all[
-        calibration_indices
-    ]
-
-    y_rul_calibration = y_rul_all[
-        calibration_indices
-    ]
-
-    calibration_engines = np.unique(
-        engine_ids[
-            calibration_indices
-        ]
-    )
-
-    training_engines = np.unique(
-        engine_ids[
-            train_indices
-        ]
-    )
-
-    log.info(
-        "Training engines    : %d",
-        len(training_engines),
-    )
-
-    log.info(
-        "Calibration engines : %d",
-        len(calibration_engines),
-    )
-
-    log.info(
-        "Calibration samples : %d",
-        len(X_calibration),
-    )
-
-    # --------------------------------------------------------------
-    # Load trained GRU
-    # --------------------------------------------------------------
-
-    log.info(
-        "Loading trained GRU..."
-    )
-
-    model, checkpoint = load_model(
-        input_size=X_train_all.shape[-1],
-        device=device,
-        subset=subset,
-    )
-
-    log.info(
-        "Loaded checkpoint from epoch %d",
-        checkpoint["epoch"],
-    )
-
-    # --------------------------------------------------------------
-    # Calibration predictions
-    # --------------------------------------------------------------
-
-    log.info(
-        "Generating calibration predictions..."
-    )
-
-    calibration_predictions = predict_rul(
-        model=model,
-        X=X_calibration,
-        device=device,
-    )
-
-    # --------------------------------------------------------------
-    # Conformal calibration
-    # --------------------------------------------------------------
-
-    log.info(
-        "Calibrating conformal intervals..."
-    )
-
-    calibration_results = (
-        calibrate_multiple_levels(
-            y_true=y_rul_calibration,
-            y_pred=calibration_predictions,
-            coverage_levels=COVERAGE_LEVELS,
-        )
-    )
-
-    for coverage, result in (
-        calibration_results.items()
-    ):
-
+    for cov, res in cal_results.items():
         log.info(
-            "Nominal %.0f%% | alpha %.2f | q_hat %.6f",
-            coverage * 100.0,
-            result["alpha"],
-            result["q_hat"],
+            "Nominal %3.0f%%  |  q_hat per regime: %s",
+            cov * 100,
+            np.round(res["q_hats"], 4),
         )
 
-    # --------------------------------------------------------------
-    # Load final test set
-    # --------------------------------------------------------------
+    # ── Test predictions ──────────────────────────────────────────
+    log.info("Generating test predictions...")
+    rul_test, scale_test = predict(model, X_test, device)
 
-    log.info(
-        "Loading final test data..."
-    )
-
-    (
-        X_test,
-        y_rul_test,
-        y_hi_test,
-    ) = load_test_data(
-        subset
-    )
-
-    log.info(
-        "Test samples: %d",
-        len(X_test),
-    )
-
-    # --------------------------------------------------------------
-    # Test predictions
-    # --------------------------------------------------------------
-
-    log.info(
-        "Generating test predictions..."
-    )
-
-    test_predictions = predict_rul(
-        model=model,
-        X=X_test,
-        device=device,
-    )
-
-    # --------------------------------------------------------------
-    # Evaluate intervals
-    # --------------------------------------------------------------
-
-    results = {}
-
-    for coverage, calibration in (
-        calibration_results.items()
-    ):
-
-        q_hat = calibration["q_hat"]
-
-        lower, upper = prediction_interval(
-            y_pred=test_predictions,
-            q_hat=q_hat,
+    # ── Evaluate intervals ────────────────────────────────────────
+    eval_results = {}
+    for cov, cal in cal_results.items():
+        lower, upper = adaptive_prediction_interval(
+            y_pred=rul_test,
+            scale=scale_test,
+            q_hats=cal["q_hats"],
+            regimes=regimes_test,
         )
-
         metrics = evaluate_interval(
             y_true=y_rul_test,
             lower=lower,
             upper=upper,
-            nominal_coverage=coverage,
+            nominal_coverage=cov,
+            regimes=regimes_test,
+            n_regimes=n_reg,
         )
-
-        results[coverage] = metrics
+        eval_results[cov] = {**metrics, "lower": lower, "upper": upper}
 
         log.info(
-            (
-                "Coverage %.0f%% | "
-                "Empirical %.4f | "
-                "Error %.4f | "
-                "MPIW %.4f"
-            ),
-            coverage * 100.0,
+            "Coverage %3.0f%%  |  Empirical %.4f  |  Error %.4f  |  "
+            "MPIW %.4f  |  PINAW %.4f",
+            cov * 100,
             metrics["empirical_coverage"],
             metrics["coverage_error"],
             metrics["mean_interval_width"],
+            metrics["pinaw"],
         )
+        for k, rc in metrics.get("regime_coverage", {}).items():
+            log.info("    Regime %d coverage : %.4f", k, rc)
 
-    # --------------------------------------------------------------
-    # Save results
-    # --------------------------------------------------------------
+    # ── Save ──────────────────────────────────────────────────────
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = RESULTS_DIR / f"{subset}_hybrid_eara_conformal.npz"
 
-    RESULTS_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    output_path = (
-        RESULTS_DIR
-        / f"{subset}_gru_conformal.npz"
-    )
-
-    save_data = {
-        "y_rul_test": y_rul_test,
-        "y_rul_pred": test_predictions,
+    save_data: dict[str, np.ndarray] = {
+        "y_rul_test":    y_rul_test,
+        "y_rul_pred":    rul_test,
+        "scale_pred":    scale_test,
+        "regimes_test":  regimes_test,
+        "regimes_cal":   regimes_cal,
+        "cal_scores":    np.abs(y_rul_cal - rul_cal) / (scale_cal + 1e-6),
     }
 
-    for coverage, calibration in (
-        calibration_results.items()
-    ):
+    for cov, res in eval_results.items():
+        suffix = int(cov * 100)
+        save_data[f"lower_{suffix}"]  = res["lower"]
+        save_data[f"upper_{suffix}"]  = res["upper"]
+        save_data[f"q_hats_{suffix}"] = cal_results[cov]["q_hats"]
 
-        q_hat = calibration["q_hat"]
-
-        lower, upper = prediction_interval(
-            test_predictions,
-            q_hat,
-        )
-
-        suffix = int(
-            coverage * 100
-        )
-
-        save_data[
-            f"lower_{suffix}"
-        ] = lower
-
-        save_data[
-            f"upper_{suffix}"
-        ] = upper
-
-        save_data[
-            f"q_hat_{suffix}"
-        ] = np.asarray(
-            [q_hat]
-        )
-
-    np.savez(
-        output_path,
-        **save_data,
-    )
-
-    log.info(
-        "Results saved to: %s",
-        output_path,
-    )
-
-    log.info(
-        "=" * 60
-    )
-
-    log.info(
-        "UNCERTAINTY ESTIMATION COMPLETE"
-    )
-
-    log.info(
-        "=" * 60
-    )
+    np.savez(out_path, **save_data)
+    log.info("Results saved to: %s", out_path)
+    log.info("=" * 60)
+    log.info("EARA-CONFORMAL ESTIMATION COMPLETE")
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":

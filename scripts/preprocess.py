@@ -187,6 +187,8 @@ def main() -> None:
     label_gen = LabelGenerator(max_rul=125)
 
     train_df = label_gen.generate_labels(train_df)
+    viz.plot_sensor_rul_correlation(train_df)
+    viz.plot_sensor_hi_correlation(train_df)
 
     log.info(
         "\n%s",
