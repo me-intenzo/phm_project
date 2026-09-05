@@ -49,6 +49,7 @@ import sys
 import time
 from pathlib import Path
 
+
 import numpy as np
 import torch
 
@@ -56,6 +57,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
 from src.models.lstm import LSTMPrognosticsModel
@@ -89,7 +91,6 @@ from src.explainability.degradation_viz import (
 DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 XAI_DIR        = PROJECT_ROOT / "outputs" / "xai"
-LOG_DIR        = PROJECT_ROOT / "outputs" / "logs" / "xai"
 
 SEED            = 42
 DEFAULT_SAMPLES = 32
@@ -175,27 +176,7 @@ def parse_args() -> argparse.Namespace:
 # ─────────────────────────────────────────────────────────────────────
 
 def setup_logger(subset: str, model_name: str, target: str) -> logging.Logger:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"xai_{subset}_{model_name}_{target}.log"
-
-    logger = logging.getLogger(f"xai.{subset}.{model_name}.{target}")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    fh = logging.FileHandler(log_file, mode="w")
-    fh.setFormatter(fmt)
-    sh = logging.StreamHandler(
-        open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
-    )
-    sh.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.addHandler(sh)
-    logger.propagate = False
-    return logger
+    return get_script_logger("xai", f"xai_{subset}_{model_name}_{target}")
 
 
 # ─────────────────────────────────────────────────────────────────────

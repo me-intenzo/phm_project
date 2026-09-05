@@ -5,6 +5,7 @@ __pycache__/
 .idea/
 docs/
 *.zip
+.pytest_cache/
 
 outputs/
 data/raw/

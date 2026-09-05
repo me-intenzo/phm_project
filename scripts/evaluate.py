@@ -22,7 +22,6 @@ python scripts/evaluate.py --model gru_att_deg
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
@@ -38,6 +37,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.logger import get_script_logger
 from src.models.evaluator import PrognosticsEvaluator
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
@@ -70,12 +70,6 @@ RESULTS_DIR = (
     PROJECT_ROOT
     / "outputs"
     / "results"
-)
-
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
 )
 
 BATCH_SIZE = 64
@@ -111,40 +105,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
-
-
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-def configure_logging(
-    model_name: str,
-    subset: str,
-) -> logging.Logger:
-
-    log_dir = LOG_DIR / "evaluation"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)-8s | "
-            "%(message)s"
-        ),
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(
-                log_dir
-                / f"evaluate_{subset}_{model_name}.log",
-                mode="w",
-            ),
-        ],
-        force=True,
-    )
-
-    return logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -346,7 +306,7 @@ def predict(
 
 def run(model_name: str, subset: str) -> None:
     """Run the full evaluation pipeline for a single model/subset combination."""
-    log = configure_logging(model_name, subset)
+    log = get_script_logger("evaluation", f"evaluate_{subset}_{model_name}")
 
     device = get_device()
 

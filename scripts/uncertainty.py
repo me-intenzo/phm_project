@@ -33,7 +33,6 @@ Engine-disjoint split is reproduced with the same seed as training.
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
@@ -46,6 +45,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
 from src.models.hybrid import HybridPrognosticsModel
@@ -66,7 +66,6 @@ from src.uncertainty.coverage import evaluate_interval
 DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 RESULTS_DIR    = PROJECT_ROOT / "outputs" / "results"
-LOG_DIR        = PROJECT_ROOT / "outputs" / "logs"
 
 SEED            = 42
 BATCH_SIZE      = 64
@@ -74,7 +73,7 @@ VALIDATION_SIZE = 0.20
 HIDDEN_SIZE     = 128
 NUM_LAYERS      = 2
 DROPOUT         = 0.3
-N_REGIMES       = 6
+N_REGIMES       = 7  # optimal: regime sweep (k=2..10) → best composite score at k=7
 COVERAGE_LEVELS = (0.80, 0.90, 0.95)
 ALL_SUBSETS     = ["FD001", "FD002", "FD003", "FD004"]
 
@@ -127,32 +126,6 @@ def parse_args() -> argparse.Namespace:
         help="Number of operating-condition regimes (k-means clusters).",
     )
     return parser.parse_args()
-
-
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-def configure_logging(subset: str, model_name: str) -> logging.Logger:
-    log_dir = LOG_DIR / "uncertainty"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    logger = logging.getLogger(f"uncertainty.{subset}.{model_name}")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    fh = logging.FileHandler(log_dir / f"uncertainty_{subset}_{model_name}.log", mode="w")
-    fh.setFormatter(fmt)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.addHandler(sh)
-    logger.propagate = False
-    return logger
 
 
 # ------------------------------------------------------------------
@@ -253,7 +226,7 @@ def predict(model, X: np.ndarray, device: torch.device):
 
 def run(subset: str, model_name: str, n_reg: int) -> None:
     """Run EARA-Conformal estimation for a single subset/model combination."""
-    log    = configure_logging(subset, model_name)
+    log    = get_script_logger("uncertainty", f"uncertainty_{subset}_{model_name}")
     device = get_device()
 
     log.info("=" * 60)

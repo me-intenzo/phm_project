@@ -64,7 +64,7 @@ def _sensor_importance_from_shap(shap_explanation: dict) -> np.ndarray:
     return imp / total if total > 1e-12 else imp
 
 
-def _sensor_importance_from_attention(
+def _sensor_importance_from_temporal_relevance(
     attention_explanation: dict,
     ig_explanation: dict,
 ) -> np.ndarray:
@@ -137,7 +137,7 @@ def compute_eri(
     """
     imp_ig   = _sensor_importance_from_ig(ig_explanation)
     imp_shap = _sensor_importance_from_shap(shap_explanation)
-    imp_attn = _sensor_importance_from_attention(attention_explanation, ig_explanation)
+    imp_attn = _sensor_importance_from_temporal_relevance(attention_explanation, ig_explanation)
 
     rho_ig_attn = _spearman(imp_ig, imp_attn)
     rho_ig_shap = _spearman(imp_ig, imp_shap)
@@ -164,14 +164,14 @@ def compute_eri(
         "consensus_k": float(consensus),
         "top_k": top_k,
         "sensor_importance": {
-            "ig":        imp_ig.tolist(),
-            "shap":      imp_shap.tolist(),
-            "attention": imp_attn.tolist(),
+            "ig":               imp_ig.tolist(),
+            "shap":             imp_shap.tolist(),
+            "temporal_relevance": imp_attn.tolist(),
         },
         "sensor_ranks": {
-            "ig":        np.argsort(-imp_ig).tolist(),
-            "shap":      np.argsort(-imp_shap).tolist(),
-            "attention": np.argsort(-imp_attn).tolist(),
+            "ig":               np.argsort(-imp_ig).tolist(),
+            "shap":             np.argsort(-imp_shap).tolist(),
+            "temporal_relevance": np.argsort(-imp_attn).tolist(),
         },
         "interpretation": interpretation,
     }

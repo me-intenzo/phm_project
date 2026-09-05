@@ -10,7 +10,7 @@ torchvision==0.26.0+cu128
 scipy
 
 pyyaml
-
+pytest
 tqdm
 
 shap

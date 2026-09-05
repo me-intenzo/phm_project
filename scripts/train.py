@@ -39,7 +39,6 @@ python scripts/train.py --model gru_att_deg
 from __future__ import annotations
 
 import argparse
-import logging
 import random
 import sys
 from pathlib import Path
@@ -60,6 +59,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
@@ -95,12 +95,6 @@ RESULTS_DIR = (
     / "results"
 )
 
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
-)
-
 SEED = 42
 
 BATCH_SIZE = 256
@@ -124,47 +118,6 @@ DROPOUT = 0.3
 RUL_LOSS_WEIGHT = 1.0
 
 HI_LOSS_WEIGHT = 0.5
-
-
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-LOG_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-
-def configure_logging(model_name: str, subset: str) -> logging.Logger:
-    """
-    Configure model-specific logging.
-    """
-
-    log_dir = LOG_DIR / "training"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    log_path = log_dir / f"train_{subset}_{model_name}.log"
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)-8s | "
-            "%(message)s"
-        ),
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(
-                log_path,
-                mode="w",
-            ),
-        ],
-        force=True,
-    )
-
-    return logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -356,7 +309,7 @@ def build_model(
 
 def run(model_name: str, subset: str) -> None:
     """Run the full training pipeline for a single model/subset combination."""
-    log = configure_logging(model_name, subset)
+    log = get_script_logger("training", f"train_{subset}_{model_name}")
 
     set_seed(SEED)
 

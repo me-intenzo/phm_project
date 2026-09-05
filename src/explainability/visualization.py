@@ -506,7 +506,7 @@ def plot_temporal_importance(
     return {
         "ig": ig,
         "shap": shap,
-        "attention": attention,
+        "temporal_relevance": attention,
         "output_path": str(
             output_path
         ),
@@ -664,7 +664,7 @@ def plot_explanation(
     required = {
         "ig",
         "shap",
-        "attention",
+        "temporal_relevance",
     }
 
     if not required.issubset(
@@ -692,7 +692,7 @@ def plot_explanation(
         plot_temporal_importance(
             ig_explanation=explanation["ig"],
             shap_explanation=explanation["shap"],
-            attention_explanation=explanation["attention"],
+            attention_explanation=explanation["temporal_relevance"],
             output_dir=output_dir,
             target=target,
         )

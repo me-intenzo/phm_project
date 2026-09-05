@@ -11,11 +11,12 @@ Load → Validate → Summary → Visualize → Generate RUL/HI
 """
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.utils.logger import get_script_logger
 
 from src.preprocessing.feature_selection import FeatureSelector
 from src.preprocessing.labeling import LabelGenerator
@@ -25,22 +26,11 @@ from src.preprocessing.validator import DatasetValidator
 from src.preprocessing.visualization import DatasetVisualizer
 from src.preprocessing.windowing import WindowGenerator
 
-# ------------------------------------------------------------------ #
-# Logging
-# ------------------------------------------------------------------ #
-
-log = logging.getLogger(__name__)
-
 DEFAULT_SUBSET = "FD001"
 ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 PROCESSED_DIR = Path("data/processed")
 MODELS_DIR = Path("outputs/models")
 
-
-def _step(name: str) -> None:
-    log.info("=" * 50)
-    log.info("  %s", name)
-    log.info("=" * 50)
 
 def parse_args() -> argparse.Namespace:
     """
@@ -60,70 +50,8 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def setup_logging(subset: str) -> logging.Logger:
-
-    log_dir = (
-        Path("outputs")
-        / "logs"
-        / "preprocessing"
-    )
-
-    log_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    log_file = (
-        log_dir
-        / f"preprocess_{subset}.log"
-    )
-
-    logger = logging.getLogger(
-        "preprocessing"
-    )
-
-    logger.setLevel(
-        logging.INFO
-    )
-
-    logger.handlers.clear()
-
-    formatter = logging.Formatter(
-        "%(asctime)s | "
-        "%(levelname)-8s | "
-        "%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    console_handler = (
-        logging.StreamHandler(sys.stdout)
-    )
-
-    console_handler.setFormatter(
-        formatter
-    )
-
-    file_handler = (
-        logging.FileHandler(
-            log_file,
-            mode="w",
-            encoding="utf-8",
-        )
-    )
-
-    file_handler.setFormatter(
-        formatter
-    )
-
-    logger.addHandler(
-        console_handler
-    )
-
-    logger.addHandler(
-        file_handler
-    )
-
-    return logger
+def setup_logging(subset: str):
+    return get_script_logger("preprocessing", f"preprocess_{subset}")
 
 # ------------------------------------------------------------------ #
 # Pipeline
@@ -132,6 +60,8 @@ def setup_logging(subset: str) -> logging.Logger:
 def run(subset: str) -> None:
     """Run the full preprocessing pipeline for a single subset."""
     log = setup_logging(subset)
+    _step = lambda name: (log.info("=" * 50), log.info("  %s", name), log.info("=" * 50))
+    _step = lambda name: (log.info("=" * 50), log.info("  %s", name), log.info("=" * 50))
 
     figures_dir = Path("outputs") / "figures" / subset
     figures_dir.mkdir(parents=True, exist_ok=True)
