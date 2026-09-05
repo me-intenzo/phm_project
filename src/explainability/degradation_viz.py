@@ -140,6 +140,7 @@ def plot_engine_degradation(
 def plot_multi_model_degradation(
     model_hi_dict: dict[str, np.ndarray],
     rul_true: np.ndarray,
+    model_rul_dict: dict[str, np.ndarray] | None = None,
     engine_id: int = 1,
     output_dir: str = "outputs/xai",
     subset: str = "FD001",
@@ -177,9 +178,20 @@ def plot_multi_model_degradation(
 
     ax2 = axes[1]
     ax2.plot(cycles, rul_true, color="#4CAF50", lw=2.5, label="True RUL")
+    if model_rul_dict:
+        for idx, (mname, rul) in enumerate(model_rul_dict.items()):
+            rul = _to_numpy(rul).ravel()
+            ax2.plot(
+                cycles[:len(rul)],
+                rul,
+                lw=1.7,
+                ls="--",
+                color=colors[idx % len(colors)],
+                label=f"{mname} predicted RUL",
+            )
     ax2.set_xlabel("Operational Cycle")
     ax2.set_ylabel("RUL (cycles)")
-    ax2.set_title("True RUL Reference", fontsize=9)
+    ax2.set_title("RUL Predictions vs Ground Truth", fontsize=9)
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.2)
 

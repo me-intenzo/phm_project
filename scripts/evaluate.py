@@ -29,7 +29,6 @@ python scripts/evaluate.py --model gru_att_deg
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
@@ -46,11 +45,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-# ------------------------------------------------------------------
-# Project imports
-# ------------------------------------------------------------------
-
 from src.models.evaluator import PrognosticsEvaluator
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
@@ -63,7 +57,7 @@ from src.models.gru_att_deg import GruAttDeg
 # Configuration
 # ------------------------------------------------------------------
 
-DEFAULT_SUBSET = "FD001"
+SUBSET = "FD001"
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -81,12 +75,6 @@ RESULTS_DIR = (
     PROJECT_ROOT
     / "outputs"
     / "results"
-)
-
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
 )
 
 BATCH_SIZE = 64
@@ -115,22 +103,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["lstm", "gru", "transformer", "hybrid", "gru_att_deg"],
-        required=True,
-        help="Model architecture to evaluate.",
+        default="lstm",
+        help="Model architecture to evaluate, or 'all'.",
     )
 
     parser.add_argument(
-        "--subset",
-        type=str,
-        choices=[
-            "FD001",
-            "FD002",
-            "FD003",
-            "FD004",
-        ],
-        default=DEFAULT_SUBSET,
-        help="C-MAPSS subset to evaluate.",
+    "--subset",
+    type=str,
+    choices=[
+        "FD001",
+        "FD002",
+        "FD003",
+        "FD004",
+    ],
+    default="FD001",
+    help="C-MAPSS subset to evaluate.",
     )
 
     return parser.parse_args()
@@ -144,21 +131,9 @@ def configure_logging(
     model_name: str,
     subset: str,
 ) -> logging.Logger:
-    """
-    Configure model-specific evaluation logging.
-    """
 
     log_dir = LOG_DIR / "evaluation"
-
-    log_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    log_path = (
-        log_dir
-        / f"evaluate_{subset}_{model_name}.log"
-    )
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -171,9 +146,9 @@ def configure_logging(
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
-                log_path,
+                log_dir
+                / f"evaluate_{subset}_{model_name}.log",
                 mode="w",
-                encoding="utf-8",
             ),
         ],
         force=True,
@@ -517,7 +492,7 @@ def predict(
 # Main
 # ------------------------------------------------------------------
 
-def main() -> None:
+def main():
 
     args = parse_args()
 
@@ -526,13 +501,8 @@ def main() -> None:
     subset = args.subset
 
     log = configure_logging(
-        model_name,
-        subset,
+        model_name, subset
     )
-
-    # --------------------------------------------------------------
-    # Device
-    # --------------------------------------------------------------
 
     device = get_device()
 
@@ -721,14 +691,6 @@ def main() -> None:
         prediction_path.resolve(),
     )
 
-    log.info(
-        "Evaluation completed successfully."
-    )
-
-
-# ------------------------------------------------------------------
-# Entry Point
-# ------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,9 @@
+{
+  "engine_id": 42,
+  "rul": 5.0,
+  "hi": 0.10,
+  "rul_lower": 0.0,
+  "rul_upper": 15.0,
+  "eri": 0.30,
+  "top_k_sensors": [3, 8, 12]
+}

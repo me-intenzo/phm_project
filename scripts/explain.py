@@ -49,6 +49,7 @@ import sys
 import time
 from pathlib import Path
 
+
 import numpy as np
 import torch
 
@@ -56,11 +57,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
+from src.preprocessing.feature_selection import FeatureSelector
+from src.preprocessing.labeling import LabelGenerator
+from src.preprocessing.loader import CMAPSSLoader
+from src.preprocessing.scaling import FeatureScaler
+from src.preprocessing.windowing import WindowGenerator
 
 from src.explainability.integrated_gradients import explain_with_integrated_gradients
 from src.explainability.shap_explainer import explain_with_shap
@@ -84,7 +91,6 @@ from src.explainability.degradation_viz import (
 DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 XAI_DIR        = PROJECT_ROOT / "outputs" / "xai"
-LOG_DIR        = PROJECT_ROOT / "outputs" / "logs" / "xai"
 
 SEED            = 42
 DEFAULT_SAMPLES = 32
@@ -170,27 +176,7 @@ def parse_args() -> argparse.Namespace:
 # ─────────────────────────────────────────────────────────────────────
 
 def setup_logger(subset: str, model_name: str, target: str) -> logging.Logger:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"xai_{subset}_{model_name}_{target}.log"
-
-    logger = logging.getLogger(f"xai.{subset}.{model_name}.{target}")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    fh = logging.FileHandler(log_file, mode="w")
-    fh.setFormatter(fmt)
-    sh = logging.StreamHandler(
-        open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
-    )
-    sh.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.addHandler(sh)
-    logger.propagate = False
-    return logger
+    return get_script_logger("xai", f"xai_{subset}_{model_name}_{target}")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -203,6 +189,29 @@ def load_data(subset: str):
     y_hi  = np.load(DATA_DIR / f"{subset}_test_y_hi.npy")
     ids   = np.load(DATA_DIR / f"{subset}_test_engine_ids.npy")
     return X, y_rul, y_hi, ids
+
+
+def load_visualization_data(subset: str):
+    """Build sliding test windows so engine plots contain full trajectories."""
+    loader = CMAPSSLoader()
+    train_df, test_df, rul_df = loader.load_dataset(subset)
+    max_cycles = test_df.groupby("unit_number")["time_in_cycles"].transform("max")
+    test_df["RUL"] = (
+        max_cycles
+        - test_df["time_in_cycles"]
+        + rul_df["RUL"].reindex(test_df["unit_number"] - 1).values
+    ).clip(upper=125)
+    test_df["HI"] = test_df.groupby("unit_number")["RUL"].transform(
+        lambda values: values / values.max()
+    ).fillna(0)
+
+    selector = FeatureSelector(method="variance", threshold=1e-4)
+    train_df = selector.fit_transform(train_df.assign(**LabelGenerator(125).generate_labels(train_df)[["RUL", "HI"]]))
+    test_df = selector.transform(test_df)
+    scaler = FeatureScaler()
+    train_df = scaler.fit_transform(train_df)
+    test_df = scaler.transform(test_df)
+    return WindowGenerator(window_size=40, stride=1).create_windows(test_df)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -320,7 +329,8 @@ def generate_html_report(
                 f'<img src="{mname}/{p.name}" width="700" '
                 f'style="border:1px solid #ddd;border-radius:4px">'
                 f'<figcaption style="color:#555;font-size:13px;margin-top:6px">'
-                f'{mname} — Engine degradation trajectory</figcaption>'
+                f'{mname} — {p.stem.replace("_", " ").title()}: '
+                f'predicted health index, temporal relevance, and RUL vs truth</figcaption>'
                 f'</figure>'
             )
 
@@ -479,7 +489,7 @@ def run_model_xai(
             rul_pred = preds[0].cpu().numpy()
 
         eng_attn = explain_attention(model=model, data=x_eng, target=target)
-        temporal_rel = eng_attn["temporal_relevance"].cpu().numpy().mean(axis=0)
+        temporal_rel = eng_attn["temporal_relevance"].cpu().numpy().mean(axis=1)
 
         plot_engine_degradation(
             hi_pred=hi_pred,
@@ -514,6 +524,7 @@ def run_model_xai(
     return {
         "eri": eri_result,
         "hi_pred": hi_pred if len(X_engine) > 0 else None,
+        "rul_pred": rul_pred if len(X_engine) > 0 else None,
         "output_dir": str(model_out_dir),
     }
 
@@ -544,13 +555,15 @@ def main():
         num_samples = min(args.samples, len(X))
         X_explain   = X[:num_samples]
 
+        X_plot, y_rul_plot, y_hi_plot, plot_engine_ids = load_visualization_data(subset)
         X_engine, y_rul_engine, y_hi_engine, engine_uid = get_engine_sequences(
-            X, y_rul, y_hi, engine_ids, args.engine_id
+            X_plot, y_rul_plot, y_hi_plot, plot_engine_ids, args.engine_id
         )
 
         for target in targets:
             model_results: dict[str, dict] = {}
             model_hi_preds: dict[str, np.ndarray] = {}
+            model_rul_preds: dict[str, np.ndarray] = {}
 
             for model_name in models:
                 log = setup_logger(subset, model_name, target)
@@ -577,6 +590,8 @@ def main():
                     model_results[model_name] = result
                     if result["hi_pred"] is not None:
                         model_hi_preds[model_name] = result["hi_pred"]
+                    if result.get("rul_pred") is not None:
+                        model_rul_preds[model_name] = result["rul_pred"]
 
                     log.info("DONE — %s | %s | %s", subset, model_name, target.upper())
 
@@ -596,6 +611,7 @@ def main():
                 plot_multi_model_degradation(
                     model_hi_dict=model_hi_preds,
                     rul_true=y_rul_engine,
+                    model_rul_dict=model_rul_preds,
                     engine_id=engine_uid,
                     output_dir=subset_out,
                     subset=subset,

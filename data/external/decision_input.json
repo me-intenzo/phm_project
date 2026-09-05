@@ -1,0 +1,47 @@
+[
+  {
+    "engine_id": 1,
+    "rul": 5.2,
+    "hi": 0.12,
+    "rul_lower": 0.0,
+    "rul_upper": 14.8,
+    "eri": 0.89,
+    "top_k_sensors": [2, 11, 3, 6, 4]
+  },
+  {
+    "engine_id": 2,
+    "rul": 18.4,
+    "hi": 0.38,
+    "rul_lower": 10.2,
+    "rul_upper": 26.6,
+    "eri": 0.85,
+    "top_k_sensors": [11, 2, 4, 7, 3]
+  },
+  {
+    "engine_id": 3,
+    "rul": 38.7,
+    "hi": 0.62,
+    "rul_lower": 28.1,
+    "rul_upper": 49.3,
+    "eri": 0.72,
+    "top_k_sensors": [2, 3, 11, 4, 6]
+  },
+  {
+    "engine_id": 4,
+    "rul": 72.1,
+    "hi": 0.81,
+    "rul_lower": 65.0,
+    "rul_upper": 79.2,
+    "eri": 0.93,
+    "top_k_sensors": [11, 2, 4, 7, 3]
+  },
+  {
+    "engine_id": 5,
+    "rul": 22.0,
+    "hi": 0.41,
+    "rul_lower": 0.0,
+    "rul_upper": 60.0,
+    "eri": 0.45,
+    "top_k_sensors": [2, 11, 6, 3, 4]
+  }
+]

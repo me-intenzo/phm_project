@@ -441,16 +441,10 @@ def plot_temporal_importance(
 
     ax.plot(
         timesteps,
-        ig,
-        marker="o",
-        label="Integrated Gradients",
-    )
-
-    ax.plot(
-        timesteps,
         shap,
         marker="s",
         label="SHAP",
+        zorder=2,
     )
 
     ax.plot(
@@ -458,6 +452,19 @@ def plot_temporal_importance(
         attention,
         marker="^",
         label="Temporal Relevance",
+        zorder=3,
+    )
+
+    # Draw IG last so exact agreement with SHAP remains visible.
+    ax.plot(
+        timesteps,
+        ig,
+        marker="o",
+        markerfacecolor="white",
+        markeredgewidth=1.5,
+        linewidth=2.2,
+        label="Integrated Gradients",
+        zorder=4,
     )
 
     ax.set_xlabel(
@@ -499,7 +506,7 @@ def plot_temporal_importance(
     return {
         "ig": ig,
         "shap": shap,
-        "attention": attention,
+        "temporal_relevance": attention,
         "output_path": str(
             output_path
         ),
@@ -657,7 +664,7 @@ def plot_explanation(
     required = {
         "ig",
         "shap",
-        "attention",
+        "temporal_relevance",
     }
 
     if not required.issubset(
@@ -685,7 +692,7 @@ def plot_explanation(
         plot_temporal_importance(
             ig_explanation=explanation["ig"],
             shap_explanation=explanation["shap"],
-            attention_explanation=explanation["attention"],
+            attention_explanation=explanation["temporal_relevance"],
             output_dir=output_dir,
             target=target,
         )

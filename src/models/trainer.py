@@ -330,9 +330,9 @@ class ModelTrainer:
         self,
         train_loader,
         val_loader,
-        epochs=50,
-        patience=10,
-        min_delta=1e-4,
+        epochs=300,
+        patience=20,
+        min_delta=1e-5,
     ):
 
         history = {

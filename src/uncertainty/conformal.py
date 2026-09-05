@@ -36,7 +36,7 @@ _EPS: float = 1e-6
 
 def fit_regime_detector(
     X: np.ndarray,
-    n_regimes: int = 6,
+    n_regimes: int = 7,  # optimal per regime_sweep.py
     random_state: int = 42,
 ) -> KMeans:
     """
