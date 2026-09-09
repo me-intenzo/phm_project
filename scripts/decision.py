@@ -36,6 +36,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.decision_engine.recommender import recommend_action
@@ -45,7 +47,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
 REPORTS_DIR  = PROJECT_ROOT / "outputs" / "reports"
 ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
+ALL_MODELS   = ("hybrid", "lstm", "gru", "transformer")
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
+XAI_DIR      = PROJECT_ROOT / "outputs" / "xai"
+DEFAULT_MODEL  = "hybrid"
+INTERVAL_LEVEL = 90
+UNCERTAINTY_VARIANTS = (
+    "eara_conformal",
+    "conformal",
+    "adaptive_conformal",
+    "cqr",
+    "engine_joint_conformal",
+)
 
 
 # ---------------------------------------------------------------------
@@ -248,11 +261,74 @@ def load_input_records(path: str | Path) -> list[dict[str, Any]]:
 
 
 def resolve_input_path(subset: str) -> Path:
-    """Resolve a subset-specific input, falling back to the shared input."""
+    """Resolve the legacy JSON input for compatibility."""
     subset = subset.upper()
     subset_path = EXTERNAL_DIR / f"decision_input_{subset}.json"
     default_path = EXTERNAL_DIR / "decision_input.json"
     return subset_path if subset_path.exists() else default_path
+
+
+def load_upstream_records(subset: str, model_name: str = DEFAULT_MODEL) -> list[dict[str, Any]]:
+    """Build decision records from uncertainty and explainability outputs."""
+    subset = subset.upper()
+    model_name = model_name.lower()
+    if model_name not in ALL_MODELS:
+        raise ValueError(f"Unsupported decision model: {model_name}")
+
+    prediction_path = RESULTS_DIR / f"{subset}_{model_name}_predictions.npz"
+    uncertainty_path = next(
+        (
+            RESULTS_DIR / f"{subset}_{model_name}_{variant}.npz"
+            for variant in UNCERTAINTY_VARIANTS
+            if (RESULTS_DIR / f"{subset}_{model_name}_{variant}.npz").exists()
+        ),
+        RESULTS_DIR / f"{subset}_{model_name}_{UNCERTAINTY_VARIANTS[0]}.npz",
+    )
+    eri_path = XAI_DIR / subset / model_name / "eri_rul.json"
+
+    missing = [
+        path for path in (prediction_path, uncertainty_path, eri_path)
+        if not path.exists()
+    ]
+    if missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(
+            f"Missing upstream decision artifact(s) for {subset}: {missing_text}. "
+            f"Run uncertainty.py and explain.py with --subset {subset} "
+            f"--model {model_name}."
+        )
+
+    with np.load(prediction_path) as predictions, np.load(uncertainty_path) as uncertainty:
+        rul = np.asarray(uncertainty["y_rul_pred"]).reshape(-1)
+        hi = np.clip(np.asarray(predictions["y_hi_pred"]).reshape(-1), 0.0, 1.0)
+        lower = np.asarray(uncertainty[f"lower_{INTERVAL_LEVEL}"]).reshape(-1)
+        upper = np.asarray(uncertainty[f"upper_{INTERVAL_LEVEL}"]).reshape(-1)
+
+        count = min(len(rul), len(hi), len(lower), len(upper))
+        records = [
+            {
+                "engine_id": index + 1,
+                "rul": rul[index],
+                "hi": hi[index],
+                "rul_lower": lower[index],
+                "rul_upper": upper[index],
+            }
+            for index in range(count)
+        ]
+
+    eri_data = load_json(eri_path)
+    eri = eri_data.get("eri")
+    if eri is None:
+        raise ValueError(f"XAI output does not contain 'eri': {eri_path}")
+    importance = eri_data.get("sensor_importance", {}).get("ig", [])
+    top_k_sensors = [
+        index + 1
+        for index in np.argsort(np.asarray(importance))[::-1][:5]
+    ]
+    for record in records:
+        record["eri"] = eri
+        record["top_k_sensors"] = top_k_sensors
+    return records
 
 
 # ---------------------------------------------------------------------
@@ -425,6 +501,13 @@ def parse_args() -> argparse.Namespace:
         choices=[*ALL_SUBSETS, "all", *[subset.lower() for subset in ALL_SUBSETS]],
         help="C-MAPSS subset to process, or 'all'.",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        choices=[*ALL_MODELS, "all"],
+        help="Prognostics model to process, or 'all'.",
+    )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
     parser.add_argument("--maintenance-window",    action="store_true", default=False)
@@ -475,65 +558,89 @@ def _merge_xai_context(
 # Main
 # ---------------------------------------------------------------------
 
+def run_subset(
+    subset: str,
+    model_name: str,
+    args: argparse.Namespace,
+    constraints: dict[str, Any],
+) -> None:
+    stem = f"{subset}_{model_name}"
+    log = get_script_logger("decision", f"decision_{stem}")
+    result_path = RESULTS_DIR / f"decision_{stem}.json"
+    report_path = REPORTS_DIR / f"decision_{stem}.html"
+
+    log.info("=" * 60)
+    log.info("O4 EXPLAINABLE DECISION INTELLIGENCE ENGINE")
+    log.info("=" * 60)
+    log.info("Subset : %s", subset)
+    log.info("Model  : %s", model_name)
+    log.info(
+        "Input  : outputs/results/%s_%s_* + outputs/xai/%s/%s",
+        subset, model_name, subset, model_name,
+    )
+    log.info("Result : %s", result_path)
+    log.info("Report : %s", report_path)
+
+    records = load_upstream_records(subset, model_name)
+    log.info(
+        "Loaded %d decision record(s) from %s uncertainty and %s XAI outputs.",
+        len(records), model_name, model_name,
+    )
+    records = _merge_xai_context(records, args.xai_context)
+
+    if constraints:
+        log.info("Operational constraints:")
+        for key, value in constraints.items():
+            log.info("  %s: %s", key, value)
+    else:
+        log.info("No additional operational constraints supplied.")
+
+    log.info("Generating maintenance recommendations...")
+    decisions = process_records(records=records, constraints=constraints)
+    summary = summarize_decisions(decisions)
+
+    log.info("Decisions             : %d", summary["num_decisions"])
+    log.info("Human review required : %d", summary["human_review_count"])
+    log.info("Constraint violations : %d", summary["constraint_violation_count"])
+
+    output = {
+        "objective": "O4",
+        "description": (
+            "Explainable Decision Intelligence Engine "
+            "for maintenance recommendation."
+        ),
+        "subset": subset,
+        "model": model_name,
+        "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
+                   "top_k_sensors", "operational constraints"],
+        "summary": summary,
+        "decisions": decisions,
+    }
+
+    save_json(output, result_path)
+    log.info("Result saved  : %s", result_path)
+
+    html = build_html_report(output, stem)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(html, encoding="utf-8")
+    log.info("Report saved  : %s", report_path)
+    log.info("DECISION ENGINE COMPLETE FOR %s / %s", subset, model_name)
+
+
 def main() -> None:
-    args  = parse_args()
+    args = parse_args()
     subsets = ALL_SUBSETS if args.subset.lower() == "all" else (args.subset.upper(),)
+    models = ALL_MODELS if args.model.lower() == "all" else (args.model.lower(),)
     constraints = build_constraints(args)
 
     for subset in subsets:
-        input_path = resolve_input_path(subset)
-        stem = subset
-        log = get_script_logger("decision", f"decision_{stem}")
-        result_path = RESULTS_DIR / f"decision_{stem}.json"
-        report_path = REPORTS_DIR / f"decision_{stem}.html"
-
-        log.info("=" * 60)
-        log.info("O4 EXPLAINABLE DECISION INTELLIGENCE ENGINE")
-        log.info("=" * 60)
-        log.info("Subset : %s", subset)
-        log.info("Input  : %s", input_path)
-        log.info("Result : %s", result_path)
-        log.info("Report : %s", report_path)
-
-        records = _merge_xai_context(load_input_records(input_path), args.xai_context)
-        log.info("Loaded %d decision record(s).", len(records))
-
-        if constraints:
-            log.info("Operational constraints:")
-            for k, v in constraints.items():
-                log.info("  %s: %s", k, v)
-        else:
-            log.info("No additional operational constraints supplied.")
-
-        log.info("Generating maintenance recommendations...")
-        decisions = process_records(records=records, constraints=constraints)
-        summary = summarize_decisions(decisions)
-
-        log.info("Decisions             : %d", summary["num_decisions"])
-        log.info("Human review required : %d", summary["human_review_count"])
-        log.info("Constraint violations : %d", summary["constraint_violation_count"])
-
-        output = {
-            "objective": "O4",
-            "description": (
-                "Explainable Decision Intelligence Engine "
-                "for maintenance recommendation."
-            ),
-            "subset": subset,
-            "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
-                       "top_k_sensors", "operational constraints"],
-            "summary": summary,
-            "decisions": decisions,
-        }
-
-        save_json(output, result_path)
-        log.info("Result saved  : %s", result_path)
-
-        html = build_html_report(output, stem)
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(html, encoding="utf-8")
-        log.info("Report saved  : %s", report_path)
-        log.info("DECISION ENGINE COMPLETE FOR %s", subset)
+        for model_name in models:
+            run_subset(
+                subset=subset,
+                model_name=model_name,
+                args=args,
+                constraints=constraints,
+            )
 
 
 if __name__ == "__main__":
