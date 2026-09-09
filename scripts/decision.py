@@ -44,6 +44,8 @@ from src.utils.logger import get_script_logger
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
 REPORTS_DIR  = PROJECT_ROOT / "outputs" / "reports"
+ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
+EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
 
 
 # ---------------------------------------------------------------------
@@ -245,6 +247,14 @@ def load_input_records(path: str | Path) -> list[dict[str, Any]]:
     )
 
 
+def resolve_input_path(subset: str) -> Path:
+    """Resolve a subset-specific input, falling back to the shared input."""
+    subset = subset.upper()
+    subset_path = EXTERNAL_DIR / f"decision_input_{subset}.json"
+    default_path = EXTERNAL_DIR / "decision_input.json"
+    return subset_path if subset_path.exists() else default_path
+
+
 # ---------------------------------------------------------------------
 # HTML report
 # ---------------------------------------------------------------------
@@ -408,8 +418,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="O4 Explainable Decision Intelligence Engine"
     )
-    parser.add_argument("--input",  type=str, required=True,
-                        help="JSON file containing O1/O2/O3 outputs.")
+    parser.add_argument(
+        "--subset",
+        type=str,
+        default="all",
+        choices=[*ALL_SUBSETS, "all", *[subset.lower() for subset in ALL_SUBSETS]],
+        help="C-MAPSS subset to process, or 'all'.",
+    )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
     parser.add_argument("--maintenance-window",    action="store_true", default=False)
@@ -462,89 +477,63 @@ def _merge_xai_context(
 
 def main() -> None:
     args  = parse_args()
-    stem  = Path(args.input).stem                          # e.g. "decision_input"
-    log   = get_script_logger("decision", f"decision_{stem}")
-
-    result_path = RESULTS_DIR / f"decision_{stem}.json"
-    report_path = REPORTS_DIR / f"decision_{stem}.html"
-
-    log.info("=" * 60)
-    log.info("O4 EXPLAINABLE DECISION INTELLIGENCE ENGINE")
-    log.info("=" * 60)
-    log.info("Input  : %s", args.input)
-    log.info("Result : %s", result_path)
-    log.info("Report : %s", report_path)
-
-    records = load_input_records(args.input)
-    records = _merge_xai_context(records, args.xai_context)
-    log.info("Loaded %d decision record(s).", len(records))
-
+    subsets = ALL_SUBSETS if args.subset.lower() == "all" else (args.subset.upper(),)
     constraints = build_constraints(args)
-    if constraints:
-        log.info("Operational constraints:")
-        for k, v in constraints.items():
-            log.info("  %s: %s", k, v)
-    else:
-        log.info("No additional operational constraints supplied.")
 
-    log.info("Generating maintenance recommendations...")
-    decisions = process_records(records=records, constraints=constraints)
-    summary   = summarize_decisions(decisions)
+    for subset in subsets:
+        input_path = resolve_input_path(subset)
+        stem = subset
+        log = get_script_logger("decision", f"decision_{stem}")
+        result_path = RESULTS_DIR / f"decision_{stem}.json"
+        report_path = REPORTS_DIR / f"decision_{stem}.html"
 
-    log.info("-" * 60)
-    log.info("DECISION SUMMARY")
-    log.info("-" * 60)
-    log.info("Decisions             : %d", summary["num_decisions"])
-    log.info("Human review required : %d", summary["human_review_count"])
-    log.info("Constraint violations : %d", summary["constraint_violation_count"])
-    if "risk_score_mean" in summary:
-        log.info(
-            "Risk score            : mean=%.4f  max=%.4f",
-            summary["risk_score_mean"], summary["risk_score_max"],
-        )
-    if "urgency_index_mean" in summary:
-        log.info(
-            "Urgency index         : mean=%.4f  max=%.4f",
-            summary["urgency_index_mean"], summary["urgency_index_max"],
-        )
+        log.info("=" * 60)
+        log.info("O4 EXPLAINABLE DECISION INTELLIGENCE ENGINE")
+        log.info("=" * 60)
+        log.info("Subset : %s", subset)
+        log.info("Input  : %s", input_path)
+        log.info("Result : %s", result_path)
+        log.info("Report : %s", report_path)
 
-    log.info("Health states:")
-    for k, v in summary["health_state_distribution"].items():
-        log.info("  %-20s : %d", k, v)
+        records = _merge_xai_context(load_input_records(input_path), args.xai_context)
+        log.info("Loaded %d decision record(s).", len(records))
 
-    log.info("Uncertainty levels:")
-    for k, v in summary["uncertainty_distribution"].items():
-        log.info("  %-20s : %d", k, v)
+        if constraints:
+            log.info("Operational constraints:")
+            for k, v in constraints.items():
+                log.info("  %s: %s", k, v)
+        else:
+            log.info("No additional operational constraints supplied.")
 
-    log.info("Recommended actions:")
-    for k, v in summary["action_distribution"].items():
-        log.info("  %-20s : %d", k, v)
+        log.info("Generating maintenance recommendations...")
+        decisions = process_records(records=records, constraints=constraints)
+        summary = summarize_decisions(decisions)
 
-    output = {
-        "objective":   "O4",
-        "description": (
-            "Explainable Decision Intelligence Engine "
-            "for maintenance recommendation."
-        ),
-        "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
-                   "top_k_sensors", "operational constraints"],
-        "summary":   summary,
-        "decisions": decisions,
-    }
+        log.info("Decisions             : %d", summary["num_decisions"])
+        log.info("Human review required : %d", summary["human_review_count"])
+        log.info("Constraint violations : %d", summary["constraint_violation_count"])
 
-    # ── Result JSON ───────────────────────────────────────────────
-    save_json(output, result_path)
-    log.info("Result saved  : %s", result_path)
+        output = {
+            "objective": "O4",
+            "description": (
+                "Explainable Decision Intelligence Engine "
+                "for maintenance recommendation."
+            ),
+            "subset": subset,
+            "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
+                       "top_k_sensors", "operational constraints"],
+            "summary": summary,
+            "decisions": decisions,
+        }
 
-    # ── HTML report ───────────────────────────────────────────────
-    html = build_html_report(output, stem)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(html, encoding="utf-8")
-    log.info("Report saved  : %s", report_path)
+        save_json(output, result_path)
+        log.info("Result saved  : %s", result_path)
 
-    log.info("=" * 60)
-    log.info("DECISION ENGINE COMPLETE")
-    log.info("=" * 60)
+        html = build_html_report(output, stem)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(html, encoding="utf-8")
+        log.info("Report saved  : %s", report_path)
+        log.info("DECISION ENGINE COMPLETE FOR %s", subset)
 
 
 if __name__ == "__main__":

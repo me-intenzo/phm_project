@@ -138,10 +138,10 @@ Most stages require processed arrays and/or a trained checkpoint from the previo
 The decision engine accepts one record, a list of records, or an object containing a `records` list. Example inputs are provided in `data/external/`.
 
 ```powershell
-python scripts/decision.py --input data/external/decision_input.json
+python scripts/decision.py --subset all
 
 python scripts/decision.py `
-  --input data/external/decision_input.json `
+  --subset FD001 `
   --minimum-safe-rul 10 `
   --maintenance-lead-time 10 `
   --no-maintenance-window
