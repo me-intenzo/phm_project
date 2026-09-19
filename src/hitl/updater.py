@@ -4,5 +4,5 @@ from __future__ import annotations
 
 
 def update_model(model, feedback):
-    """Return the model unchanged as a placeholder."""
+    """Keep model adaptation explicit until an online learner is implemented."""
     return model
