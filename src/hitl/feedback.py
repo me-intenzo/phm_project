@@ -2,9 +2,8 @@
 Human-in-the-loop feedback representation and validation.
 
 O5 captures expert validation/override decisions generated from O4.
-The feedback is kept independent of the prognostic model so that
-human feedback refines decision support rather than directly
-modifying the GRU/RUL/HI model.
+Human feedback refines the decision policy; it does not retrain the
+prognostic model.
 
 author: me-intenzo
 """
@@ -27,9 +26,7 @@ VALID_ACTIONS = {
 
 @dataclass
 class ExpertFeedback:
-    """
-    Structured expert feedback for one O4 recommendation.
-    """
+    """Structured expert feedback for one O4 recommendation."""
 
     engine_id: Any
     subset: str
@@ -50,11 +47,18 @@ class ExpertFeedback:
     uncertainty_level: Optional[str] = None
     explanation_reliability: Optional[str] = None
 
+    # Audit metadata
+    review_id: Optional[str] = None
+    source_decision_output: Optional[str] = None
+
     timestamp: str = ""
 
     def __post_init__(self) -> None:
         self.subset = str(self.subset).upper()
         self.model = str(self.model).lower()
+
+        self.ai_action = str(self.ai_action).upper()
+        self.expert_action = str(self.expert_action).upper()
 
         if self.ai_action not in VALID_ACTIONS:
             raise ValueError(
@@ -66,22 +70,26 @@ class ExpertFeedback:
                 f"Invalid expert action: {self.expert_action}"
             )
 
-        if not 0.0 <= float(self.expert_confidence) <= 1.0:
+        self.expert_confidence = float(self.expert_confidence)
+
+        if not 0.0 <= self.expert_confidence <= 1.0:
             raise ValueError(
                 "expert_confidence must be in [0, 1]."
             )
 
-        self.expert_confidence = float(self.expert_confidence)
+        self.reason = str(self.reason).strip()
 
-        # Override is determined from the actual actions rather than
-        # trusting an independently supplied boolean.
+        if not self.reason:
+            raise ValueError("reason must not be empty.")
+
+        # These values are derived from the actual actions.
         self.override = self.ai_action != self.expert_action
+        self.decision_valid = not self.override
 
         if not self.timestamp:
             self.timestamp = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the feedback as a serializable dictionary."""
         return asdict(self)
 
 
@@ -99,16 +107,10 @@ def create_feedback(
     health_state: Optional[str] = None,
     uncertainty_level: Optional[str] = None,
     explanation_reliability: Optional[str] = None,
+    review_id: Optional[str] = None,
+    source_decision_output: Optional[str] = None,
 ) -> dict[str, Any]:
-    """
-    Create and validate a structured expert feedback record.
-
-    decision_valid is automatically derived from whether the expert
-    agrees with the AI recommendation.
-    """
-
-    ai_action = str(ai_action).upper()
-    expert_action = str(expert_action).upper()
+    """Create and validate one expert feedback record."""
 
     feedback = ExpertFeedback(
         engine_id=engine_id,
@@ -116,26 +118,24 @@ def create_feedback(
         model=model,
         ai_action=ai_action,
         expert_action=expert_action,
-        decision_valid=(ai_action == expert_action),
-        override=(ai_action != expert_action),
+        decision_valid=False,
+        override=False,
         expert_confidence=expert_confidence,
-        reason=str(reason).strip(),
+        reason=reason,
         risk_score=risk_score,
         urgency_index=urgency_index,
         health_state=health_state,
         uncertainty_level=uncertainty_level,
         explanation_reliability=explanation_reliability,
+        review_id=review_id,
+        source_decision_output=source_decision_output,
     )
 
     return feedback.to_dict()
 
 
 def validate_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
-    """
-    Validate an externally supplied feedback dictionary.
-
-    Returns a normalized copy.
-    """
+    """Validate and normalize an externally supplied feedback record."""
 
     required = {
         "engine_id",
@@ -169,14 +169,20 @@ def validate_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
         explanation_reliability=feedback.get(
             "explanation_reliability"
         ),
+        review_id=feedback.get("review_id"),
+        source_decision_output=feedback.get(
+            "source_decision_output"
+        ),
     )
 
 
-def store_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
+def store_feedback(
+    feedback: dict[str, Any] | ExpertFeedback,
+) -> dict[str, Any]:
     """
     Validate and normalize feedback.
 
-    Persistence is handled by logger.py.
+    Persistence is intentionally handled by logger.py.
     """
 
     if isinstance(feedback, ExpertFeedback):

@@ -1,14 +1,18 @@
 """
 Human-in-the-loop decision-policy refinement.
 
-This does not retrain the prognostic model. Instead, accumulated expert
-feedback is used to estimate systematic decision-policy corrections.
+O5 does not retrain the prognostic model.
 
-The updater is deliberately conservative:
-    - insufficient feedback -> no adaptation
-    - low-confidence feedback -> reduced influence
-    - safety-critical actions are never weakened automatically
-    - adaptation is based on repeated evidence rather than one override
+Instead:
+    accumulated expert feedback
+            ↓
+    empirical policy profile
+            ↓
+    conservative consensus check
+            ↓
+    recommendation refinement
+            ↓
+    operational constraint re-check
 
 author: me-intenzo
 """
@@ -18,51 +22,97 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Optional
 
+from src.decision_engine.constraints import check_constraints
 from src.hitl.feedback import VALID_ACTIONS
 from src.hitl.logger import load_feedback
 
 
-# Minimum number of consistent expert observations required before
-# automatically changing a recommendation.
+# ---------------------------------------------------------------------
+# Conservative adaptation thresholds
+# ---------------------------------------------------------------------
+
 MIN_SUPPORT = 3
 
-# Minimum weighted expert support required for a refinement.
 MIN_WEIGHTED_SUPPORT = 2.0
 
-# Safety-critical actions.
+MIN_CONSENSUS_RATIO = 0.70
+
+
 SAFETY_CRITICAL_ACTIONS = {
     "URGENT_MAINTENANCE",
 }
 
 
-def _feedback_weight(record: dict[str, Any]) -> float:
-    """
-    Weight feedback according to expert confidence.
-    """
+def _feedback_weight(
+    record: dict[str, Any],
+) -> float:
+    """Use expert confidence as feedback weight."""
 
     confidence = float(
-        record.get("expert_confidence", 0.0)
+        record.get(
+            "expert_confidence",
+            0.0,
+        )
     )
 
-    return max(0.0, min(1.0, confidence))
+    return max(
+        0.0,
+        min(
+            1.0,
+            confidence,
+        ),
+    )
 
 
 def _state_key(
     record: dict[str, Any],
 ) -> tuple[str, str, str, str, str]:
     """
-    Build a coarse decision-state key.
+    Group feedback by decision context rather than engine identity.
 
-    This avoids learning from engine identity alone and instead
-    groups feedback by the decision context.
+    Context:
+        subset
+        model
+        health state
+        uncertainty level
+        explanation reliability
     """
 
     return (
-        str(record.get("subset", "UNKNOWN")).upper(),
-        str(record.get("model", "UNKNOWN")).lower(),
-        str(record.get("health_state", "UNKNOWN")).upper(),
-        str(record.get("uncertainty_level", "UNKNOWN")).upper(),
-        str(record.get("explanation_reliability", "UNKNOWN")).upper(),
+        str(
+            record.get(
+                "subset",
+                "UNKNOWN",
+            )
+        ).upper(),
+
+        str(
+            record.get(
+                "model",
+                "UNKNOWN",
+            )
+        ).lower(),
+
+        str(
+            record.get(
+                "health_state",
+                "UNKNOWN",
+            )
+        ).upper(),
+
+        str(
+            record.get(
+                "uncertainty_level",
+                "UNKNOWN",
+            )
+        ).upper(),
+
+        str(
+            record.get(
+                "explanation_reliability",
+                "UNKNOWN",
+            )
+        ).upper(),
     )
 
 
@@ -70,10 +120,10 @@ def build_policy_profile(
     feedback_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    Build an empirical policy-refinement profile from expert feedback.
+    Build an empirical O5 policy profile.
 
-    For each decision-state group, estimate which expert action has
-    the strongest support.
+    The profile records action support, observation counts,
+    weighted support and consensus ratio.
     """
 
     groups: dict[
@@ -82,18 +132,29 @@ def build_policy_profile(
     ] = defaultdict(list)
 
     for record in feedback_records:
-        groups[_state_key(record)].append(record)
+        groups[
+            _state_key(record)
+        ].append(record)
 
     profile: dict[str, Any] = {}
 
     for key, records in groups.items():
 
-        action_support: dict[str, float] = defaultdict(float)
-        action_count: dict[str, int] = defaultdict(int)
+        action_support: dict[str, float] = (
+            defaultdict(float)
+        )
+
+        action_count: dict[str, int] = (
+            defaultdict(int)
+        )
 
         for record in records:
+
             action = str(
-                record.get("expert_action", "")
+                record.get(
+                    "expert_action",
+                    "",
+                )
             ).upper()
 
             if action not in VALID_ACTIONS:
@@ -112,53 +173,149 @@ def build_policy_profile(
             key=action_support.get,
         )
 
+        total_weight = sum(
+            action_support.values()
+        )
+
+        consensus_ratio = (
+            action_support[preferred_action]
+            / total_weight
+            if total_weight > 0
+            else 0.0
+        )
+
         profile[str(key)] = {
             "preferred_action": preferred_action,
-            "support": action_support[preferred_action],
-            "count": action_count[preferred_action],
-            "action_support": dict(action_support),
-            "action_count": dict(action_count),
+            "support": round(
+                action_support[preferred_action],
+                4,
+            ),
+            "count": action_count[
+                preferred_action
+            ],
+            "total_observations": len(records),
+            "total_weight": round(
+                total_weight,
+                4,
+            ),
+            "consensus_ratio": round(
+                consensus_ratio,
+                4,
+            ),
+            "action_support": {
+                action: round(
+                    support,
+                    4,
+                )
+                for action, support
+                in action_support.items()
+            },
+            "action_count": dict(
+                action_count
+            ),
         }
 
     return profile
+
+
+def _apply_constraints_after_adaptation(
+    decision: dict[str, Any],
+    candidate_action: str,
+    constraints: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Re-apply O4 operational constraints after O5
+    changes the recommendation.
+    """
+
+    result = dict(decision)
+
+    result["candidate_action"] = (
+        candidate_action
+    )
+
+    if not constraints:
+        return result
+
+    constrained = check_constraints(
+        decision=result,
+        constraints=constraints,
+    )
+
+    return constrained
 
 
 def refine_recommendation(
     decision: dict[str, Any],
     feedback_records: list[dict[str, Any]],
     *,
+    constraints: dict[str, Any] | None = None,
     min_support: int = MIN_SUPPORT,
     min_weighted_support: float = MIN_WEIGHTED_SUPPORT,
+    min_consensus_ratio: float = MIN_CONSENSUS_RATIO,
 ) -> dict[str, Any]:
     """
-    Apply evidence-based human feedback to an O4 recommendation.
+    Apply conservative human-feedback adaptation.
 
-    The original O4 decision remains available in
-    'original_action'.
+    Adaptation occurs only when:
+        1. An alternative action has repeated support.
+        2. Confidence-weighted support is sufficient.
+        3. Weighted consensus is sufficiently strong.
 
-    A refinement is applied only when sufficient expert evidence
-    supports an alternative action.
+    Safety-critical O4 recommendations are never automatically
+    weakened.
     """
 
     result = dict(decision)
 
     original_action = str(
-        decision.get("recommended_action", "")
+        decision.get(
+            "recommended_action",
+            "",
+        )
     ).upper()
 
-    result["original_action"] = original_action
+    result["original_action"] = (
+        original_action
+    )
+
     result["adaptation_applied"] = False
+
     result["adaptation_reason"] = None
 
-    if original_action not in VALID_ACTIONS:
-        return result
+    result["adaptation_support"] = {
+        "count": 0,
+        "weighted_support": 0.0,
+        "consensus_ratio": 0.0,
+    }
 
-    # Never automatically weaken an urgent maintenance decision.
-    if original_action in SAFETY_CRITICAL_ACTIONS:
+    # ---------------------------------------------------------------
+    # Validate current action
+    # ---------------------------------------------------------------
+
+    if original_action not in VALID_ACTIONS:
         result["adaptation_reason"] = (
-            "Safety-critical action protected from automatic weakening."
+            "Invalid original recommendation."
         )
         return result
+
+    # ---------------------------------------------------------------
+    # Safety protection
+    # ---------------------------------------------------------------
+
+    if (
+        original_action
+        in SAFETY_CRITICAL_ACTIONS
+    ):
+        result["adaptation_reason"] = (
+            "Safety-critical action protected "
+            "from automatic weakening."
+        )
+        return result
+
+    # ---------------------------------------------------------------
+    # Find relevant historical feedback
+    # ---------------------------------------------------------------
 
     key = _state_key(decision)
 
@@ -170,24 +327,46 @@ def refine_recommendation(
 
     if not relevant:
         result["adaptation_reason"] = (
-            "No historical expert feedback for this decision state."
+            "No historical expert feedback "
+            "for this decision state."
         )
         return result
 
-    action_support: dict[str, float] = defaultdict(float)
-    action_count: dict[str, int] = defaultdict(int)
+    # ---------------------------------------------------------------
+    # Aggregate expert actions
+    # ---------------------------------------------------------------
+
+    action_support: dict[str, float] = (
+        defaultdict(float)
+    )
+
+    action_count: dict[str, int] = (
+        defaultdict(int)
+    )
 
     for record in relevant:
 
         expert_action = str(
-            record.get("expert_action", "")
+            record.get(
+                "expert_action",
+                "",
+            )
         ).upper()
 
         if expert_action not in VALID_ACTIONS:
             continue
 
-        action_support[expert_action] += _feedback_weight(record)
-        action_count[expert_action] += 1
+        weight = _feedback_weight(
+            record
+        )
+
+        action_support[
+            expert_action
+        ] += weight
+
+        action_count[
+            expert_action
+        ] += 1
 
     if not action_support:
         result["adaptation_reason"] = (
@@ -195,45 +374,176 @@ def refine_recommendation(
         )
         return result
 
+    # ---------------------------------------------------------------
+    # Select strongest action
+    # ---------------------------------------------------------------
+
     preferred_action = max(
         action_support,
         key=action_support.get,
     )
 
-    support = action_support[preferred_action]
-    count = action_count[preferred_action]
+    support = action_support[
+        preferred_action
+    ]
 
-    # No refinement when experts agree with the existing policy.
+    count = action_count[
+        preferred_action
+    ]
+
+    total_weight = sum(
+        action_support.values()
+    )
+
+    consensus_ratio = (
+        support / total_weight
+        if total_weight > 0
+        else 0.0
+    )
+
+    result["adaptation_support"] = {
+        "count": count,
+        "weighted_support": round(
+            support,
+            4,
+        ),
+        "consensus_ratio": round(
+            consensus_ratio,
+            4,
+        ),
+    }
+
+    # ---------------------------------------------------------------
+    # Existing policy already agrees
+    # ---------------------------------------------------------------
+
     if preferred_action == original_action:
         result["adaptation_reason"] = (
-            "Historical expert feedback supports the existing action."
+            "Historical expert feedback "
+            "supports the existing action."
         )
         return result
 
-    # Require repeated evidence.
+    # ---------------------------------------------------------------
+    # Minimum observation requirement
+    # ---------------------------------------------------------------
+
     if count < min_support:
         result["adaptation_reason"] = (
-            f"Insufficient expert support: {count}/{min_support}."
+            f"Insufficient expert support: "
+            f"{count}/{min_support}."
         )
         return result
+
+    # ---------------------------------------------------------------
+    # Minimum confidence-weighted support
+    # ---------------------------------------------------------------
 
     if support < min_weighted_support:
         result["adaptation_reason"] = (
-            "Insufficient confidence-weighted expert support."
+            "Insufficient confidence-weighted "
+            "expert support."
         )
         return result
 
-    # Apply the refinement.
-    result["recommended_action"] = preferred_action
-    result["adaptation_applied"] = True
+    # ---------------------------------------------------------------
+    # Consensus requirement
+    # ---------------------------------------------------------------
+
+    if consensus_ratio < min_consensus_ratio:
+        result["adaptation_reason"] = (
+            f"Insufficient expert consensus: "
+            f"{consensus_ratio:.3f} < "
+            f"{min_consensus_ratio:.3f}."
+        )
+        return result
+
+    # ---------------------------------------------------------------
+    # Candidate adaptation
+    # ---------------------------------------------------------------
+
+    constrained = (
+        _apply_constraints_after_adaptation(
+            decision=result,
+            candidate_action=preferred_action,
+            constraints=constraints,
+        )
+    )
+
+    final_action = str(
+        constrained.get(
+            "candidate_action",
+            preferred_action,
+        )
+    ).upper()
+
+    # Never allow the policy updater to weaken urgent action.
+    if (
+        original_action
+        == "URGENT_MAINTENANCE"
+        and final_action
+        != "URGENT_MAINTENANCE"
+    ):
+        result["adaptation_reason"] = (
+            "Constraint processing attempted "
+            "to weaken a safety-critical action; "
+            "adaptation rejected."
+        )
+        return result
+
+    # ---------------------------------------------------------------
+    # Apply adaptation
+    # ---------------------------------------------------------------
+
+    result["recommended_action"] = (
+        final_action
+    )
+
+    result["adaptation_applied"] = (
+        final_action != original_action
+    )
+
     result["adaptation_reason"] = (
-        f"Expert feedback refined {original_action} "
-        f"to {preferred_action} with "
-        f"{count} supporting observations "
-        f"(weighted support={support:.3f})."
+        f"Expert feedback refined "
+        f"{original_action} to {final_action} "
+        f"with {count} supporting observations, "
+        f"weighted support={support:.3f}, "
+        f"consensus={consensus_ratio:.3f}."
     )
 
     result["human_review"] = True
+
+    # Preserve the constraint audit generated after adaptation.
+    if constraints:
+        result["constraint_status"] = (
+            constrained.get(
+                "constraint_status",
+                result.get(
+                    "constraint_status",
+                    "SATISFIED",
+                ),
+            )
+        )
+
+        result["constraint_violations"] = (
+            constrained.get(
+                "constraint_violations",
+                result.get(
+                    "constraint_violations",
+                    [],
+                ),
+            )
+        )
+
+        result["constraint_adjustments"] = (
+            constrained.get(
+                "constraint_adjustments",
+                result.get(
+                    "constraint_adjustments",
+                    [],
+                ),
+            )
+        )
 
     return result
 
@@ -243,14 +553,10 @@ def update_model(
     feedback: Any,
 ) -> Any:
     """
-    Backward-compatible updater entry point.
+    Backward-compatible entry point.
 
-    This function intentionally does not modify the prognostic model.
-
-    If `model` is a decision dictionary and `feedback` is a list of
-    feedback records, the decision is refined.
-
-    Otherwise the original model/object is returned unchanged.
+    Despite the historical name, this function does NOT modify
+    prognostic model parameters.
     """
 
     if not isinstance(model, dict):
@@ -268,14 +574,15 @@ def update_model(
 def update_from_log(
     decision: dict[str, Any],
     log_path: Optional[str] = None,
+    *,
+    constraints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Refine one decision using the accumulated HITL log.
-    """
+    """Refine one decision using accumulated HITL feedback."""
 
     records = load_feedback(log_path)
 
     return refine_recommendation(
         decision=decision,
         feedback_records=records,
+        constraints=constraints,
     )

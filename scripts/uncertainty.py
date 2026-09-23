@@ -33,6 +33,8 @@ Engine-disjoint split is reproduced with the same seed as training.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -53,8 +55,12 @@ from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.uncertainty.calibration import calibrate_eara_levels
 from src.uncertainty.conformal import (
+    adaptive_conformal_interval,
     adaptive_prediction_interval,
     assign_regimes,
+    conformal_interval,
+    cqr_interval,
+    engine_joint_interval,
     fit_regime_detector,
 )
 from src.uncertainty.coverage import evaluate_interval
@@ -66,6 +72,7 @@ from src.uncertainty.coverage import evaluate_interval
 DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 RESULTS_DIR    = PROJECT_ROOT / "outputs" / "results"
+UNCERTAINTY_RESULTS_DIR = RESULTS_DIR / "uncertainty"
 
 SEED            = 42
 BATCH_SIZE      = 64
@@ -125,6 +132,12 @@ def parse_args() -> argparse.Namespace:
         default=N_REGIMES,
         help="Number of operating-condition regimes (k-means clusters).",
     )
+    parser.add_argument(
+        "--variant",
+        default="eara_conformal",
+        choices=("eara_conformal", "conformal", "adaptive_conformal", "cqr", "engine_joint_conformal"),
+        help="Uncertainty method to run.",
+    )
     return parser.parse_args()
 
 
@@ -152,7 +165,8 @@ def load_test_data(subset: str):
     X     = np.load(DATA_DIR / f"{subset}_test_X.npy")
     y_rul = np.load(DATA_DIR / f"{subset}_test_y_rul.npy")
     y_hi  = np.load(DATA_DIR / f"{subset}_test_y_hi.npy")
-    return X, y_rul, y_hi
+    engine_ids = np.load(DATA_DIR / f"{subset}_test_engine_ids.npy")
+    return X, y_rul, y_hi, engine_ids
 
 
 # ------------------------------------------------------------------
@@ -224,13 +238,63 @@ def predict(model, X: np.ndarray, device: torch.device):
 # Main
 # ------------------------------------------------------------------
 
-def run(subset: str, model_name: str, n_reg: int) -> None:
-    """Run EARA-Conformal estimation for a single subset/model combination."""
+def _split_hash(train_ids: np.ndarray, cal_ids: np.ndarray) -> str:
+    payload = np.concatenate((np.sort(np.unique(train_ids)), np.sort(np.unique(cal_ids))))
+    return hashlib.sha256(payload.tobytes()).hexdigest()[:16]
+
+
+def _calibrate_variant(
+    variant: str,
+    y_rul_cal: np.ndarray,
+    rul_cal: np.ndarray,
+    scale_cal: np.ndarray,
+    regimes_cal: np.ndarray,
+    engine_ids_cal: np.ndarray,
+    n_reg: int,
+    rul_test: np.ndarray,
+    scale_test: np.ndarray,
+    regimes_test: np.ndarray,
+) -> dict[float, dict[str, object]]:
+    results: dict[float, dict[str, object]] = {}
+    for coverage in COVERAGE_LEVELS:
+        alpha = 1.0 - coverage
+        if variant == "eara_conformal":
+            calibrated = calibrate_eara_levels(
+                y_true=y_rul_cal, y_pred=rul_cal, scale=scale_cal,
+                regimes=regimes_cal, n_regimes=n_reg,
+                coverage_levels=(coverage,),
+            )[coverage]
+            lower, upper = adaptive_prediction_interval(
+                y_pred=rul_test, scale=scale_test,
+                q_hats=calibrated["q_hats"], regimes=regimes_test,
+            )
+            results[coverage] = {**calibrated, "lower": lower, "upper": upper}
+        elif variant == "conformal":
+            results[coverage] = conformal_interval(y_rul_cal, rul_cal, rul_test, alpha)
+        elif variant == "adaptive_conformal":
+            results[coverage] = adaptive_conformal_interval(
+                y_rul_cal, rul_cal, scale_cal, rul_test, scale_test, alpha,
+            )
+        elif variant == "cqr":
+            results[coverage] = cqr_interval(
+                y_rul_cal, rul_cal, scale_cal, rul_test, scale_test, alpha,
+            )
+        elif variant == "engine_joint_conformal":
+            results[coverage] = engine_joint_interval(
+                y_rul_cal, rul_cal, engine_ids_cal, rul_test, alpha,
+            )
+        else:
+            raise ValueError(f"Unknown uncertainty variant: {variant}")
+    return results
+
+
+def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
+    """Run one uncertainty variant for a single subset/model combination."""
     log    = get_script_logger("uncertainty", f"uncertainty_{subset}_{model_name}")
     device = get_device()
 
     log.info("=" * 60)
-    log.info("EARA-CONFORMAL UNCERTAINTY ESTIMATION")
+    log.info("%s UNCERTAINTY ESTIMATION", variant.upper())
     log.info("Subset   : %s", subset)
     log.info("Model    : %s", model_name)
     log.info("Device   : %s", device)
@@ -254,7 +318,7 @@ def run(subset: str, model_name: str, n_reg: int) -> None:
         len(X_cal),
     )
 
-    X_test, y_rul_test, _ = load_test_data(subset)
+    X_test, y_rul_test, _, test_engine_ids = load_test_data(subset)
     log.info("Test windows : %d", len(X_test))
 
     # ── Model ─────────────────────────────────────────────────────
@@ -277,27 +341,15 @@ def run(subset: str, model_name: str, n_reg: int) -> None:
     log.info("Generating calibration predictions...")
     rul_cal, scale_cal = predict(model, X_cal, device)
 
-    # ── EARA-Conformal calibration ────────────────────────────────
-    log.info("Calibrating per-regime quantiles...")
-    cal_results = calibrate_eara_levels(
-        y_true=y_rul_cal,
-        y_pred=rul_cal,
-        scale=scale_cal,
-        regimes=regimes_cal,
-        n_regimes=n_reg,
-        coverage_levels=COVERAGE_LEVELS,
-    )
-
-    for cov, res in cal_results.items():
-        log.info(
-            "Nominal %3.0f%%  |  q_hat per regime: %s",
-            cov * 100,
-            np.round(res["q_hats"], 4),
-        )
-
     # ── Test predictions ──────────────────────────────────────────
     log.info("Generating test predictions...")
     rul_test, scale_test = predict(model, X_test, device)
+
+    log.info("Calibrating %s...", variant)
+    cal_results = _calibrate_variant(
+        variant, y_rul_cal, rul_cal, scale_cal, regimes_cal,
+        engine_ids[cal_idx], n_reg, rul_test, scale_test, regimes_test,
+    )
 
     # ── Evaluate intervals ────────────────────────────────────────
     eval_results = {}
@@ -331,8 +383,10 @@ def run(subset: str, model_name: str, n_reg: int) -> None:
             log.info("    Regime %d coverage : %.4f", k, rc)
 
     # ── Save ──────────────────────────────────────────────────────
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"{subset}_{model_name}_eara_conformal.npz"
+    output_dir = UNCERTAINTY_RESULTS_DIR / variant / subset
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{model_name}.npz"
+    metadata_path = output_dir / f"{model_name}.json"
 
     save_data: dict[str, np.ndarray] = {
         "y_rul_test":    y_rul_test,
@@ -341,18 +395,42 @@ def run(subset: str, model_name: str, n_reg: int) -> None:
         "regimes_test":  regimes_test,
         "regimes_cal":   regimes_cal,
         "cal_scores":    np.abs(y_rul_cal - rul_cal) / (scale_cal + 1e-6),
+        "cal_engine_ids": engine_ids[cal_idx],
+        "test_engine_ids": test_engine_ids,
     }
 
     for cov, res in eval_results.items():
         suffix = int(cov * 100)
         save_data[f"lower_{suffix}"]  = res["lower"]
         save_data[f"upper_{suffix}"]  = res["upper"]
-        save_data[f"q_hats_{suffix}"] = cal_results[cov]["q_hats"]
+        save_data[f"q_hat_{suffix}"] = np.asarray(res.get("q_hat", res.get("q_hats")))
+        if "q_hats" in res:
+            save_data[f"q_hats_{suffix}"] = res["q_hats"]
+        if "engine_scores" in res:
+            save_data[f"engine_scores_{suffix}"] = res["engine_scores"]
 
     np.savez(out_path, **save_data)
+    metadata = {
+        "schema_version": 2,
+        "variant": variant,
+        "subset": subset,
+        "model": model_name,
+        "seed": SEED,
+        "n_regimes": n_reg,
+        "coverage_levels": list(COVERAGE_LEVELS),
+        "calibration_engine_count": int(len(np.unique(engine_ids[cal_idx]))),
+        "test_engine_count": int(len(np.unique(test_engine_ids))),
+        "split_hash": _split_hash(engine_ids[train_idx], engine_ids[cal_idx]),
+        "cqr_note": (
+            "CQR uses checkpoint point prediction +/- scale as conditional bounds; "
+            "the current model has no separately trained quantile heads."
+            if variant == "cqr" else None
+        ),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     log.info("Results saved to: %s", out_path)
     log.info("=" * 60)
-    log.info("EARA-CONFORMAL ESTIMATION COMPLETE")
+    log.info("%s ESTIMATION COMPLETE", variant.upper())
     log.info("=" * 60)
 
 
@@ -363,7 +441,7 @@ def main():
     for subset in subsets:
         for model_name in models:
             try:
-                run(subset, model_name, args.n_regimes)
+                run(subset, model_name, args.n_regimes, args.variant)
             except FileNotFoundError as e:
                 print(f"[SKIP] {model_name}/{subset}: {e}")
             except Exception as e:

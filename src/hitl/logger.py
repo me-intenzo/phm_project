@@ -1,9 +1,7 @@
 """
 Persistent logging for human-in-the-loop feedback.
 
-Feedback is stored as JSON Lines (JSONL), where every line represents
-one expert interaction. This provides an append-only, auditable record
-that can later be used by the O5 policy refinement mechanism.
+Feedback is stored as append-only JSON Lines (JSONL).
 
 author: me-intenzo
 """
@@ -18,16 +16,20 @@ from src.hitl.feedback import store_feedback
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LOG_PATH = PROJECT_ROOT / "outputs" / "hitl" / "feedback.jsonl"
+
+DEFAULT_LOG_PATH = (
+    PROJECT_ROOT
+    / "outputs"
+    / "hitl"
+    / "feedback.jsonl"
+)
 
 
 def log_feedback(
     feedback: dict[str, Any],
     log_path: Optional[str | Path] = None,
 ) -> dict[str, Any]:
-    """
-    Validate and append one feedback record to the HITL log.
-    """
+    """Validate and append one feedback record."""
 
     validated = store_feedback(feedback)
 
@@ -54,9 +56,7 @@ def log_feedback(
 def load_feedback(
     log_path: Optional[str | Path] = None,
 ) -> list[dict[str, Any]]:
-    """
-    Load all valid feedback records from the JSONL log.
-    """
+    """Load all feedback records from the JSONL log."""
 
     path = (
         Path(log_path)
@@ -92,19 +92,21 @@ def load_feedback(
 def feedback_statistics(
     log_path: Optional[str | Path] = None,
 ) -> dict[str, Any]:
-    """
-    Calculate basic O5 feedback statistics.
-    """
+    """Calculate quantitative O5 feedback statistics."""
 
     records = load_feedback(log_path)
 
-    if not records:
+    total = len(records)
+
+    if total == 0:
         return {
             "total_feedback": 0,
             "accepted": 0,
             "overrides": 0,
             "acceptance_rate": 0.0,
             "override_rate": 0.0,
+            "mean_expert_confidence": 0.0,
+            "action_override_counts": {},
         }
 
     accepted = sum(
@@ -117,12 +119,34 @@ def feedback_statistics(
         for record in records
     )
 
-    total = len(records)
+    confidence_values = [
+        float(record.get("expert_confidence", 0.0))
+        for record in records
+    ]
+
+    action_override_counts: dict[str, int] = {}
+
+    for record in records:
+        if not record.get("override", False):
+            continue
+
+        action = str(
+            record.get("ai_action", "UNKNOWN")
+        ).upper()
+
+        action_override_counts[action] = (
+            action_override_counts.get(action, 0) + 1
+        )
 
     return {
         "total_feedback": total,
         "accepted": accepted,
         "overrides": overrides,
-        "acceptance_rate": accepted / total,
-        "override_rate": overrides / total,
+        "acceptance_rate": round(accepted / total, 4),
+        "override_rate": round(overrides / total, 4),
+        "mean_expert_confidence": round(
+            sum(confidence_values) / len(confidence_values),
+            4,
+        ),
+        "action_override_counts": action_override_counts,
     }

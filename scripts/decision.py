@@ -50,7 +50,7 @@ ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
 ALL_MODELS   = ("hybrid", "lstm", "gru", "transformer")
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
 XAI_DIR      = PROJECT_ROOT / "outputs" / "xai"
-DEFAULT_MODEL  = "hybrid"
+DEFAULT_MODEL  = "gru"
 INTERVAL_LEVEL = 90
 UNCERTAINTY_VARIANTS = (
     "eara_conformal",
@@ -268,7 +268,11 @@ def resolve_input_path(subset: str) -> Path:
     return subset_path if subset_path.exists() else default_path
 
 
-def load_upstream_records(subset: str, model_name: str = DEFAULT_MODEL) -> list[dict[str, Any]]:
+def load_upstream_records(
+    subset: str,
+    model_name: str = DEFAULT_MODEL,
+    uncertainty_variant: str = "eara_conformal",
+) -> list[dict[str, Any]]:
     """Build decision records from uncertainty and explainability outputs."""
     subset = subset.upper()
     model_name = model_name.lower()
@@ -276,14 +280,11 @@ def load_upstream_records(subset: str, model_name: str = DEFAULT_MODEL) -> list[
         raise ValueError(f"Unsupported decision model: {model_name}")
 
     prediction_path = RESULTS_DIR / f"{subset}_{model_name}_predictions.npz"
-    uncertainty_path = next(
-        (
-            RESULTS_DIR / f"{subset}_{model_name}_{variant}.npz"
-            for variant in UNCERTAINTY_VARIANTS
-            if (RESULTS_DIR / f"{subset}_{model_name}_{variant}.npz").exists()
-        ),
-        RESULTS_DIR / f"{subset}_{model_name}_{UNCERTAINTY_VARIANTS[0]}.npz",
-    )
+    if uncertainty_variant not in UNCERTAINTY_VARIANTS:
+        raise ValueError(f"Unsupported uncertainty variant: {uncertainty_variant}")
+    structured_path = RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{model_name}.npz"
+    legacy_path = RESULTS_DIR / f"{subset}_{model_name}_{uncertainty_variant}.npz"
+    uncertainty_path = structured_path if structured_path.exists() else legacy_path
     eri_path = XAI_DIR / subset / model_name / "eri_rul.json"
 
     missing = [
@@ -508,6 +509,12 @@ def parse_args() -> argparse.Namespace:
         choices=[*ALL_MODELS, "all"],
         help="Prognostics model to process, or 'all'.",
     )
+    parser.add_argument(
+        "--uncertainty-variant",
+        choices=UNCERTAINTY_VARIANTS,
+        default="eara_conformal",
+        help="Calibrated uncertainty artifact to use.",
+    )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
     parser.add_argument("--maintenance-window",    action="store_true", default=False)
@@ -581,7 +588,7 @@ def run_subset(
     log.info("Result : %s", result_path)
     log.info("Report : %s", report_path)
 
-    records = load_upstream_records(subset, model_name)
+    records = load_upstream_records(subset, model_name, args.uncertainty_variant)
     log.info(
         "Loaded %d decision record(s) from %s uncertainty and %s XAI outputs.",
         len(records), model_name, model_name,
@@ -615,6 +622,8 @@ def run_subset(
                    "top_k_sensors", "operational constraints"],
         "summary": summary,
         "decisions": decisions,
+        "xai_context": args.xai_context,
+        "operational_constraints": constraints,
     }
 
     save_json(output, result_path)

@@ -287,3 +287,110 @@ def prediction_interval(
     """Symmetric global interval (baseline)."""
     y_pred = np.asarray(y_pred, dtype=np.float64)
     return y_pred - q_hat, y_pred + q_hat
+
+
+# ------------------------------------------------------------------
+# Named conformal variants
+# ------------------------------------------------------------------
+
+def _validate_alpha(alpha: float) -> None:
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1.")
+
+
+def _clip_interval(
+    lower: np.ndarray,
+    upper: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    lower = np.clip(np.asarray(lower, dtype=np.float64), RUL_MIN, RUL_MAX)
+    upper = np.clip(np.asarray(upper, dtype=np.float64), RUL_MIN, RUL_MAX)
+    return np.minimum(lower, upper), np.maximum(lower, upper)
+
+
+def conformal_interval(
+    y_true_cal: np.ndarray,
+    y_pred_cal: np.ndarray,
+    y_pred_test: np.ndarray,
+    alpha: float,
+) -> dict[str, object]:
+    """Global split-conformal interval using absolute residuals."""
+    _validate_alpha(alpha)
+    scores = absolute_nonconformity(y_true_cal, y_pred_cal)
+    q_hat = conformal_quantile(scores, alpha)
+    lower, upper = _clip_interval(
+        np.asarray(y_pred_test) - q_hat,
+        np.asarray(y_pred_test) + q_hat,
+    )
+    return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
+
+
+def adaptive_conformal_interval(
+    y_true_cal: np.ndarray,
+    y_pred_cal: np.ndarray,
+    scale_cal: np.ndarray,
+    y_pred_test: np.ndarray,
+    scale_test: np.ndarray,
+    alpha: float,
+) -> dict[str, object]:
+    """Global scale-adaptive split-conformal interval."""
+    _validate_alpha(alpha)
+    scores = normalised_nonconformity(y_true_cal, y_pred_cal, scale_cal)
+    q_hat = conformal_quantile(scores, alpha)
+    radius = q_hat * (np.asarray(scale_test, dtype=np.float64) + _EPS)
+    lower, upper = _clip_interval(np.asarray(y_pred_test) - radius, np.asarray(y_pred_test) + radius)
+    return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
+
+
+def cqr_interval(
+    y_true_cal: np.ndarray,
+    y_pred_cal: np.ndarray,
+    scale_cal: np.ndarray,
+    y_pred_test: np.ndarray,
+    scale_test: np.ndarray,
+    alpha: float,
+) -> dict[str, object]:
+    """Conformalize conditional bounds from the model point/scale output.
+
+    Current checkpoints do not expose separately trained quantile heads, so
+    the available conditional bounds are prediction +/- scale. The returned
+    interval is still calibrated with the CQR one-sided violation score.
+    """
+    _validate_alpha(alpha)
+    cal_lower = np.asarray(y_pred_cal) - np.asarray(scale_cal)
+    cal_upper = np.asarray(y_pred_cal) + np.asarray(scale_cal)
+    scores = np.maximum(cal_lower - np.asarray(y_true_cal), np.asarray(y_true_cal) - cal_upper)
+    scores = np.maximum(scores, 0.0)
+    q_hat = conformal_quantile(scores, alpha)
+    lower, upper = _clip_interval(
+        np.asarray(y_pred_test) - np.asarray(scale_test) - q_hat,
+        np.asarray(y_pred_test) + np.asarray(scale_test) + q_hat,
+    )
+    return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
+
+
+def engine_joint_interval(
+    y_true_cal: np.ndarray,
+    y_pred_cal: np.ndarray,
+    engine_ids_cal: np.ndarray,
+    y_pred_test: np.ndarray,
+    alpha: float,
+) -> dict[str, object]:
+    """Joint conformal interval using one maximum score per calibration engine."""
+    _validate_alpha(alpha)
+    scores = absolute_nonconformity(y_true_cal, y_pred_cal)
+    engine_ids_cal = np.asarray(engine_ids_cal).reshape(-1)
+    if scores.shape != engine_ids_cal.shape:
+        raise ValueError("Calibration scores and engine_ids_cal must have the same length.")
+    engine_scores = np.asarray(
+        [np.max(scores[engine_ids_cal == engine_id]) for engine_id in np.unique(engine_ids_cal)],
+        dtype=np.float64,
+    )
+    q_hat = conformal_quantile(engine_scores, alpha)
+    lower, upper = _clip_interval(np.asarray(y_pred_test) - q_hat, np.asarray(y_pred_test) + q_hat)
+    return {
+        "q_hat": q_hat,
+        "calibration_scores": scores,
+        "engine_scores": engine_scores,
+        "lower": lower,
+        "upper": upper,
+    }

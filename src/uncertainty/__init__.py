@@ -2,6 +2,7 @@
 
 from .conformal import (
     adaptive_prediction_interval,
+    adaptive_conformal_interval,
     assign_regimes,
     calibrate_regime_quantiles,
     eara_conformal_predict,
@@ -10,6 +11,9 @@ from .conformal import (
     # legacy baseline
     absolute_nonconformity,
     conformal_quantile,
+    conformal_interval,
+    cqr_interval,
+    engine_joint_interval,
     prediction_interval,
 )
 from .calibration import (
@@ -26,6 +30,7 @@ from .coverage import (
 
 __all__ = [
     "adaptive_prediction_interval",
+    "adaptive_conformal_interval",
     "assign_regimes",
     "calibrate_eara_levels",
     "calibrate_multiple_levels",
@@ -41,5 +46,8 @@ __all__ = [
     # legacy
     "absolute_nonconformity",
     "conformal_quantile",
+    "conformal_interval",
+    "cqr_interval",
+    "engine_joint_interval",
     "prediction_interval",
 ]
