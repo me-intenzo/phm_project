@@ -59,9 +59,9 @@ from src.uncertainty.conformal import (
     adaptive_prediction_interval,
     assign_regimes,
     conformal_interval,
-    cqr_interval,
     engine_joint_interval,
     fit_regime_detector,
+    scale_conformalized_interval,
 )
 from src.uncertainty.coverage import evaluate_interval
 
@@ -276,7 +276,7 @@ def _calibrate_variant(
                 y_rul_cal, rul_cal, scale_cal, rul_test, scale_test, alpha,
             )
         elif variant == "cqr":
-            results[coverage] = cqr_interval(
+            results[coverage] = scale_conformalized_interval(
                 y_rul_cal, rul_cal, scale_cal, rul_test, scale_test, alpha,
             )
         elif variant == "engine_joint_conformal":
@@ -367,6 +367,7 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
             nominal_coverage=cov,
             regimes=regimes_test,
             n_regimes=n_reg,
+            engine_ids=test_engine_ids,
         )
         eval_results[cov] = {**metrics, "lower": lower, "upper": upper}
 
@@ -378,6 +379,11 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
             metrics["coverage_error"],
             metrics["mean_interval_width"],
             metrics["pinaw"],
+        )
+        log.info(
+            "Coverage units | windows: %.4f | engines: %.4f",
+            metrics["empirical_coverage"],
+            metrics["engine_level_coverage"],
         )
         for k, rc in metrics.get("regime_coverage", {}).items():
             log.info("    Regime %d coverage : %.4f", k, rc)
@@ -403,6 +409,8 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
         suffix = int(cov * 100)
         save_data[f"lower_{suffix}"]  = res["lower"]
         save_data[f"upper_{suffix}"]  = res["upper"]
+        save_data[f"window_coverage_{suffix}"] = np.asarray(res["empirical_coverage"])
+        save_data[f"engine_coverage_{suffix}"] = np.asarray(res["engine_level_coverage"])
         save_data[f"q_hat_{suffix}"] = np.asarray(res.get("q_hat", res.get("q_hats")))
         if "q_hats" in res:
             save_data[f"q_hats_{suffix}"] = res["q_hats"]
@@ -422,10 +430,16 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
         "test_engine_count": int(len(np.unique(test_engine_ids))),
         "split_hash": _split_hash(engine_ids[train_idx], engine_ids[cal_idx]),
         "cqr_note": (
-            "CQR uses checkpoint point prediction +/- scale as conditional bounds; "
-            "the current model has no separately trained quantile heads."
+            "Scale-based conformalized interval (CQR-style): checkpoint point "
+            "prediction +/- scale is used as the conditional bound; the current "
+            "model has no separately trained quantile heads."
             if variant == "cqr" else None
         ),
+        "coverage_units": {
+            "window_level": "fraction of windows covered",
+            "engine_level": "fraction of engines with every window covered",
+            "primary_for_engine_joint_conformal": "engine_level",
+        },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     log.info("Results saved to: %s", out_path)

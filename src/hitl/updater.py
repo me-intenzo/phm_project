@@ -37,6 +37,9 @@ MIN_WEIGHTED_SUPPORT = 2.0
 
 MIN_CONSENSUS_RATIO = 0.70
 
+RISK_BANDS = ((0.33, "LOW"), (0.66, "MODERATE"))
+URGENCY_BANDS = ((0.33, "LOW"), (0.66, "MODERATE"))
+
 
 SAFETY_CRITICAL_ACTIONS = {
     "URGENT_MAINTENANCE",
@@ -64,9 +67,52 @@ def _feedback_weight(
     )
 
 
+def _continuous_band(value: Any, bands: tuple[tuple[float, str], ...]) -> str:
+    if value is None:
+        return "UNKNOWN"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    for upper, label in bands:
+        if numeric < upper:
+            return label
+    return "HIGH"
+
+
+def _rul_severity(value: Any) -> str:
+    if value is None:
+        return "UNKNOWN"
+    try:
+        rul = float(value)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    if rul <= 10.0:
+        return "CRITICAL"
+    if rul <= 25.0:
+        return "AT_RISK"
+    if rul <= 50.0:
+        return "DEGRADING"
+    return "HEALTHY"
+
+
+def policy_state(record: dict[str, Any]) -> dict[str, str]:
+    """Return the categorical state used for policy evidence grouping."""
+    return {
+        "subset": str(record.get("subset", "UNKNOWN")).upper(),
+        "model": str(record.get("model", "UNKNOWN")).lower(),
+        "health_state": str(record.get("health_state", "UNKNOWN")).upper(),
+        "uncertainty_level": str(record.get("uncertainty_level", "UNKNOWN")).upper(),
+        "explanation_reliability": str(record.get("explanation_reliability", "UNKNOWN")).upper(),
+        "risk_band": _continuous_band(record.get("risk_score"), RISK_BANDS),
+        "urgency_band": _continuous_band(record.get("urgency_index"), URGENCY_BANDS),
+        "rul_severity": _rul_severity(record.get("rul", record.get("rul_prediction"))),
+    }
+
+
 def _state_key(
     record: dict[str, Any],
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, ...]:
     """
     Group feedback by decision context rather than engine identity.
 
@@ -76,44 +122,12 @@ def _state_key(
         health state
         uncertainty level
         explanation reliability
+        risk band
+        urgency band
+        RUL severity
     """
-
-    return (
-        str(
-            record.get(
-                "subset",
-                "UNKNOWN",
-            )
-        ).upper(),
-
-        str(
-            record.get(
-                "model",
-                "UNKNOWN",
-            )
-        ).lower(),
-
-        str(
-            record.get(
-                "health_state",
-                "UNKNOWN",
-            )
-        ).upper(),
-
-        str(
-            record.get(
-                "uncertainty_level",
-                "UNKNOWN",
-            )
-        ).upper(),
-
-        str(
-            record.get(
-                "explanation_reliability",
-                "UNKNOWN",
-            )
-        ).upper(),
-    )
+    state = policy_state(record)
+    return tuple(state.values())
 
 
 def build_policy_profile(
@@ -185,6 +199,7 @@ def build_policy_profile(
         )
 
         profile[str(key)] = {
+            "policy_state": policy_state(records[0]),
             "preferred_action": preferred_action,
             "support": round(
                 action_support[preferred_action],
@@ -317,7 +332,11 @@ def refine_recommendation(
     # Find relevant historical feedback
     # ---------------------------------------------------------------
 
-    key = _state_key(decision)
+    decision_for_matching = dict(decision)
+    if feedback_records:
+        decision_for_matching.setdefault("subset", feedback_records[0].get("subset", "UNKNOWN"))
+        decision_for_matching.setdefault("model", feedback_records[0].get("model", "UNKNOWN"))
+    key = _state_key(decision_for_matching)
 
     relevant = [
         record

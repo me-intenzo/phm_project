@@ -12,6 +12,10 @@ from src.decision_engine.rules import (
 from src.decision_engine.constraints import check_constraints
 from src.decision_engine.recommender import recommend_action
 from scripts.decision import build_decision_state, make_decision, summarize_decisions
+from scripts.hitl import apply_policy_refinement
+from src.hitl.feedback import create_feedback
+from src.hitl.updater import build_policy_profile, refine_recommendation
+from src.hitl.workflow import resolve_review, review_to_feedback
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +302,146 @@ class TestRecommendAction:
         result = recommend_action(_state())
         assert 0.0 <= result["risk_score"] <= 1.0
         assert 0.0 <= result["urgency_index"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# O5 human-in-the-loop workflow and policy adaptation
+# ---------------------------------------------------------------------------
+
+def _hitl_decision(action="MONITOR", rul=40.0, risk=0.40, urgency=0.45):
+    return {
+        "engine_id": 7,
+        "recommended_action": action,
+        "candidate_action": action,
+        "rul": rul,
+        "risk_score": risk,
+        "urgency_index": urgency,
+        "health_state": "DEGRADING",
+        "uncertainty_level": "MODERATE",
+        "explanation_reliability": "HIGH",
+        "human_review": True,
+        "constraint_violations": [],
+    }
+
+
+def _feedback(decision, expert_action, confidence=1.0):
+    return create_feedback(
+        engine_id=decision["engine_id"],
+        subset="FD001",
+        model="gru",
+        ai_action=decision["recommended_action"],
+        expert_action=expert_action,
+        expert_confidence=confidence,
+        reason="Reviewed by expert.",
+        risk_score=decision["risk_score"],
+        urgency_index=decision["urgency_index"],
+        rul=decision["rul"],
+        health_state=decision["health_state"],
+        uncertainty_level=decision["uncertainty_level"],
+        explanation_reliability=decision["explanation_reliability"],
+    )
+
+
+def test_o5_approve_creates_feedback_without_override():
+    review = {"status": "PENDING", "review_id": "r-1", "decision": _hitl_decision()}
+    resolved = resolve_review(review, "expert-1", "APPROVE", expert_confidence=0.9)
+    feedback = review_to_feedback(resolved, subset="FD001", model="gru")
+    assert resolved["status"] == "RESOLVED"
+    assert resolved["final_action"] == "MONITOR"
+    assert feedback["override"] is False
+    assert feedback["decision_valid"] is True
+
+
+def test_o5_override_changes_action():
+    review = {"status": "PENDING", "review_id": "r-2", "decision": _hitl_decision()}
+    resolved = resolve_review(
+        review, "expert-1", "OVERRIDE", expert_confidence=0.9,
+        override_action="INSPECT",
+    )
+    assert resolved["final_action"] == "INSPECT"
+    assert resolved["override_action"] == "INSPECT"
+
+
+def test_o5_invalid_override_is_rejected():
+    review = {"status": "PENDING", "decision": _hitl_decision()}
+    with pytest.raises(ValueError, match="required"):
+        resolve_review(review, "expert-1", "OVERRIDE", expert_confidence=0.9)
+    with pytest.raises(ValueError, match="must differ"):
+        resolve_review(
+            review, "expert-1", "OVERRIDE", expert_confidence=0.9,
+            override_action="MONITOR",
+        )
+
+
+def test_o5_insufficient_feedback_does_not_adapt():
+    decision = _hitl_decision()
+    feedback = [_feedback(decision, "INSPECT")]
+    result = refine_recommendation(decision, feedback)
+    assert result["adaptation_applied"] is False
+    assert "Insufficient expert support" in result["adaptation_reason"]
+
+
+def test_o5_insufficient_consensus_does_not_adapt():
+    decision = _hitl_decision()
+    feedback = [
+        _feedback(decision, "INSPECT"),
+        _feedback(decision, "INSPECT"),
+        _feedback(decision, "CONTINUE_OPERATION"),
+        _feedback(decision, "CONTINUE_OPERATION"),
+    ]
+    result = refine_recommendation(decision, feedback, min_support=2)
+    assert result["adaptation_applied"] is False
+    assert "consensus" in result["adaptation_reason"].lower()
+
+
+def test_o5_successful_adaptation():
+    decision = _hitl_decision()
+    feedback = [_feedback(decision, "INSPECT") for _ in range(3)]
+    result = refine_recommendation(decision, feedback)
+    assert result["adaptation_applied"] is True
+    assert result["recommended_action"] == "INSPECT"
+
+
+def test_o5_urgent_maintenance_is_protected():
+    decision = _hitl_decision(action="URGENT_MAINTENANCE", rul=5.0, risk=0.9, urgency=0.95)
+    feedback = [_feedback(decision, "MONITOR") for _ in range(3)]
+    result = refine_recommendation(decision, feedback)
+    assert result["adaptation_applied"] is False
+    assert result["recommended_action"] == "URGENT_MAINTENANCE"
+    assert "protected" in result["adaptation_reason"]
+
+
+def test_o5_constraint_recheck_after_adaptation():
+    decision = _hitl_decision(action="MONITOR", rul=5.0, risk=0.9, urgency=0.95)
+    feedback = [_feedback(decision, "CONTINUE_OPERATION") for _ in range(3)]
+    result = refine_recommendation(
+        decision, feedback,
+        constraints={"minimum_safe_rul": 10.0},
+    )
+    assert result["recommended_action"] == "URGENT_MAINTENANCE"
+    assert result["constraint_status"] == "VIOLATION"
+    assert result["constraint_violations"]
+
+
+def test_o5_risk_urgency_and_rul_bands_separate_policy_states():
+    low = _feedback(_hitl_decision(rul=45.0, risk=0.40, urgency=0.45), "INSPECT")
+    high = _feedback(_hitl_decision(rul=12.0, risk=0.80, urgency=0.85), "INSPECT")
+    profile = build_policy_profile([low, high])
+    assert len(profile) == 2
+    states = [entry["policy_state"] for entry in profile.values()]
+    assert {state["risk_band"] for state in states} == {"MODERATE", "HIGH"}
+    assert {state["rul_severity"] for state in states} == {"DEGRADING", "AT_RISK"}
+
+
+def test_o5_metrics_include_feedback_and_adaptation_measures():
+    decision = _hitl_decision()
+    refined, metrics = apply_policy_refinement(
+        [decision], [_feedback(decision, "INSPECT") for _ in range(3)], {},
+    )
+    assert refined[0]["adaptation_applied"] is True
+    assert metrics["adaptations_applied"] == 1
+    assert metrics["recommendation_change_rate"] == 1.0
+    assert "constraint_violations_after_adaptation" in metrics
 
     def test_custom_thresholds(self):
         # Lower rul_critical threshold → engine at RUL=15 should be CRITICAL

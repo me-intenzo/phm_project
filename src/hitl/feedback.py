@@ -43,6 +43,7 @@ class ExpertFeedback:
 
     risk_score: Optional[float] = None
     urgency_index: Optional[float] = None
+    rul: Optional[float] = None
     health_state: Optional[str] = None
     uncertainty_level: Optional[str] = None
     explanation_reliability: Optional[str] = None
@@ -104,6 +105,7 @@ def create_feedback(
     reason: str,
     risk_score: Optional[float] = None,
     urgency_index: Optional[float] = None,
+    rul: Optional[float] = None,
     health_state: Optional[str] = None,
     uncertainty_level: Optional[str] = None,
     explanation_reliability: Optional[str] = None,
@@ -124,6 +126,7 @@ def create_feedback(
         reason=reason,
         risk_score=risk_score,
         urgency_index=urgency_index,
+        rul=rul,
         health_state=health_state,
         uncertainty_level=uncertainty_level,
         explanation_reliability=explanation_reliability,
@@ -164,6 +167,7 @@ def validate_feedback(feedback: dict[str, Any]) -> dict[str, Any]:
         reason=feedback["reason"],
         risk_score=feedback.get("risk_score"),
         urgency_index=feedback.get("urgency_index"),
+        rul=feedback.get("rul"),
         health_state=feedback.get("health_state"),
         uncertainty_level=feedback.get("uncertainty_level"),
         explanation_reliability=feedback.get(

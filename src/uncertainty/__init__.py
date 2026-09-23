@@ -14,6 +14,7 @@ from .conformal import (
     conformal_interval,
     cqr_interval,
     engine_joint_interval,
+    scale_conformalized_interval,
     prediction_interval,
 )
 from .calibration import (
@@ -22,6 +23,7 @@ from .calibration import (
 )
 from .coverage import (
     empirical_coverage,
+    engine_level_coverage,
     evaluate_interval,
     mean_prediction_interval_width,
     normalised_interval_width,
@@ -37,6 +39,7 @@ __all__ = [
     "calibrate_regime_quantiles",
     "eara_conformal_predict",
     "empirical_coverage",
+    "engine_level_coverage",
     "evaluate_interval",
     "fit_regime_detector",
     "mean_prediction_interval_width",
@@ -48,6 +51,7 @@ __all__ = [
     "conformal_quantile",
     "conformal_interval",
     "cqr_interval",
+    "scale_conformalized_interval",
     "engine_joint_interval",
     "prediction_interval",
 ]

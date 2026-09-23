@@ -78,6 +78,8 @@ ALL_MODELS = [
     "gru_att_deg",
 ]
 
+CONTROLLED_BASELINE_MODEL = "gru"
+
 
 # ---------------------------------------------------------------------
 # CLI
@@ -400,6 +402,7 @@ def apply_policy_refinement(
     metrics = {
         "total_decisions": total,
         "adaptation_count": adaptation_count,
+        "adaptations_applied": adaptation_count,
         "adaptation_rate": (
             round(
                 adaptation_count / total,
@@ -407,6 +410,22 @@ def apply_policy_refinement(
             )
             if total
             else 0.0
+        ),
+        "recommendation_change_rate": (
+            round(
+                sum(
+                    decision.get("recommended_action")
+                    != decision.get("original_action")
+                    for decision in refined_decisions
+                ) / total,
+                4,
+            )
+            if total
+            else 0.0
+        ),
+        "constraint_violations_after_adaptation": sum(
+            len(decision.get("constraint_violations", []))
+            for decision in refined_decisions
         ),
     }
 
@@ -428,6 +447,8 @@ def build_output(
     adaptation_metrics: dict[str, Any],
     policy_profile: dict[str, Any],
     input_path: Path,
+    historical_feedback_count: int = 0,
+    current_run_feedback_count: int = 0,
 ) -> dict[str, Any]:
 
     subset = decision_output.get(
@@ -458,6 +479,14 @@ def build_output(
 
         "model": model,
 
+        "model_role": (
+            "controlled_baseline"
+            if str(model).lower() == CONTROLLED_BASELINE_MODEL
+            else "comparison_experiment"
+        ),
+
+        "controlled_baseline_model": CONTROLLED_BASELINE_MODEL,
+
         "adaptation_scope": (
             "decision_policy_only"
         ),
@@ -472,6 +501,13 @@ def build_output(
         "feedback_statistics": (
             feedback_stats
         ),
+
+        "feedback_provenance": {
+            "historical_feedback_used_for_adaptation": historical_feedback_count,
+            "current_run_feedback_recorded": current_run_feedback_count,
+            "total_accumulated_feedback_in_profile": feedback_stats["total_feedback"],
+            "policy_profile_uses_total_accumulated_feedback": True,
+        },
 
         "adaptation_metrics": (
             adaptation_metrics
@@ -644,6 +680,11 @@ th {{
 
 <b>Model:</b>
 {html.escape(str(output.get("model", "")))}
+
+&nbsp;&nbsp;
+
+<b>Model role:</b>
+{html.escape(str(output.get("model_role", "")))}
 </p>
 
 </header>
@@ -699,6 +740,14 @@ Mean Confidence: {feedback["mean_expert_confidence"]}
 </span>
 </p>
 
+<p>
+Historical Feedback Used for Adaptation:
+{output["feedback_provenance"]["historical_feedback_used_for_adaptation"]}
+&nbsp;&nbsp;
+Total Accumulated Feedback in Profile:
+{output["feedback_provenance"]["total_accumulated_feedback_in_profile"]}
+</p>
+
 </div>
 
 
@@ -713,6 +762,14 @@ Adaptations: {adaptation["adaptation_count"]}
 
 <span class="metric">
 Adaptation Rate: {adaptation["adaptation_rate"]}
+</span>
+
+<span class="metric">
+Recommendation Changes: {adaptation["recommendation_change_rate"]}
+</span>
+
+<span class="metric">
+Constraint Violations After Adaptation: {adaptation["constraint_violations_after_adaptation"]}
 </span>
 </p>
 
@@ -819,6 +876,8 @@ def run(
         DEFAULT_LOG_PATH
     )
 
+    historical_feedback_count = len(historical_feedback)
+
     queue = _load_or_create_queue(
         decision_output,
         output_path,
@@ -902,6 +961,8 @@ def run(
             DEFAULT_LOG_PATH,
         )
 
+        current_run_feedback_count = 1
+
         logger.info(
             "HITL feedback recorded: "
             "review=%s action=%s expert_action=%s confidence=%.3f",
@@ -910,6 +971,9 @@ def run(
             feedback["expert_action"],
             confidence,
         )
+
+    if not supplied_resolution:
+        current_run_feedback_count = 0
 
     # ---------------------------------------------------------------
     # Historical policy adaptation
@@ -941,6 +1005,13 @@ def run(
         DEFAULT_LOG_PATH
     )
 
+    adaptation_metrics.update({
+        "feedback_count": feedback_stats["total_feedback"],
+        "acceptance_rate": feedback_stats["acceptance_rate"],
+        "override_rate": feedback_stats["override_rate"],
+        "mean_expert_confidence": feedback_stats["mean_expert_confidence"],
+    })
+
     policy_profile = build_policy_profile(
         all_feedback
     )
@@ -953,6 +1024,8 @@ def run(
         adaptation_metrics=adaptation_metrics,
         policy_profile=policy_profile,
         input_path=input_path,
+        historical_feedback_count=historical_feedback_count,
+        current_run_feedback_count=current_run_feedback_count,
     )
 
     # ---------------------------------------------------------------

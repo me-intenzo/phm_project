@@ -341,7 +341,7 @@ def adaptive_conformal_interval(
     return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
 
 
-def cqr_interval(
+def scale_conformalized_interval(
     y_true_cal: np.ndarray,
     y_pred_cal: np.ndarray,
     scale_cal: np.ndarray,
@@ -349,7 +349,7 @@ def cqr_interval(
     scale_test: np.ndarray,
     alpha: float,
 ) -> dict[str, object]:
-    """Conformalize conditional bounds from the model point/scale output.
+    """Scale-based conformalized interval (CQR-style).
 
     Current checkpoints do not expose separately trained quantile heads, so
     the available conditional bounds are prediction +/- scale. The returned
@@ -366,6 +366,15 @@ def cqr_interval(
         np.asarray(y_pred_test) + np.asarray(scale_test) + q_hat,
     )
     return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
+
+
+def cqr_interval(*args, **kwargs) -> dict[str, object]:
+    """Backward-compatible alias for :func:`scale_conformalized_interval`.
+
+    This is not conventional CQR because the checkpoint has no learned
+    lower and upper quantile heads.
+    """
+    return scale_conformalized_interval(*args, **kwargs)
 
 
 def engine_joint_interval(

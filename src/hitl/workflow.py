@@ -198,9 +198,10 @@ def review_to_feedback(
         ai_action=decision["recommended_action"],
         expert_action=review["expert_action"],
         expert_confidence=review["expert_confidence"],
-        reason=review.get("comment", ""),
+        reason=review.get("comment") or "Approved by reviewer.",
         risk_score=decision.get("risk_score"),
         urgency_index=decision.get("urgency_index"),
+        rul=decision.get("rul"),
         health_state=decision.get("health_state"),
         uncertainty_level=decision.get("uncertainty_level"),
         explanation_reliability=decision.get(

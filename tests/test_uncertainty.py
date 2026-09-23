@@ -10,6 +10,7 @@ from src.uncertainty.conformal import (
     cqr_interval,
     engine_joint_interval,
 )
+from src.uncertainty.coverage import engine_level_coverage
 
 
 def test_conformal_quantile_uses_finite_sample_rank():
@@ -72,6 +73,15 @@ def test_engine_joint_uses_one_score_per_engine():
 def test_invalid_alpha_is_rejected():
     with pytest.raises(ValueError, match="alpha"):
         conformal_interval(np.array([1.0]), np.array([1.0]), np.array([1.0]), 0.0)
+
+
+def test_engine_level_coverage_requires_every_window_per_engine():
+    assert engine_level_coverage(
+        y_true=np.array([1.0, 2.0, 3.0, 4.0]),
+        lower=np.array([0.0, 1.0, 2.0, 5.0]),
+        upper=np.array([2.0, 3.0, 4.0, 6.0]),
+        engine_ids=np.array([1, 1, 2, 2]),
+    ) == 0.5
 
 
 def test_placeholder():

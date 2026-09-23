@@ -195,6 +195,28 @@ def per_regime_coverage(
     return result
 
 
+def engine_level_coverage(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    engine_ids: np.ndarray,
+) -> float:
+    """Fraction of engines whose complete window set is covered."""
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    lower = np.asarray(lower, dtype=np.float64).reshape(-1)
+    upper = np.asarray(upper, dtype=np.float64).reshape(-1)
+    engine_ids = np.asarray(engine_ids).reshape(-1)
+    if not (y_true.shape == lower.shape == upper.shape == engine_ids.shape):
+        raise ValueError("Interval arrays and engine_ids must have the same length.")
+    if engine_ids.size == 0:
+        raise ValueError("At least one engine is required.")
+    covered = (y_true >= lower) & (y_true <= upper)
+    return float(np.mean([
+        np.all(covered[engine_ids == engine_id])
+        for engine_id in np.unique(engine_ids)
+    ]))
+
+
 def evaluate_interval(
     y_true: np.ndarray,
     lower: np.ndarray,
@@ -202,6 +224,7 @@ def evaluate_interval(
     nominal_coverage: float,
     regimes: np.ndarray | None = None,
     n_regimes: int | None = None,
+    engine_ids: np.ndarray | None = None,
 ) -> dict[str, object]:
     """
     Evaluate a prediction interval.
@@ -245,6 +268,14 @@ def evaluate_interval(
             upper=upper,
             regimes=regimes,
             n_regimes=n_regimes,
+        )
+
+    if engine_ids is not None:
+        out["engine_level_coverage"] = engine_level_coverage(
+            y_true=y_true,
+            lower=lower,
+            upper=upper,
+            engine_ids=engine_ids,
         )
 
     return out
