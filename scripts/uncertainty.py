@@ -352,14 +352,14 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
     )
 
     # ── Evaluate intervals ────────────────────────────────────────
+    # Each variant has already produced its own calibrated interval in
+    # `cal_results`, so evaluate those bounds directly. Re-deriving them
+    # here would assume EARA's per-regime `q_hats` and raise KeyError for
+    # the global variants, which return a scalar `q_hat`.
     eval_results = {}
     for cov, cal in cal_results.items():
-        lower, upper = adaptive_prediction_interval(
-            y_pred=rul_test,
-            scale=scale_test,
-            q_hats=cal["q_hats"],
-            regimes=regimes_test,
-        )
+        lower = cal["lower"]
+        upper = cal["upper"]
         metrics = evaluate_interval(
             y_true=y_rul_test,
             lower=lower,
@@ -369,7 +369,7 @@ def run(subset: str, model_name: str, n_reg: int, variant: str) -> None:
             n_regimes=n_reg,
             engine_ids=test_engine_ids,
         )
-        eval_results[cov] = {**metrics, "lower": lower, "upper": upper}
+        eval_results[cov] = {**cal, **metrics}
 
         log.info(
             "Coverage %3.0f%%  |  Empirical %.4f  |  Error %.4f  |  "

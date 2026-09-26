@@ -119,6 +119,11 @@ RUL_LOSS_WEIGHT = 1.0
 
 HI_LOSS_WEIGHT = 0.5
 
+# Supervises the per-sample scale head that EARA-Conformal treats as the
+# conditional error magnitude s(x). Kept small so the Gaussian NLL term
+# calibrates interval width without competing with RUL accuracy.
+SCALE_LOSS_WEIGHT = 0.1
+
 
 # ------------------------------------------------------------------
 # Argument Parser
@@ -476,6 +481,7 @@ def run(model_name: str, subset: str) -> None:
     criterion = MultiTaskLoss(
         alpha=RUL_LOSS_WEIGHT,
         beta=HI_LOSS_WEIGHT,
+        gamma=SCALE_LOSS_WEIGHT,
     )
 
     # --------------------------------------------------------------

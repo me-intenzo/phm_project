@@ -226,6 +226,7 @@ class ModelTrainer:
         running_loss = 0.0
         running_rul = 0.0
         running_hi = 0.0
+        running_scale = 0.0
 
         for x, rul, hi in train_loader:
 
@@ -237,13 +238,14 @@ class ModelTrainer:
 
             self.optimizer.zero_grad()
 
-            pred_rul, pred_hi, _scale = self.model(x)
+            pred_rul, pred_hi, pred_scale = self.model(x)
 
             losses = self.criterion(
                 pred_rul,
                 pred_hi,
                 rul,
                 hi,
+                pred_scale,
             )
 
             loss = losses["total_loss"]
@@ -258,6 +260,8 @@ class ModelTrainer:
 
             running_hi += losses["hi_loss"].item()
 
+            running_scale += losses["scale_loss"].item()
+
         n_batches = len(train_loader)
 
         return {
@@ -267,6 +271,8 @@ class ModelTrainer:
             "rul_loss": running_rul / n_batches,
 
             "hi_loss": running_hi / n_batches,
+
+            "scale_loss": running_scale / n_batches,
 
         }
 
@@ -286,6 +292,7 @@ class ModelTrainer:
         running_loss = 0.0
         running_rul = 0.0
         running_hi = 0.0
+        running_scale = 0.0
 
         for x, rul, hi in val_loader:
 
@@ -295,13 +302,14 @@ class ModelTrainer:
 
             hi = hi.to(self.device)
 
-            pred_rul, pred_hi, _scale = self.model(x)
+            pred_rul, pred_hi, pred_scale = self.model(x)
 
             losses = self.criterion(
                 pred_rul,
                 pred_hi,
                 rul,
                 hi,
+                pred_scale,
             )
 
             running_loss += losses["total_loss"].item()
@@ -309,6 +317,8 @@ class ModelTrainer:
             running_rul += losses["rul_loss"].item()
 
             running_hi += losses["hi_loss"].item()
+
+            running_scale += losses["scale_loss"].item()
 
         n_batches = len(val_loader)
 
@@ -319,6 +329,8 @@ class ModelTrainer:
             "rul_loss": running_rul / n_batches,
 
             "hi_loss": running_hi / n_batches,
+
+            "scale_loss": running_scale / n_batches,
 
         }
 
@@ -345,6 +357,9 @@ class ModelTrainer:
 
             "train_hi_loss": [],
             "val_hi_loss": [],
+
+            "train_scale_loss": [],
+            "val_scale_loss": [],
 
         }
 
@@ -384,6 +399,14 @@ class ModelTrainer:
 
             history["val_hi_loss"].append(
                 val_metrics["hi_loss"]
+            )
+
+            history["train_scale_loss"].append(
+                train_metrics["scale_loss"]
+            )
+
+            history["val_scale_loss"].append(
+                val_metrics["scale_loss"]
             )
 
             logger.info(
