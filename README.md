@@ -1,291 +1,1318 @@
-# PHM-XAI: Engine-Aware Trustworthy Prognostics
+# PHM-XAI: Explainable and Uncertainty-Aware Prognostics for Predictive Maintenance
 
-End-to-end prognostics pipeline for **remaining useful life (RUL)** and **health index (HI)** estimation on the NASA C-MAPSS turbofan dataset. Point predictions are extended with calibrated uncertainty intervals, post-hoc explanations, and constraint-aware maintenance recommendations.
+An end-to-end Prognostics and Health Management (PHM) research system for **Remaining Useful Life (RUL)** and **Health Index (HI)** estimation using the **NASA C-MAPSS turbofan engine dataset**.
 
-> Results are from project runs on C-MAPSS. This is a research implementation, not a production system. See [Implementation Status](#implementation-status) for what is complete and what is not.
+The system combines deep-learning-based prognostics with **Explainable AI (XAI)**, **conformal uncertainty estimation**, **constraint-aware maintenance decision support**, and a **Human-in-the-Loop (HITL)** workflow.
 
-**New here?** [ARCHITECTURE.md](ARCHITECTURE.md) documents the internal design — module responsibilities, artifact contracts, the conformal calibration math, the full decision policy, and current gaps.
-
----
-
-## Contents
-
-- [Overview](#overview)
-- [Repository Layout](#repository-layout)
-- [Setup](#setup)
-- [Pipeline](#pipeline)
-- [Decision Support](#decision-support)
-- [HITL Review](#hitl-review)
-- [Results Summary](#results-summary)
-- [Implementation Status](#implementation-status)
-- [Tests](#tests)
+> **Project Status:** Research implementation. The system is intended for academic experimentation and decision support and is not a production maintenance system.
 
 ---
 
-## Overview
+## 1. Project Overview
 
-The pipeline treats prognostics as a decision-support chain. A recommendation is considered trustworthy only when four questions are answered together:
+Predictive maintenance aims to estimate the future health condition of equipment and identify when maintenance should be performed.
 
-1. **What is the predicted degradation state?** Joint RUL and HI estimation provides the point forecast.
-2. **How uncertain is that forecast?** Engine-disjoint conformal calibration provides the uncertainty baseline; EARA-Conformal adds regime- and scale-aware interval sizing.
-3. **Why did the model produce it?** Integrated Gradients, SHAP, temporal relevance, and ERI expose sensor-level evidence and flag explanation disagreement.
-4. **What action is feasible?** A rule-based engine combines health state, uncertainty, ERI, and operational constraints into an auditable recommendation.
+Traditional prognostic systems often provide a single prediction without explaining:
+
+* how the prediction was generated,
+* how uncertain the prediction is,
+* which sensor observations influenced the prediction, or
+* how the prediction should be converted into an operational maintenance decision.
+
+PHM-XAI addresses these issues through an integrated pipeline:
 
 ```text
-NASA C-MAPSS → Preprocessing → Multi-task model → RUL / HI predictions
-                                                         |
-                                          ┌──────────────┴──────────────┐
-                                   EARA-Conformal              IG, SHAP, ERI
-                                   uncertainty                 explanations
-                                          └──────────────┬──────────────┘
-                                                  Decision engine
-                                                  (rules + constraints)
-                                                         |
-                                               Auditable recommendation
-                                                         |
-                                              HITL review → feedback
-                                              → policy refinement
+NASA C-MAPSS
+     │
+     ▼
+Data Preprocessing
+     │
+     ▼
+Sequence / Window Generation
+     │
+     ▼
+Multi-Task Deep Learning
+     │
+     ├───────────────┐
+     ▼               ▼
+    RUL             HI
+ Prediction      Prediction
+     │               │
+     └───────┬───────┘
+             │
+      ┌──────┴──────┐
+      ▼             ▼
+ Uncertainty       XAI
+ Estimation       Analysis
+      │             │
+      │        ┌────┴─────────────┐
+      │        ▼        ▼         ▼
+      │       SHAP      IG    Temporal
+      │                       Relevance
+      │                           │
+      │                           ▼
+      │                          ERI
+      │
+      └────────────┬──────────────┘
+                   ▼
+          Maintenance Decision
+              Engine
+                   │
+                   ▼
+        Operational Constraints
+                   │
+                   ▼
+       Maintenance Recommendation
+                   │
+                   ▼
+            Human Review
+                   │
+                   ▼
+          Expert Feedback
+                   │
+                   ▼
+          Policy Refinement
 ```
 
-Two invariants hold at every stage:
-
-- **Engine-disjoint splits.** Windows from one engine are correlated, so train/validation and calibration/test splits are grouped by engine ID, and every stage asserts zero engine overlap before continuing.
-- **Calibration never sees test targets.** Conformal quantiles are estimated on a calibration split carved out of the training set; the test set is used only to measure coverage.
+The system therefore treats prognostics as a **decision-support chain**, rather than as a standalone RUL prediction model.
 
 ---
 
-## Repository Layout
+# 2. Research Objectives
+
+The project has the following objectives:
+
+1. Develop deep-learning models for **RUL prediction** of turbofan engines.
+2. Estimate a continuous **Health Index (HI)** representing degradation.
+3. Compare different sequence-learning architectures.
+4. Quantify prediction uncertainty using conformal prediction methods.
+5. Explain model predictions using multiple XAI techniques.
+6. Estimate explanation reliability using the **Explainability Reliability Index (ERI)**.
+7. Convert predictions, uncertainty and explanations into auditable maintenance recommendations.
+8. Incorporate expert feedback through a Human-in-the-Loop workflow.
+9. Maintain engine-disjoint evaluation to reduce data leakage.
+10. Provide reproducible artifacts, reports and experiment outputs.
+
+---
+
+# 3. Dataset
+
+The project uses the **NASA C-MAPSS (Commercial Modular Aero-Propulsion System Simulation)** turbofan engine dataset.
+
+Four operating subsets are supported:
+
+* FD001
+* FD002
+* FD003
+* FD004
+
+Each subset contains simulated turbofan engine run-to-failure trajectories with:
+
+* engine identifiers,
+* operational settings,
+* sensor measurements,
+* training trajectories,
+* test trajectories,
+* ground-truth RUL values for the test set.
+
+The raw files are expected under:
 
 ```text
-ARCHITECTURE.md  internal design, data contracts, known gaps
-README.md        this file
-configs/         subset configuration files (fd001–fd004.yaml) — see note below
-data/
-  external/      example decision input JSON files
-  raw/           NASA C-MAPSS text files — not committed, add manually
-  processed/     NumPy windows and labels — generated by preprocess.py
-scripts/         CLI entry points for each pipeline stage
-src/
-  preprocessing/  loading, validation, labelling, selection, scaling, windowing
-  models/         LSTM, GRU, Transformer, Hybrid, GRU-Att-Deg (+ losses, trainer, evaluator)
-  uncertainty/    conformal prediction and EARA-Conformal
-  explainability/ IG, SHAP, temporal relevance, ERI
-  decision_engine/ rules, constraints, recommender
-  hitl/           review workflow, feedback schema, policy refinement
-  evaluation/     placeholder stubs — see Implementation Status
-  utils/          logging (config/io/seed are stubs)
-tests/            pytest suite
-outputs/          generated artifacts — not committed
-  checkpoints/    trained model weights, per model/subset
-  figures/        EDA and experiment plots
-  hitl/           feedback.jsonl — append-only expert feedback log
-  logs/           pipeline logs
-  models/         scalers
-  reports/        HTML reports and CSV summaries
-  results/        metrics, predictions, intervals, decisions
-                  results/uncertainty/<variant>/<subset>/<model>.npz
-  xai/            attribution arrays, ERI JSON, HTML reports
+data/raw/
+├── train_FD001.txt
+├── test_FD001.txt
+├── RUL_FD001.txt
+├── train_FD002.txt
+├── test_FD002.txt
+├── RUL_FD002.txt
+├── train_FD003.txt
+├── test_FD003.txt
+├── RUL_FD003.txt
+├── train_FD004.txt
+├── test_FD004.txt
+└── RUL_FD004.txt
 ```
 
-> **Config files are not wired up.** `configs/*.yaml` record the intended hyperparameters, but no script reads them — `src/utils/config.py::load_config` is a stub and each stage uses its own module-level constants. Treat the scripts as the source of truth until config loading lands. See [ARCHITECTURE.md](ARCHITECTURE.md#caveat-configuration-files-are-not-wired-up).
+The raw NASA C-MAPSS data is not committed to the repository and must be added locally.
 
 ---
 
-## Setup
+# 4. System Architecture
 
-Python 3.9+ required.
+The system consists of six major components:
+
+### 4.1 Data Processing
+
+Responsible for:
+
+* loading C-MAPSS data,
+* validating input data,
+* identifying individual engines,
+* generating RUL labels,
+* selecting usable features,
+* scaling sensor values,
+* generating temporal windows.
+
+### 4.2 Prognostic Models
+
+The project supports multiple deep-learning architectures:
+
+* LSTM
+* GRU
+* Transformer
+* Hybrid architecture
+* GRU-Att-Deg
+
+The models perform joint prediction of:
+
+* Remaining Useful Life (RUL)
+* Health Index (HI)
+
+### 4.3 Uncertainty Estimation
+
+Prediction intervals are generated using conformal calibration approaches.
+
+The repository currently implements:
+
+* EARA-Conformal
+* Adaptive Conformal
+* Split Conformal
+* CQR-style scale-based calibration
+* Engine-Joint Conformal
+
+### 4.4 Explainability
+
+Model predictions are analyzed using:
+
+* Integrated Gradients
+* SHAP
+* Temporal Relevance
+* Explainability Reliability Index (ERI)
+
+These methods provide information about the sensor and temporal evidence influencing predictions.
+
+### 4.5 Decision Engine
+
+The decision engine combines:
+
+* predicted RUL,
+* predicted HI,
+* prediction interval,
+* uncertainty level,
+* explanation reliability,
+* risk score,
+* urgency,
+* operational constraints.
+
+It produces an auditable maintenance recommendation.
+
+### 4.6 Human-in-the-Loop
+
+Human experts can:
+
+* review flagged decisions,
+* approve AI recommendations,
+* override recommendations,
+* provide confidence and reasoning.
+
+Expert feedback is accumulated and can be used for conservative **decision-policy refinement**.
+
+> HITL currently does **not** retrain the underlying prognostic model.
+
+---
+
+# 5. End-to-End Data Flow
+
+The complete pipeline is:
+
+```text
+NASA C-MAPSS
+      │
+      ▼
+Data Ingestion
+      │
+      ▼
+Validation
+      │
+      ▼
+RUL Label Generation
+      │
+      ▼
+Feature Selection
+      │
+      ▼
+Scaling
+      │
+      ▼
+Sliding-Window Generation
+      │
+      ▼
+Train / Validation / Calibration / Test
+      │
+      ▼
+Deep Learning Model
+      │
+      ├───────────────┐
+      ▼               ▼
+     RUL              HI
+      │               │
+      └───────┬───────┘
+              ▼
+       Uncertainty Layer
+              │
+              ▼
+       Explainability Layer
+              │
+              ▼
+       Decision Engine
+              │
+              ▼
+    Operational Constraints
+              │
+              ▼
+ Maintenance Recommendation
+              │
+              ▼
+       Human Review
+              │
+              ▼
+     Expert Feedback
+              │
+              ▼
+      Policy Refinement
+```
+
+Two important data-integrity principles are maintained:
+
+### Engine-disjoint splitting
+
+Windows belonging to the same engine are kept within the same dataset split to reduce leakage caused by correlated observations from the same engine.
+
+### Calibration isolation
+
+Conformal calibration is performed using a calibration split rather than the final test targets. The test set is reserved for evaluating coverage and prediction performance.
+
+---
+
+# 6. Preprocessing Pipeline
+
+The preprocessing stage converts raw C-MAPSS trajectories into model-ready temporal sequences.
+
+## 6.1 Data Ingestion
+
+The preprocessing pipeline reads the C-MAPSS text files and constructs structured records containing engine IDs, operating conditions and sensor measurements.
+
+## 6.2 Validation
+
+Input data is validated before further processing.
+
+Validation includes:
+
+* expected columns,
+* engine identifiers,
+* sensor values,
+* trajectory structure,
+* missing or invalid values,
+* compatibility between training and test data.
+
+## 6.3 RUL Label Generation
+
+For a training trajectory, RUL is derived from the remaining number of operational cycles before the engine reaches the end of its trajectory.
+
+The resulting target is used for supervised RUL prediction.
+
+## 6.4 Feature Selection
+
+The preprocessing stage selects the usable operational and sensor variables required by the model.
+
+The feature-selection configuration is applied consistently when creating training and evaluation windows.
+
+## 6.5 Scaling
+
+Sensor and operating-condition variables are scaled before being provided to the neural network.
+
+Scaling parameters are learned from the appropriate training data and reused during validation/test processing.
+
+## 6.6 Sliding Windows
+
+The continuous engine trajectories are converted into fixed-length temporal windows.
+
+Conceptually:
+
+```text
+Engine trajectory:
+
+t1 ─ t2 ─ t3 ─ t4 ─ t5 ─ t6 ─ t7 ─ ...
+
+Window 1:
+[t1 t2 t3 t4 ...]
+
+Window 2:
+   [t2 t3 t4 t5 ...]
+
+Window 3:
+      [t3 t4 t5 t6 ...]
+```
+
+Each window represents the recent operating history of an engine and becomes one model input sample.
+
+---
+
+# 7. Model Design
+
+The repository contains five model families.
+
+## 7.1 LSTM
+
+Long Short-Term Memory networks are used to capture temporal dependencies in sensor sequences.
+
+```text
+Input Sequence
+      │
+      ▼
+     LSTM
+      │
+      ▼
+Temporal Representation
+      │
+ ┌────┴────┐
+ ▼         ▼
+RUL       HI
+Head      Head
+```
+
+---
+
+## 7.2 GRU
+
+The Gated Recurrent Unit architecture provides recurrent temporal modeling with a simpler gating mechanism than LSTM.
+
+```text
+Input Sequence
+      │
+      ▼
+     GRU
+      │
+      ▼
+Sequence Representation
+      │
+ ┌────┴────┐
+ ▼         ▼
+RUL       HI
+```
+
+---
+
+## 7.3 Transformer
+
+The Transformer architecture uses attention mechanisms to model relationships between different time steps in the sensor sequence.
+
+```text
+Input Sequence
+      │
+      ▼
+Feature / Positional Representation
+      │
+      ▼
+Transformer Encoder
+      │
+      ▼
+Temporal Representation
+      │
+ ┌────┴────┐
+ ▼         ▼
+RUL       HI
+```
+
+---
+
+## 7.4 Hybrid Model
+
+The hybrid architecture combines multiple sequence-processing mechanisms to capture complementary temporal characteristics.
+
+The exact configuration is defined by the implementation under `src/models/`.
+
+---
+
+## 7.5 GRU-Att-Deg
+
+The GRU-Att-Deg architecture combines:
+
+* GRU-based temporal encoding,
+* temporal attention,
+* RUL prediction,
+* degradation/health-index prediction.
+
+Conceptually:
+
+```text
+Input Sensor Window
+        │
+        ▼
+    GRU Encoder
+        │
+        ▼
+Temporal Attention
+        │
+        ▼
+ Context Vector
+      │   │
+      │   └─────────────► HI / Degradation Head
+      │
+      └─────────────────► RUL Head
+```
+
+This architecture provides a learned representation of the most relevant temporal information for prognostic prediction.
+
+---
+
+# 8. Multi-Task Prediction
+
+The system jointly estimates two related outputs:
+
+### Remaining Useful Life
+
+RUL estimates the expected number of operational cycles remaining before failure/end-of-life.
+
+### Health Index
+
+HI provides a continuous representation of the degradation or health state of the engine.
+
+The multi-task formulation can be represented as:
+
+```text
+                 Shared Representation
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+        RUL Prediction          HI Prediction
+             │                       │
+             ▼                       ▼
+          RUL Value               HI Value
+```
+
+Joint prediction allows the model to learn both remaining life and degradation behavior.
+
+---
+
+# 9. Training and Evaluation
+
+The project uses PyTorch-based deep-learning models.
+
+Training involves:
+
+* sequence-based input data,
+* supervised RUL/HI targets,
+* configurable optimization,
+* validation monitoring,
+* checkpoint generation,
+* evaluation on held-out engine trajectories.
+
+Supported model names:
+
+```text
+lstm
+gru
+transformer
+hybrid
+gru_att_deg
+```
+
+Supported subsets:
+
+```text
+FD001
+FD002
+FD003
+FD004
+```
+
+Example:
+
+```bash
+python scripts/train.py --model gru --subset FD001
+```
+
+Evaluation:
+
+```bash
+python scripts/evaluate.py --model gru --subset FD001
+```
+
+The project reports standard regression metrics such as:
+
+* MAE
+* RMSE
+* R²
+* NASA scoring metric
+
+Results should be interpreted together with the corresponding model, subset, checkpoint and experimental configuration.
+
+---
+
+# 10. Explainable AI (XAI)
+
+A key objective of PHM-XAI is to provide evidence for model predictions rather than treating the neural network as a black box.
+
+The project uses multiple complementary explanation techniques.
+
+## 10.1 Integrated Gradients
+
+Integrated Gradients attributes the model output to input features by integrating gradients along a path from a baseline input to the observed input.
+
+It provides feature-level attribution for RUL and/or HI predictions.
+
+---
+
+## 10.2 SHAP
+
+SHAP is used to estimate the contribution of input features to the model output.
+
+The resulting values can be used to identify sensors that have a strong positive or negative influence on the prediction.
+
+---
+
+## 10.3 Temporal Relevance
+
+Temporal relevance analyzes which portions of the input sequence contribute most strongly to the prediction.
+
+This is particularly useful for time-series prognostics because both:
+
+* **which sensor**
+* **when the sensor observation occurred**
+
+can affect a prediction.
+
+---
+
+## 10.4 Explainability Reliability Index
+
+The **Explainability Reliability Index (ERI)** summarizes agreement between multiple explanation methods.
+
+The project compares evidence from:
+
+* Integrated Gradients,
+* SHAP,
+* temporal relevance.
+
+A higher agreement indicates stronger consistency between the explanation methods, while disagreement can be used as a warning signal for decision support.
+
+Conceptually:
+
+```text
+              Model Prediction
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+ Integrated        SHAP       Temporal
+ Gradients                    Relevance
+        │            │            │
+        └────────────┼────────────┘
+                     ▼
+                    ERI
+                     │
+                     ▼
+        Explanation Reliability
+```
+
+XAI artifacts are stored under:
+
+```text
+outputs/xai/
+```
+
+---
+
+# 11. Uncertainty Estimation
+
+A point prediction alone does not indicate how confident the system should be in its estimate.
+
+PHM-XAI therefore generates prediction intervals using conformal calibration.
+
+For example:
+
+```text
+Predicted RUL = 35 cycles
+
+Prediction interval:
+
+Lower bound = 24 cycles
+Prediction   = 35 cycles
+Upper bound = 47 cycles
+```
+
+The interval provides an estimate of the range within which the true RUL is expected to fall at a specified calibration level.
+
+## Implemented uncertainty variants
+
+| Variant                  | Description                                       |
+| ------------------------ | ------------------------------------------------- |
+| `eara_conformal`         | Regime- and scale-adaptive conformal calibration  |
+| `adaptive_conformal`     | Global scale-adaptive calibration                 |
+| `conformal`              | Global split-conformal baseline                   |
+| `cqr`                    | Scale-based conformalized interval implementation |
+| `engine_joint_conformal` | Calibration using engine-level scores             |
+
+Example:
+
+```bash
+python scripts/uncertainty.py \
+    --model gru \
+    --subset FD001 \
+    --n_regimes 7
+```
+
+Coverage is evaluated at nominal:
+
+* 80%
+* 90%
+* 95%
+
+Reported uncertainty metrics include:
+
+* empirical coverage,
+* coverage error,
+* Mean Prediction Interval Width (MPIW),
+* normalized prediction interval width,
+* per-regime coverage,
+* engine-level coverage.
+
+The uncertainty artifacts are stored under:
+
+```text
+outputs/results/uncertainty/
+```
+
+---
+
+# 12. Maintenance Decision Workflow
+
+The maintenance decision engine converts model outputs into operational recommendations.
+
+The decision engine considers:
+
+* RUL,
+* HI,
+* prediction interval,
+* uncertainty,
+* ERI,
+* risk,
+* urgency,
+* operational constraints.
+
+The workflow is:
+
+```text
+RUL + HI
+   │
+   ▼
+Uncertainty Interval
+   │
+   ▼
+ERI / Explanation Reliability
+   │
+   ▼
+Risk Assessment
+   │
+   ▼
+Health & Uncertainty Classification
+   │
+   ▼
+Operational Constraints
+   │
+   ▼
+Maintenance Recommendation
+```
+
+## Available actions
+
+The system currently supports:
+
+```text
+CONTINUE_OPERATION
+MONITOR
+INSPECT
+SCHEDULE_MAINTENANCE
+URGENT_MAINTENANCE
+```
+
+The decision output contains information such as:
+
+* health state,
+* uncertainty level,
+* explanation reliability,
+* risk score,
+* urgency index,
+* risk components,
+* reasons,
+* constraint violations,
+* human-review flag.
+
+---
+
+# 13. Operational Constraints
+
+Maintenance decisions can be affected by real-world operational limitations.
+
+Supported constraints include:
+
+| Constraint              | Purpose                                                   |
+| ----------------------- | --------------------------------------------------------- |
+| Maintenance window      | Determines whether maintenance can currently be performed |
+| Minimum safe RUL        | Minimum remaining life required to defer maintenance      |
+| Maintenance lead time   | Required preparation time                                 |
+| Maximum allowable delay | Maximum acceptable waiting period                         |
+| Resource availability   | Availability of maintenance personnel and parts           |
+
+Example:
+
+```bash
+python scripts/decision.py \
+    --subset FD001 \
+    --minimum-safe-rul 10 \
+    --maintenance-lead-time 10 \
+    --no-maintenance-window
+```
+
+Constraints are designed to make recommendations more conservative rather than less conservative.
+
+---
+
+# 14. Human-in-the-Loop Workflow
+
+Some predictions can be flagged for human review when uncertainty, explanation reliability or operational risk requires additional assessment.
+
+The workflow is:
+
+```text
+AI Recommendation
+       │
+       ▼
+Human Review Required?
+       │
+   ┌───┴────┐
+   │        │
+  No       Yes
+   │        │
+   │        ▼
+   │   Expert Review
+   │        │
+   │   ┌────┴────┐
+   │   ▼         ▼
+   │ APPROVE   OVERRIDE
+   │             │
+   └──────┬──────┘
+          ▼
+    Expert Feedback
+          │
+          ▼
+   Policy Refinement
+```
+
+Example:
+
+```bash
+python scripts/hitl.py --subset FD001 --model gru
+```
+
+A reviewer can approve an AI recommendation or override it with an alternative action.
+
+Expert feedback is stored in:
+
+```text
+outputs/hitl/feedback.jsonl
+```
+
+### Important implementation boundary
+
+The current HITL implementation **does not retrain the prognostic neural network**.
+
+Instead, expert feedback is used for conservative **decision-policy refinement**.
+
+Model retraining remains a future extension.
+
+---
+
+# 15. Model Monitoring and Retraining
+
+The current implementation provides decision-level monitoring through:
+
+* prediction uncertainty,
+* explanation reliability,
+* decision risk,
+* human review,
+* expert feedback.
+
+However, automated model retraining is currently outside the implemented HITL workflow.
+
+A future production-oriented extension could introduce:
+
+```text
+Prediction Monitoring
+        │
+        ▼
+Performance / Data Drift Detection
+        │
+        ▼
+Retraining Trigger
+        │
+        ▼
+Model Retraining
+        │
+        ▼
+Validation
+        │
+        ▼
+Model Approval
+        │
+        ▼
+Deployment
+```
+
+This should be considered a **future system capability**, not a currently implemented feature.
+
+---
+
+# 16. Repository Structure
+
+```text
+phm_project/
+│
+├── ARCHITECTURE.md
+├── README.md
+├── main.py
+├── requirements.txt
+│
+├── configs/
+│   ├── fd001.yaml
+│   ├── fd002.yaml
+│   ├── fd003.yaml
+│   └── fd004.yaml
+│
+├── data/
+│   ├── external/
+│   ├── raw/
+│   └── processed/
+│
+├── scripts/
+│   ├── preprocess.py
+│   ├── train.py
+│   ├── evaluate.py
+│   ├── uncertainty.py
+│   ├── explain.py
+│   ├── decision.py
+│   ├── hitl.py
+│   └── regime_sweep.py
+│
+├── src/
+│   ├── preprocessing/
+│   ├── models/
+│   ├── uncertainty/
+│   ├── explainability/
+│   ├── decision_engine/
+│   ├── hitl/
+│   ├── evaluation/
+│   └── utils/
+│
+├── tests/
+│
+└── outputs/
+    ├── checkpoints/
+    ├── figures/
+    ├── hitl/
+    ├── logs/
+    ├── models/
+    ├── reports/
+    ├── results/
+    └── xai/
+```
+
+---
+
+# 17. Installation
+
+## Requirements
+
+* Python 3.9+
+* PyTorch
+* NumPy
+* Pandas
+* scikit-learn
+* SciPy
+* SHAP
+* Captum
+* PyYAML
+* tqdm
+* joblib
+* Matplotlib
+* Seaborn
+
+Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+### Windows PowerShell
 
 ```powershell
-python -m venv .venv
 .venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins a CUDA 12.8 PyTorch build. For CPU-only or a different CUDA version, install a compatible PyTorch build first, then run `pip install -r requirements.txt`.
+The repository requirements currently specify a CUDA-enabled PyTorch build. Users running CPU-only systems or a different CUDA version should install an appropriate PyTorch build before installing the remaining dependencies.
 
-### Dataset
+---
 
-Place the raw C-MAPSS files in `data/raw/`:
+# 18. Running the Pipeline
+
+## Step 1 — Exploratory Data Analysis
+
+```bash
+python main.py
+```
+
+The current EDA entry point operates on FD001.
+
+## Step 2 — Preprocessing
+
+For one subset:
+
+```bash
+python scripts/preprocess.py --subset FD001
+```
+
+For all subsets:
+
+```bash
+python scripts/preprocess.py --subset all
+```
+
+## Step 3 — Train a Model
+
+```bash
+python scripts/train.py \
+    --model gru \
+    --subset FD001
+```
+
+## Step 4 — Evaluate
+
+```bash
+python scripts/evaluate.py \
+    --model gru \
+    --subset FD001
+```
+
+## Step 5 — Generate Uncertainty Intervals
+
+```bash
+python scripts/uncertainty.py \
+    --model gru \
+    --subset FD001 \
+    --n_regimes 7
+```
+
+## Step 6 — Generate Explanations
+
+```bash
+python scripts/explain.py \
+    --model gru_att_deg \
+    --subset FD001 \
+    --target rul
+```
+
+For all supported models and subsets:
+
+```bash
+python scripts/explain.py \
+    --model all \
+    --subset all \
+    --target all
+```
+
+## Step 7 — Generate Maintenance Decisions
+
+```bash
+python scripts/decision.py \
+    --subset FD001 \
+    --model gru
+```
+
+## Step 8 — Human-in-the-Loop Review
+
+```bash
+python scripts/hitl.py \
+    --subset FD001 \
+    --model gru
+```
+
+---
+
+# 19. Experimental Results
+
+Results are dependent on:
+
+* dataset subset,
+* preprocessing configuration,
+* model architecture,
+* checkpoint,
+* random seed,
+* training configuration.
+
+Therefore, reported values should be reproduced before being used as formal benchmark results.
+
+Example results from project runs include:
+
+| Experiment                | Result                                                          |
+| ------------------------- | --------------------------------------------------------------- |
+| FD001 — GRU-Att-Deg       | MAE: 10.05, RMSE: 13.64, R²: 0.884, NASA Score: 308.63          |
+| FD004 — Transformer       | MAE: 13.56, R²: 0.808                                           |
+| GRU split conformal — 90% | Coverage evaluated across FD001–FD004                           |
+| Mean ERI                  | Approximately 0.88 for HI and 0.87 for RUL across reported runs |
+
+These values are **experiment-specific** and should not be interpreted as universal model performance.
+
+---
+
+# 20. Current Implementation Status
+
+| Component                           | Status          |
+| ----------------------------------- | --------------- |
+| Data preprocessing and windowing    | Complete        |
+| Joint RUL/HI prediction             | Implemented     |
+| LSTM                                | Implemented     |
+| GRU                                 | Implemented     |
+| Transformer                         | Implemented     |
+| Hybrid model                        | Implemented     |
+| GRU-Att-Deg                         | Implemented     |
+| Conformal uncertainty               | Implemented     |
+| EARA-Conformal                      | Implemented     |
+| Integrated Gradients                | Implemented     |
+| SHAP                                | Implemented     |
+| Temporal relevance                  | Implemented     |
+| ERI                                 | Implemented     |
+| Decision engine                     | Implemented     |
+| Operational constraints             | Implemented     |
+| HITL review                         | Implemented     |
+| Decision-policy refinement          | Implemented     |
+| Automated neural-network retraining | Not implemented |
+| Multi-seed uncertainty validation   | Pending         |
+| XAI faithfulness validation         | Pending         |
+| Full evaluation/ablation framework  | Pending         |
+| Configuration-file loading          | Not implemented |
+
+---
+
+# 21. Known Limitations
+
+The current research implementation has several limitations.
+
+### Configuration Management
+
+The YAML files under `configs/` currently describe intended configurations but are not fully connected to the execution pipeline. Some scripts use module-level constants.
+
+### Uncertainty Validation
+
+Multi-seed and engine-level validation of adaptive uncertainty approaches remains an area for further experimentation.
+
+### Existing Checkpoints
+
+Previously trained checkpoints may not contain a properly trained scale head required by adaptive uncertainty estimation. Adaptive interval results should therefore be regenerated using checkpoints trained with the current loss configuration.
+
+### Evaluation Framework
+
+Some components under `src/evaluation/` remain placeholders. Core metrics are implemented elsewhere in the model evaluation code.
+
+### CQR Terminology
+
+The current `cqr` implementation is a scale-based conformalized interval approach and does not implement conventional trained lower/upper quantile heads.
+
+### Production Deployment
+
+The project is an academic research implementation and does not currently provide production-grade deployment, live sensor ingestion, automated model retraining or safety certification.
+
+---
+
+# 22. Future Scope
+
+Future development may include:
+
+* automated configuration management,
+* automated model retraining,
+* data and concept drift detection,
+* continuous monitoring,
+* automated experiment tracking,
+* multi-seed benchmarking,
+* XAI faithfulness evaluation,
+* ablation studies,
+* robustness testing,
+* real-time sensor integration,
+* production deployment,
+* model versioning,
+* CI/CD integration,
+* automated model validation and approval.
+
+A future production workflow could be:
 
 ```text
-data/raw/
-  train_FD001.txt   test_FD001.txt   RUL_FD001.txt
-  train_FD002.txt   test_FD002.txt   RUL_FD002.txt
-  train_FD003.txt   test_FD003.txt   RUL_FD003.txt
-  train_FD004.txt   test_FD004.txt   RUL_FD004.txt
+Live Sensor Data
+       │
+       ▼
+Data Quality Monitoring
+       │
+       ▼
+PHM Model
+       │
+       ├──────────► RUL / HI
+       │
+       ├──────────► Uncertainty
+       │
+       └──────────► XAI / ERI
+                    │
+                    ▼
+             Decision Engine
+                    │
+                    ▼
+             Human Oversight
+                    │
+                    ▼
+          Monitoring / Feedback
+                    │
+                    ▼
+              Drift Detection
+                    │
+                    ▼
+            Retraining Pipeline
+                    │
+                    ▼
+             Model Validation
+                    │
+                    ▼
+              Model Deployment
 ```
 
 ---
 
-## Pipeline
+# 23. Testing
 
-Each stage depends on outputs from the previous one. `--subset all` and `--model all` iterate over every combination; a stage that fails for one combination is reported and skipped rather than aborting the run.
+Run the test suite using:
 
-```powershell
-# Exploratory data analysis (FD001 only, hard-coded)
-python main.py
-
-# Preprocess (one subset or all)
-python scripts/preprocess.py --subset FD001
-python scripts/preprocess.py --subset all
-
-# Train and evaluate
-python scripts/train.py    --model gru --subset FD001
-python scripts/evaluate.py --model gru --subset FD001
-
-# Uncertainty intervals
-python scripts/uncertainty.py --model gru --subset FD001 --n_regimes 7
-
-# Explanations (one target or all)
-python scripts/explain.py --model gru_att_deg --subset FD001 --target rul
-python scripts/explain.py --model all --subset all --target all
-```
-
-Valid model names: `lstm`, `gru`, `transformer`, `hybrid`, `gru_att_deg`  
-Valid subsets: `FD001`, `FD002`, `FD003`, `FD004`  
-Valid explain targets: `rul`, `hi`, `all`
-
-### Uncertainty variants
-
-`scripts/uncertainty.py` implements five calibration methods, selected with `--variant`:
-
-| Variant | Interval | Character |
-|---|---|---|
-| `eara_conformal` *(default)* | `ŷ ± q̂_k · s(x)` | Per-regime, scale-adaptive |
-| `adaptive_conformal` | `ŷ ± q̂ · s(x)` | Global, scale-adaptive |
-| `conformal` | `ŷ ± q̂` | Global split conformal (baseline) |
-| `cqr` | `ŷ ± (s(x) + q̂)` | Scale-based conformalized |
-| `engine_joint_conformal` | `ŷ ± q̂` | One score per calibration engine |
-
-`--n_regimes` (default 7) sets the k-means regime count used by `eara_conformal`. The default was selected by sweeping k = 2..10:
-
-```powershell
-python scripts/regime_sweep.py    # writes outputs/results/regime_sweep.json
-```
-
-Coverage is evaluated at nominal 80% / 90% / 95%, reporting empirical coverage, coverage error, MPIW, PINAW, per-regime coverage, and the stricter engine-level coverage. Results land in `outputs/results/uncertainty/<variant>/<subset>/`.
-
-> The variants differ only in how the interval radius is calibrated; all five share the same engine-disjoint calibration split and the same `[0, 125]` clipping.
-
----
-
-## Decision Support
-
-The decision engine fuses RUL, HI, the conformal interval, and ERI into a risk score, classifies health and uncertainty, selects an action, then applies operational constraints. Constraints can only make an action more conservative, never less.
-
-It normally consumes upstream artifacts directly — predictions, the 90% interval, and the ERI/top-sensor JSON from `scripts/explain.py` — and names every missing artifact if a stage has not been run.
-
-```powershell
-# Run against all subsets using default thresholds
-python scripts/decision.py --subset all
-
-# Pick a specific uncertainty variant and model
-python scripts/decision.py --subset FD001 --model hybrid --uncertainty-variant adaptive_conformal
-
-# Run with custom operational constraints
-python scripts/decision.py `
-  --subset FD001 `
-  --minimum-safe-rul 10 `
-  --maintenance-lead-time 10 `
-  --no-maintenance-window
-```
-
-Outputs are written to `outputs/results/` (JSON) and `outputs/reports/` (HTML).
-
-**Actions:** `CONTINUE_OPERATION`, `MONITOR`, `INSPECT`, `SCHEDULE_MAINTENANCE`, `URGENT_MAINTENANCE`. Each result includes health state, uncertainty level, explanation reliability, risk score, urgency index, risk components, reasons, constraint violations, and a `human_review` flag.
-
-**Constraints** (all optional; unset means unconstrained):
-
-| Flag | Effect |
-|---|---|
-| `--maintenance-window` / `--no-maintenance-window` | Whether scheduled maintenance can be performed now |
-| `--minimum-safe-rul <cycles>` | Minimum RUL to defer maintenance |
-| `--maintenance-lead-time <cycles>` | Cycles required before maintenance can begin |
-| `--max-allowable-delay <cycles>` | Longest wait the operator will accept |
-| `--resource-availability <true\|false>` | Whether crew and parts are available |
-
-For testing the engine in isolation, `data/external/decision_input*.json` contains example records (healthy, degrading, critical). A record needs `rul`, `hi`, `rul_lower`, `rul_upper`, and `eri`; `top_k_sensors` and engine identifiers are optional.
-
----
-
-## HITL Review
-
-The HITL runner consumes the JSON produced by `scripts/decision.py`, creates review items for decisions flagged `human_review`, and writes JSON results, an HTML report, and a log. It then applies conservative policy refinement from accumulated expert feedback.
-
-```powershell
-python scripts/hitl.py --subset FD001 --model gru
-python scripts/hitl.py --subset all --model all
-
-# Resolve a queued review
-python scripts/hitl.py `
-  --input outputs/results/decision_FD001_gru.json `
-  --review-id decision-0-0 `
-  --reviewer operator-1 `
-  --action APPROVE `
-  --confidence 0.9 `
-  --reason "Reviewed by maintenance control"
-```
-
-Supported actions: `APPROVE`, and `OVERRIDE` (requires `--override-action`, which must differ from the AI action). Resolving a review requires `--review-id`, `--reviewer`, `--action`, and `--confidence` together.
-
-Feedback is appended to the append-only log `outputs/hitl/feedback.jsonl`. An alternative action is adopted only with repeated, high-confidence, high-consensus expert support (≥3 observations, weighted support ≥2.0, consensus ≥0.70), and `URGENT_MAINTENANCE` is never automatically weakened. Constraints are re-checked after every adaptation.
-
-> **HITL does not retrain the model.** It refines the decision *policy* only — `prognostic_model_updated` is `false` on every output. A review submitted in a run is recorded but excluded from that same run's adaptation pass, so it becomes evidence for the next run rather than leaking into the decision it just reviewed.
-
----
-
-## Results Summary
-
-Results below are from specific project runs and depend on the preprocessing config, checkpoint, and seed. Re-run the relevant scripts before using them as a formal comparison.
-
-| Area | Key result |
-|---|---|
-| Point prediction (FD001, GRU-Att-Deg) | RUL MAE 10.05, RMSE 13.64, R² 0.884, NASA Score 308.63 |
-| Point prediction (FD004, Transformer) | RUL MAE 13.56, R² 0.808 |
-| Uncertainty (GRU, split conformal, 90%) | Coverage 0.880 / 0.897 / 0.850 / 0.928 on FD001–FD004; MPIW 42.06 / 57.88 / 37.87 / 70.81 cycles |
-| Explanation reliability (mean ERI) | 0.880 (HI), 0.872 (RUL) across subsets and models |
-
-ERI is the Explainability Reliability Index — cross-method agreement between Integrated Gradients, SHAP, and temporal relevance, with an uncorrelated pair scoring 0.5 (see [ARCHITECTURE.md](ARCHITECTURE.md#eri--explainability-reliability-index-eripy)).
-
-EARA-Conformal adaptive figures are not reported here pending repeated engine-level evaluation. The adaptive variants size intervals from a learned per-sample scale `s(x)`; that head is now supervised during training, so **these figures should be regenerated from retrained checkpoints** — see below.
-
----
-
-## Implementation Status
-
-| Component | Status |
-|---|---|
-| Preprocessing and windowing | Complete |
-| Joint RUL/HI prediction (5 model families) | Complete |
-| Conformal uncertainty — all five variants | Implemented; multi-seed validation pending |
-| Explainability (IG, SHAP, temporal relevance, ERI) | Implemented; faithfulness validation pending |
-| Decision engine (rules, constraints, HTML reports) | Complete |
-| HITL review and policy refinement | Complete; model retraining intentionally out of scope |
-| `src/evaluation/` (benchmark, ablation, robustness) | Placeholder stubs |
-| Config file loading | Not implemented — scripts use module-level constants |
-
-Additional gaps that affect how results should be read:
-
-- **Existing checkpoints have an untrained scale head.** `MultiTaskLoss` now includes a Gaussian NLL term that supervises `s(x)` toward `|y − ŷ|`, resolving the earlier gap where no loss referenced the scale head at all. Checkpoints trained before this change still carry an untrained head, so **retrain before trusting adaptive interval widths**. See [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
-- **`src/evaluation/` returns hard-coded values.** The real metrics live in `src/models/evaluator.py`; ablation and robustness experiments are not implemented.
-- **`cqr` is not conventional CQR** — the checkpoint exposes no trained quantile heads, so it uses `prediction ± scale` as conditional bounds.
-
-[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps) documents all of these with the code locations involved.
-
----
-
-## Tests
-
-```powershell
+```bash
 python -m pytest -q
 ```
 
-The decision and uncertainty suites are the meaningful regression net: they cover the full O4 rule/constraint policy and the O5 HITL workflow, and run without the dataset.
+The main regression tests cover decision and uncertainty functionality.
 
-| File | Scope | Needs data |
-|---|---|---|
-| `tests/test_decision.py` | Decision rules, constraints, risk scoring, HITL review and adaptation | No |
-| `tests/test_uncertainty.py` | Conformal quantiles, interval clipping, coverage semantics | No |
-| `tests/test_preprocessing.py` | Short test engines are padded, not dropped | **Yes — `data/raw/`** |
-| `tests/test_models.py`, `tests/test_xai.py` | Placeholder | No |
+| Test                          | Purpose                                                     |
+| ----------------------------- | ----------------------------------------------------------- |
+| `tests/test_decision.py`      | Decision rules, constraints, risk scoring and HITL behavior |
+| `tests/test_uncertainty.py`   | Conformal quantiles, interval clipping and coverage         |
+| `tests/test_preprocessing.py` | Preprocessing and short-engine handling                     |
+| `tests/test_models.py`        | Model-related tests; currently limited                      |
+| `tests/test_xai.py`           | XAI-related tests; currently limited                        |
+
+---
+
+# 24. Generated Artifacts
+
+Generated outputs are stored under:
+
+```text
+outputs/
+├── checkpoints/     # trained model checkpoints
+├── figures/         # EDA and experiment figures
+├── hitl/            # expert feedback
+├── logs/            # execution logs
+├── models/          # fitted scalers
+├── reports/         # HTML reports and summaries
+├── results/         # predictions, metrics, intervals and decisions
+└── xai/             # XAI outputs and ERI reports
+```
+
+These outputs provide traceability between:
+
+```text
+Input Data
+    ↓
+Model
+    ↓
+Prediction
+    ↓
+Uncertainty
+    ↓
+Explanation
+    ↓
+Decision
+    ↓
+Human Feedback
+```
+
+---
+
+# 25. Research Contribution
+
+The project combines several components into a unified prognostics decision-support workflow:
+
+1. **Joint RUL and Health Index prediction**
+2. **Multiple deep-learning sequence architectures**
+3. **Engine-disjoint experimental methodology**
+4. **Conformal uncertainty estimation**
+5. **Multi-method Explainable AI**
+6. **Explainability Reliability Index**
+7. **Constraint-aware maintenance decisions**
+8. **Human-in-the-Loop decision review**
+9. **Auditable decision and explanation artifacts**
+
+The overall objective is not only to predict when an engine may fail, but to provide a more transparent decision-support process:
+
+```text
+Prediction
+    +
+Uncertainty
+    +
+Explanation
+    +
+Operational Context
+    +
+Human Oversight
+    =
+Trustworthy Prognostic Decision Support
+```
+
+---
+
+# 26. Documentation
+
+The repository contains additional internal technical documentation:
+
+* `README.md` — project overview, setup and execution
+* `ARCHITECTURE.md` — detailed system architecture, module responsibilities, artifact contracts, uncertainty methodology, decision policy and implementation gaps
+
+The README provides the high-level project documentation, while `ARCHITECTURE.md` provides deeper implementation details.
+
+---
+
+# 27. License and Academic Use
+
+This repository is intended for academic and research purposes.
+
+When using the project, dataset, models or results in academic work, ensure that the original NASA C-MAPSS dataset and any referenced research methods are properly cited.
+
+---
+
+## Project Status
+
+**PHM-XAI is an ongoing academic research project.**
+
+The current implementation demonstrates an integrated workflow from:
+
+**NASA C-MAPSS → Preprocessing → Deep Learning → RUL/HI → Uncertainty → XAI → Maintenance Decision → Human Review**
+
+while clearly separating currently implemented functionality from future research extensions.
