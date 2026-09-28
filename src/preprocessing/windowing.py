@@ -339,6 +339,9 @@ class WindowGenerator:
 
         NASA C-MAPSS test evaluation uses the final
         available observation window from each engine.
+        For short engines, we keep the engine by taking the
+        available cycles and left-padding with the first cycle
+        values so the output remains fixed-length.
 
         Returns
         -------
@@ -380,60 +383,43 @@ class WindowGenerator:
                 .sort_values("time_in_cycles")
             )
 
-            if len(engine_df) < self.window_size:
+            values = engine_df[feature_columns].values
 
+            if len(values) == 0:
                 logger.warning(
-                    "Engine %s has only %d cycles. "
-                    "Skipping test window.",
+                    "Engine %s has no rows. Skipping test window.",
                     engine,
-                    len(engine_df),
                 )
-
                 continue
 
-            # --------------------------------------------------
-            # Final available sequence
-            # --------------------------------------------------
+            if len(values) < self.window_size:
+                pad_len = self.window_size - len(values)
+                padded = np.pad(
+                    values,
+                    ((pad_len, 0), (0, 0)),
+                    mode="edge",
+                )
+                final_window = padded
+                logger.warning(
+                    "Engine %s has only %d cycles; padded the final window to %d steps.",
+                    engine,
+                    len(values),
+                    self.window_size,
+                )
+            else:
+                final_window = values[-self.window_size:]
 
-            final_window = (
-                engine_df[
-                    feature_columns
-                ].values[
-                    -self.window_size:
-                ]
-            )
-
-            X.append(
-                final_window
-            )
-
-            # --------------------------------------------------
-            # Ground-truth RUL
-            # --------------------------------------------------
+            X.append(final_window)
 
             y_rul.append(
-                engine_df[
-                    "RUL"
-                ].iloc[-1]
+                engine_df["RUL"].iloc[-1]
             )
-
-            # --------------------------------------------------
-            # HI
-            # --------------------------------------------------
 
             y_hi.append(
-                engine_df[
-                    "HI"
-                ].iloc[-1]
+                engine_df["HI"].iloc[-1]
             )
 
-            # --------------------------------------------------
-            # Engine ID
-            # --------------------------------------------------
-
-            engine_ids.append(
-                engine
-            )
+            engine_ids.append(engine)
 
         X = np.asarray(
             X,

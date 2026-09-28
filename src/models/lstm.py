@@ -78,6 +78,11 @@ class LSTMPrognosticsModel(nn.Module):
             1,
         )
 
+        self.scale_head = nn.Linear(
+            hidden_size,
+            1,
+        )
+
     # ------------------------------------------------------
 
     def forward(self, x):
@@ -109,4 +114,8 @@ class LSTMPrognosticsModel(nn.Module):
 
         hi = self.hi_head(features)
 
-        return rul.squeeze(-1), hi.squeeze(-1)
+        scale = torch.nn.functional.softplus(
+            self.scale_head(features)
+        )
+
+        return rul.squeeze(-1), hi.squeeze(-1), scale.squeeze(-1)

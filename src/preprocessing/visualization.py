@@ -116,6 +116,39 @@ class DatasetVisualizer:
 
         plt.close()
 
+    def plot_sensor_trends_grid(
+        self,
+        df: pd.DataFrame,
+        engines: list[int] | None = None,
+        filename: str = "sensor_trends_all.png",
+    ) -> None:
+        """Plot every sensor in one consistently labelled figure."""
+        sensor_cols = [c for c in df.columns if c.startswith("sensor_")]
+        if not sensor_cols:
+            raise ValueError("Dataframe contains no sensor columns.")
+        if engines is None:
+            engines = sorted(df["unit_number"].unique())[:5]
+        ncols = 3
+        nrows = (len(sensor_cols) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(16, 3.2 * nrows))
+        axes = axes.ravel()
+        for ax, sensor in zip(axes, sensor_cols):
+            for engine in engines:
+                subset = df[df["unit_number"] == engine]
+                if not subset.empty:
+                    ax.plot(subset["time_in_cycles"], subset[sensor], lw=1.1, label=f"Engine {engine}")
+            ax.set_title(f"{sensor.replace('_', ' ').title()} vs cycle")
+            ax.set_xlabel("Operational cycle")
+            ax.set_ylabel(sensor)
+            ax.grid(True, alpha=0.2)
+            ax.legend(fontsize=7, loc="best")
+        for ax in axes[len(sensor_cols):]:
+            ax.set_visible(False)
+        fig.suptitle("C-MAPSS Sensor Trajectories", fontsize=15)
+        fig.tight_layout()
+        fig.savefig(self.output_dir / filename, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
     # ---------------------------------------------------- #
     # Correlation
     # ---------------------------------------------------- #
@@ -153,6 +186,27 @@ class DatasetVisualizer:
 
         plt.close()
 
+    def plot_operating_conditions(
+        self,
+        df: pd.DataFrame,
+        filename: str = "operating_conditions.png",
+    ) -> None:
+        """Show the distribution of the three operating settings."""
+        setting_cols = [c for c in df.columns if c.startswith("operational_setting_")]
+        if not setting_cols:
+            return
+        fig, axes = plt.subplots(1, len(setting_cols), figsize=(15, 4))
+        axes = [axes] if len(setting_cols) == 1 else axes.ravel()
+        for ax, setting in zip(axes, setting_cols):
+            sns.histplot(df[setting].dropna(), kde=True, ax=ax, color="#1565C0")
+            ax.set_title(setting.replace("_", " ").title())
+            ax.set_xlabel("Setting value")
+            ax.set_ylabel("Observations")
+        fig.suptitle("Operating Condition Distributions", fontsize=14)
+        fig.tight_layout()
+        fig.savefig(self.output_dir / filename, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
     # ---------------------------------------------------- #
     # Variance
     # ---------------------------------------------------- #
@@ -189,6 +243,69 @@ class DatasetVisualizer:
         )
 
         return variance_df
+
+    def plot_sensor_variance(
+        self,
+        df: pd.DataFrame,
+        filename: str = "sensor_variance.png",
+    ) -> None:
+        """Rank sensor variance so informative and constant sensors are visible."""
+        variance = df[[c for c in df.columns if c.startswith("sensor_")]].var().sort_values()
+        fig, ax = plt.subplots(figsize=(10, 7))
+        ax.barh(variance.index, variance.to_numpy(), color="#00897B")
+        ax.set_title("Sensor Variance Ranking")
+        ax.set_xlabel("Variance")
+        ax.set_ylabel("Sensor")
+        ax.grid(axis="x", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(self.output_dir / filename, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_sensor_distributions_grid(
+        self,
+        df: pd.DataFrame,
+        filename: str = "sensor_distributions_all.png",
+    ) -> None:
+        """Plot distributions for all sensors with one label per panel."""
+        sensor_cols = [c for c in df.columns if c.startswith("sensor_")]
+        if not sensor_cols:
+            raise ValueError("Dataframe contains no sensor columns.")
+        ncols = 3
+        nrows = (len(sensor_cols) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(15, 3.2 * nrows))
+        axes = axes.ravel()
+        for ax, sensor in zip(axes, sensor_cols):
+            sns.histplot(df[sensor].dropna(), kde=True, ax=ax, color="#EF6C00")
+            ax.set_title(sensor.replace("_", " ").title())
+            ax.set_xlabel(sensor)
+            ax.set_ylabel("Observations")
+        for ax in axes[len(sensor_cols):]:
+            ax.set_visible(False)
+        fig.suptitle("Sensor Value Distributions", fontsize=15)
+        fig.tight_layout()
+        fig.savefig(self.output_dir / filename, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_label_distributions(
+        self,
+        df: pd.DataFrame,
+        filename: str = "label_distributions.png",
+    ) -> None:
+        """Plot generated RUL and HI labels when they are present."""
+        labels = [c for c in ("RUL", "HI") if c in df.columns]
+        if not labels:
+            return
+        fig, axes = plt.subplots(1, len(labels), figsize=(12, 4))
+        axes = [axes] if len(labels) == 1 else axes.ravel()
+        for ax, label in zip(axes, labels):
+            sns.histplot(df[label].dropna(), kde=True, ax=ax, color="#6A1B9A")
+            ax.set_title(f"{label} label distribution")
+            ax.set_xlabel(label)
+            ax.set_ylabel("Observations")
+        fig.suptitle("Training Target Distributions", fontsize=14)
+        fig.tight_layout()
+        fig.savefig(self.output_dir / filename, dpi=180, bbox_inches="tight")
+        plt.close(fig)
 
     # ---------------------------------------------------- #
     # Histogram

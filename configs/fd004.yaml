@@ -1,12 +1,14 @@
 dataset: FD004
 
-window_size: 30
+window_size: 40
 
-batch_size: 64
+batch_size: 256
 
-epochs: 50
+epochs: 300
 
 learning_rate: 0.001
+
+optimizer: Adam
 
 random_seed: 42
 

@@ -32,13 +32,13 @@ python scripts/train.py --model lstm
 python scripts/train.py --model gru
 python scripts/train.py --model transformer
 python scripts/train.py --model hybrid
+python scripts/train.py --model gru_att_deg
 
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
 import random
 import sys
 from pathlib import Path
@@ -59,10 +59,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
+<<<<<<< HEAD
 from src.models.hybrid import CNNGRUTransformerPrognostics as HybridPrognosticsModel
+=======
+from src.models.hybrid import HybridPrognosticsModel
+from src.models.gru_att_deg import GruAttDeg
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 from src.models.losses import MultiTaskLoss
 from src.models.trainer import ModelTrainer
 
@@ -72,6 +78,8 @@ from src.models.trainer import ModelTrainer
 # ------------------------------------------------------------------
 
 DEFAULT_SUBSET = "FD001"
+ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
+ALL_MODELS  = ["lstm", "gru", "transformer", "hybrid", "gru_att_deg"]
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -91,19 +99,13 @@ RESULTS_DIR = (
     / "results"
 )
 
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
-)
-
 SEED = 42
 
-BATCH_SIZE = 64
+BATCH_SIZE = 256
 
-EPOCHS = 50
+EPOCHS = 300
 
-PATIENCE = 10
+PATIENCE = 20
 
 VALIDATION_SIZE = 0.20
 
@@ -121,46 +123,10 @@ RUL_LOSS_WEIGHT = 1.0
 
 HI_LOSS_WEIGHT = 0.5
 
-
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-LOG_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-
-def configure_logging(model_name: str, subset: str) -> logging.Logger:
-    """
-    Configure model-specific logging.
-    """
-
-    log_dir = LOG_DIR / "training"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    log_path = log_dir / f"train_{subset}_{model_name}.log"
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)-8s | "
-            "%(message)s"
-        ),
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(
-                log_path,
-                mode="w",
-            ),
-        ],
-        force=True,
-    )
-
-    return logging.getLogger(__name__)
+# Supervises the per-sample scale head that EARA-Conformal treats as the
+# conditional error magnitude s(x). Kept small so the Gaussian NLL term
+# calibrates interval width without competing with RUL accuracy.
+SCALE_LOSS_WEIGHT = 0.1
 
 
 # ------------------------------------------------------------------
@@ -179,26 +145,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=[
-            "lstm",
-            "gru",
-            "transformer",
-            "hybrid",
-        ],
         default="lstm",
-        help="Model architecture to train.",
+        help="Model architecture to train, or 'all'.",
     )
     parser.add_argument(
-    "--subset",
-    type=str,
-    choices=[
-        "FD001",
-        "FD002",
-        "FD003",
-        "FD004",
-    ],
-    default=DEFAULT_SUBSET,
-    help="C-MAPSS subset to train.",
+        "--subset",
+        type=str,
+        default=DEFAULT_SUBSET,
+        help="C-MAPSS subset to train, or 'all'.",
     )
 
     return parser.parse_args()
@@ -340,9 +294,23 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
+<<<<<<< HEAD
             num_gru_layers=NUM_LAYERS,
             num_transformer_layers=NUM_LAYERS,
             num_heads=4,
+=======
+            num_layers=NUM_LAYERS,
+            kernel_size=3,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru_att_deg":
+
+        return GruAttDeg(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
             dropout=DROPOUT,
         )
 
@@ -354,16 +322,9 @@ def build_model(
 # Main
 # ------------------------------------------------------------------
 
-def main():
-
-    args = parse_args()
-
-    model_name = args.model
-    subset = args.subset
-
-    log = configure_logging(
-        model_name, subset
-    )
+def run(model_name: str, subset: str) -> None:
+    """Run the full training pipeline for a single model/subset combination."""
+    log = get_script_logger("training", f"train_{subset}_{model_name}")
 
     set_seed(SEED)
 
@@ -530,6 +491,7 @@ def main():
     criterion = MultiTaskLoss(
         alpha=RUL_LOSS_WEIGHT,
         beta=HI_LOSS_WEIGHT,
+        gamma=SCALE_LOSS_WEIGHT,
     )
 
     # --------------------------------------------------------------
@@ -650,6 +612,15 @@ def main():
     log.info(
         "Training completed successfully."
     )
+
+
+def main():
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    models  = ALL_MODELS  if args.model  == "all" else [args.model]
+    for subset in subsets:
+        for model_name in models:
+            run(model_name, subset)
 
 
 # ------------------------------------------------------------------

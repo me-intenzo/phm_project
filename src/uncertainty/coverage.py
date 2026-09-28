@@ -146,22 +146,109 @@ def coverage_error(
     )
 
 
+<<<<<<< HEAD
+=======
+def normalised_interval_width(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    y_range: float = 125.0,
+) -> float:
+    """
+    Prediction Interval Normalised Average Width (PINAW).
+
+    PINAW = MPIW / y_range
+
+    Lower is better; penalises unnecessarily wide intervals.
+    """
+    mpiw = mean_prediction_interval_width(lower=lower, upper=upper)
+    return float(mpiw / y_range)
+
+
+def per_regime_coverage(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    regimes: np.ndarray,
+    n_regimes: int,
+) -> dict[int, float]:
+    """
+    Empirical coverage broken down by operating regime.
+
+    Returns
+    -------
+    dict  regime_id -> empirical_coverage
+    """
+    y_true  = np.asarray(y_true,   dtype=np.float64).reshape(-1)
+    lower   = np.asarray(lower,    dtype=np.float64).reshape(-1)
+    upper   = np.asarray(upper,    dtype=np.float64).reshape(-1)
+    regimes = np.asarray(regimes,  dtype=np.int32).reshape(-1)
+
+    result: dict[int, float] = {}
+    for k in range(n_regimes):
+        mask = regimes == k
+        if mask.sum() == 0:
+            result[k] = float("nan")
+        else:
+            result[k] = empirical_coverage(
+                y_true=y_true[mask],
+                lower=lower[mask],
+                upper=upper[mask],
+            )
+    return result
+
+
+def engine_level_coverage(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    engine_ids: np.ndarray,
+) -> float:
+    """Fraction of engines whose complete window set is covered."""
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    lower = np.asarray(lower, dtype=np.float64).reshape(-1)
+    upper = np.asarray(upper, dtype=np.float64).reshape(-1)
+    engine_ids = np.asarray(engine_ids).reshape(-1)
+    if not (y_true.shape == lower.shape == upper.shape == engine_ids.shape):
+        raise ValueError("Interval arrays and engine_ids must have the same length.")
+    if engine_ids.size == 0:
+        raise ValueError("At least one engine is required.")
+    covered = (y_true >= lower) & (y_true <= upper)
+    return float(np.mean([
+        np.all(covered[engine_ids == engine_id])
+        for engine_id in np.unique(engine_ids)
+    ]))
+
+
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 def evaluate_interval(
     y_true: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     nominal_coverage: float,
+<<<<<<< HEAD
 ) -> dict[str, float]:
+=======
+    regimes: np.ndarray | None = None,
+    n_regimes: int | None = None,
+    engine_ids: np.ndarray | None = None,
+) -> dict[str, object]:
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     """
     Evaluate a prediction interval.
 
     Returns
     -------
     dict
+<<<<<<< HEAD
         Empirical coverage
         Nominal coverage
         Coverage error
         Mean prediction interval width
+=======
+        nominal_coverage, empirical_coverage, coverage_error,
+        mean_interval_width, pinaw,
+        regime_coverage (only when regimes and n_regimes are given)
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     """
 
     empirical = empirical_coverage(
@@ -180,6 +267,7 @@ def evaluate_interval(
         nominal=nominal_coverage,
     )
 
+<<<<<<< HEAD
     return {
         "nominal_coverage": float(
             nominal_coverage
@@ -189,6 +277,35 @@ def evaluate_interval(
         "mean_interval_width": mpiw,
     }
 
+=======
+    out: dict[str, object] = {
+        "nominal_coverage": float(nominal_coverage),
+        "empirical_coverage": empirical,
+        "coverage_error": error,
+        "mean_interval_width": mpiw,
+        "pinaw": normalised_interval_width(lower=lower, upper=upper),
+    }
+
+    if regimes is not None and n_regimes is not None:
+        out["regime_coverage"] = per_regime_coverage(
+            y_true=y_true,
+            lower=lower,
+            upper=upper,
+            regimes=regimes,
+            n_regimes=n_regimes,
+        )
+
+    if engine_ids is not None:
+        out["engine_level_coverage"] = engine_level_coverage(
+            y_true=y_true,
+            lower=lower,
+            upper=upper,
+            engine_ids=engine_ids,
+        )
+
+    return out
+
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
 def _validate_interval_inputs(
     y_true: np.ndarray,

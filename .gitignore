@@ -4,6 +4,8 @@ __pycache__/
 .vscode/
 .idea/
 docs/
+*.zip
+.pytest_cache/
 
 outputs/
 data/raw/

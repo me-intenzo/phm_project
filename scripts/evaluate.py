@@ -16,12 +16,12 @@ python scripts/evaluate.py --model lstm
 python scripts/evaluate.py --model gru
 python scripts/evaluate.py --model transformer
 python scripts/evaluate.py --model hybrid
+python scripts/evaluate.py --model gru_att_deg
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
@@ -37,18 +37,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.logger import get_script_logger
 from src.models.evaluator import PrognosticsEvaluator
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
+from src.models.gru_att_deg import GruAttDeg
 
 
 # ------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------
 
-SUBSET = "FD001"
+SUBSET      = "FD001"
+ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
+ALL_MODELS  = ["lstm", "gru", "transformer", "hybrid", "gru_att_deg"]
 
 DATA_DIR = (
     PROJECT_ROOT
@@ -66,12 +70,6 @@ RESULTS_DIR = (
     PROJECT_ROOT
     / "outputs"
     / "results"
-)
-
-LOG_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "logs"
 )
 
 BATCH_SIZE = 64
@@ -96,58 +94,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["lstm", "gru", "transformer", "hybrid"],
-        required=True,
-        help="Model architecture to evaluate.",
+        default="lstm",
+        help="Model architecture to evaluate, or 'all'.",
     )
     parser.add_argument(
-    "--subset",
-    type=str,
-    choices=[
-        "FD001",
-        "FD002",
-        "FD003",
-        "FD004",
-    ],
-    default="FD001",
-    help="C-MAPSS subset to evaluate.",
+        "--subset",
+        type=str,
+        default="FD001",
+        help="C-MAPSS subset to evaluate, or 'all'.",
     )
 
     return parser.parse_args()
-
-
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
-def configure_logging(
-    model_name: str,
-    subset: str,
-) -> logging.Logger:
-
-    log_dir = LOG_DIR / "evaluation"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)-8s | "
-            "%(message)s"
-        ),
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(
-                log_dir
-                / f"evaluate_{subset}_{model_name}.log",
-                mode="w",
-            ),
-        ],
-        force=True,
-    )
-
-    return logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -205,9 +162,23 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
+<<<<<<< HEAD
             num_gru_layers=NUM_LAYERS,
             num_transformer_layers=NUM_LAYERS,
             num_heads=4,
+=======
+            num_layers=NUM_LAYERS,
+            kernel_size=3,
+            dropout=DROPOUT,
+        )
+
+    if model_name == "gru_att_deg":
+
+        return GruAttDeg(
+            input_size=input_size,
+            hidden_size=HIDDEN_SIZE,
+            num_layers=NUM_LAYERS,
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
             dropout=DROPOUT,
         )
 
@@ -224,7 +195,11 @@ def load_model(
     model_name: str,
     input_size: int,
     device: torch.device,
+<<<<<<< HEAD
     subset: str,
+=======
+    subset: str = "FD001",
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 ):
 
     checkpoint_path = (
@@ -317,11 +292,17 @@ def predict(
                 ]
             ).float().to(device)
 
+<<<<<<< HEAD
             pred = model(batch)
             if isinstance(pred, tuple) and len(pred) == 3:
                 pred_rul, pred_hi, _ = pred
             else:
                 pred_rul, pred_hi = pred
+=======
+            pred_rul, pred_hi, *_ = model(
+                batch
+            )
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
             predictions_rul.append(
                 pred_rul.cpu().numpy()
@@ -341,17 +322,9 @@ def predict(
 # Main
 # ------------------------------------------------------------------
 
-def main():
-
-    args = parse_args()
-
-    model_name = args.model
-
-    subset = args.subset
-
-    log = configure_logging(
-        model_name, subset
-    )
+def run(model_name: str, subset: str) -> None:
+    """Run the full evaluation pipeline for a single model/subset combination."""
+    log = get_script_logger("evaluation", f"evaluate_{subset}_{model_name}")
 
     device = get_device()
 
@@ -480,6 +453,15 @@ def main():
         "Predictions saved to: %s",
         prediction_path,
     )
+
+
+def main():
+    args = parse_args()
+    subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
+    models  = ALL_MODELS  if args.model  == "all" else [args.model]
+    for subset in subsets:
+        for model_name in models:
+            run(model_name, subset)
 
 
 if __name__ == "__main__":
