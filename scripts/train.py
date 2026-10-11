@@ -63,8 +63,12 @@ from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
+<<<<<<< HEAD
+from src.models.hybrid import CNNGRUTransformerPrognostics as HybridPrognosticsModel
+=======
 from src.models.hybrid import HybridPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 from src.models.losses import MultiTaskLoss
 from src.models.trainer import ModelTrainer
 
@@ -290,6 +294,11 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
+<<<<<<< HEAD
+            num_gru_layers=NUM_LAYERS,
+            num_transformer_layers=NUM_LAYERS,
+            num_heads=4,
+=======
             num_layers=NUM_LAYERS,
             kernel_size=3,
             dropout=DROPOUT,
@@ -301,6 +310,7 @@ def build_model(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
             num_layers=NUM_LAYERS,
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
             dropout=DROPOUT,
         )
 

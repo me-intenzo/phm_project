@@ -238,7 +238,15 @@ class ModelTrainer:
 
             self.optimizer.zero_grad()
 
+<<<<<<< HEAD
+            pred = self.model(x)
+            if isinstance(pred, tuple) and len(pred) == 3:
+                pred_rul, pred_hi, _ = pred
+            else:
+                pred_rul, pred_hi = pred
+=======
             pred_rul, pred_hi, pred_scale = self.model(x)
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
             losses = self.criterion(
                 pred_rul,
@@ -302,7 +310,15 @@ class ModelTrainer:
 
             hi = hi.to(self.device)
 
+<<<<<<< HEAD
+            pred = self.model(x)
+            if isinstance(pred, tuple) and len(pred) == 3:
+                pred_rul, pred_hi, _ = pred
+            else:
+                pred_rul, pred_hi = pred
+=======
             pred_rul, pred_hi, pred_scale = self.model(x)
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
             losses = self.criterion(
                 pred_rul,

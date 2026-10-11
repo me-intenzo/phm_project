@@ -150,6 +150,12 @@ class GRUPrognosticsModel(nn.Module):
 
         pred_hi = self.hi_head(features)
 
+<<<<<<< HEAD
+        return (
+            pred_rul.squeeze(-1),
+            pred_hi.squeeze(-1),
+        )
+=======
         # Softplus ensures scale > 0
         pred_scale = torch.nn.functional.softplus(
             self.scale_head(features)
@@ -160,6 +166,7 @@ class GRUPrognosticsModel(nn.Module):
             pred_hi.squeeze(-1),
             pred_scale.squeeze(-1),
         )
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
 
 # ----------------------------------------------------------

@@ -146,6 +146,8 @@ def coverage_error(
     )
 
 
+<<<<<<< HEAD
+=======
 def normalised_interval_width(
     lower: np.ndarray,
     upper: np.ndarray,
@@ -217,24 +219,36 @@ def engine_level_coverage(
     ]))
 
 
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 def evaluate_interval(
     y_true: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     nominal_coverage: float,
+<<<<<<< HEAD
+) -> dict[str, float]:
+=======
     regimes: np.ndarray | None = None,
     n_regimes: int | None = None,
     engine_ids: np.ndarray | None = None,
 ) -> dict[str, object]:
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     """
     Evaluate a prediction interval.
 
     Returns
     -------
     dict
+<<<<<<< HEAD
+        Empirical coverage
+        Nominal coverage
+        Coverage error
+        Mean prediction interval width
+=======
         nominal_coverage, empirical_coverage, coverage_error,
         mean_interval_width, pinaw,
         regime_coverage (only when regimes and n_regimes are given)
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     """
 
     empirical = empirical_coverage(
@@ -253,6 +267,17 @@ def evaluate_interval(
         nominal=nominal_coverage,
     )
 
+<<<<<<< HEAD
+    return {
+        "nominal_coverage": float(
+            nominal_coverage
+        ),
+        "empirical_coverage": empirical,
+        "coverage_error": error,
+        "mean_interval_width": mpiw,
+    }
+
+=======
     out: dict[str, object] = {
         "nominal_coverage": float(nominal_coverage),
         "empirical_coverage": empirical,
@@ -280,6 +305,7 @@ def evaluate_interval(
 
     return out
 
+>>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
 def _validate_interval_inputs(
     y_true: np.ndarray,
