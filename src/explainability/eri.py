@@ -13,7 +13,9 @@ ERI combines:
      that appear in ALL three method rankings simultaneously.
 
 Final ERI ∈ [0, 1]:
-    ERI = 0.4 * ρ(IG, Attn) + 0.4 * ρ(IG, SHAP) + 0.2 * consensus_K
+    ERI = 0.4 * (ρ(IG, Attn) + 1) / 2
+        + 0.4 * (ρ(IG, SHAP) + 1) / 2
+        + 0.2 * consensus_K
 
 Interpretation
 --------------
@@ -27,6 +29,7 @@ author: me-intenzo
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import spearmanr
 
 
 def _to_numpy(v) -> np.ndarray:
@@ -40,10 +43,9 @@ def _spearman(a: np.ndarray, b: np.ndarray) -> float:
     n = len(a)
     if n < 2:
         return 0.0
-    rank_a = np.argsort(np.argsort(-a)).astype(np.float64)
-    rank_b = np.argsort(np.argsort(-b)).astype(np.float64)
-    d2 = ((rank_a - rank_b) ** 2).sum()
-    rho = 1.0 - 6.0 * d2 / (n * (n ** 2 - 1))
+    rho = spearmanr(a, b).statistic
+    if not np.isfinite(rho):
+        return 0.0
     return float(np.clip(rho, -1.0, 1.0))
 
 

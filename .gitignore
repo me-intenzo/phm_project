@@ -3,7 +3,9 @@ __pycache__/
 .venv/
 .vscode/
 .idea/
-docs/
+docs/*
+!docs/explainability/
+!docs/explainability/**
 *.zip
 .pytest_cache/
 

@@ -3,92 +3,104 @@ device: cuda  # or cpu
 
 An experimental, end-to-end prognostics pipeline for **remaining useful life (RUL)** and **health index (HI)** estimation on the NASA C-MAPSS turbofan dataset. The project extends point predictions with uncertainty estimates, post-hoc explanations, and constraint-aware maintenance recommendations.
 
-The repository is intended for research and engineering evaluation. Reported results are project runs on C-MAPSS, not a claim of production readiness or universal state-of-the-art performance.
+> Results are from project runs on C-MAPSS. This is a research implementation, not a production system. See [Implementation Status](#implementation-status) for what is complete and what is not.
 
-## What the system does
+**New here?** [ARCHITECTURE.md](ARCHITECTURE.md) documents the internal design — module responsibilities, artifact contracts, the conformal calibration math, the full decision policy, and current gaps.
 
-```mermaid
-flowchart LR
-    A[NASA C-MAPSS raw data] --> B[Validation and preprocessing]
-    B --> C[Windowed sensor sequences]
-    C --> D[Multi-task prognostics model]
-    D --> E[RUL and HI predictions]
-    E --> F[EARA-Conformal uncertainty]
-    E --> G[IG, SHAP, temporal relevance, ERI]
-    F --> H[Decision state]
-    G --> H
-    H --> I[Rules and operational constraints]
-    I --> J[Auditable recommendation]
-```
+---
 
-The main processing stages are:
+## Contents
 
-1. Load and validate FD001, FD002, FD003, or FD004.
-2. Generate capped RUL and normalized HI labels, select features, scale data, and create sliding windows.
-3. Train a model with shared representations and RUL/HI prediction heads.
-4. Evaluate point predictions with MAE, RMSE, R², and NASA Score.
-5. Calibrate engine-disjoint conformal intervals for RUL.
-6. Produce sensor and temporal explanations for RUL and HI.
-7. Fuse RUL, HI, interval width, ERI, and operational constraints into a maintenance recommendation.
+- [Overview](#overview)
+- [Repository Layout](#repository-layout)
+- [Setup](#setup)
+- [Pipeline](#pipeline)
+- [Uncertainty Methods](#uncertainty-methods)
+- [Conformal Benchmark](#conformal-benchmark)
+- [Decision Support](#decision-support)
+- [HITL Review](#hitl-review)
+- [Results Summary](#results-summary)
+- [Evaluation Metrics](#evaluation-metrics)
+- [Implementation Status](#implementation-status)
+- [Tests](#tests)
 
-## Proposed system
+---
 
-The proposed workflow is a layered decision-support system rather than a fully autonomous maintenance controller:
+## Overview
 
-- **Prognostics:** LSTM, GRU, Transformer, TCN+GRU Hybrid, and GRU-Att-Deg models support joint RUL and HI estimation.
-- **Uncertainty:** EARA-Conformal combines a heteroscedastic scale head with k-means operating-regime calibration. Calibration is engine-disjoint from training and test data.
-- **Explainability:** Integrated Gradients and sensor-level Kernel SHAP are combined with temporal gradient relevance. ERI summarizes agreement between explanation methods.
-- **Decision support:** A rule-based engine classifies health and uncertainty, applies operational constraints, and flags ambiguous cases for human review.
+The pipeline treats prognostics as a decision-support chain. A recommendation is considered trustworthy only when four questions are answered together:
 
-The decision engine is deliberately auditable: each result includes inputs, health state, uncertainty level, risk components, reasons, constraint violations, and the recommended action.
-
-## Architecture
+1. **What is the predicted degradation state?** Joint RUL and HI estimation provides the point forecast.
+2. **How uncertain is that forecast?** Engine-disjoint conformal calibration provides the uncertainty baseline; EARA-Conformal adds regime- and scale-aware interval sizing.
+3. **Why did the model produce it?** Integrated Gradients, SHAP, temporal relevance, and ERI expose sensor-level evidence and flag explanation disagreement.
+4. **What action is feasible?** A rule-based engine combines health state, uncertainty, ERI, and operational constraints into an auditable recommendation.
 
 ```text
-data/raw/                  NASA C-MAPSS text files (not committed)
-    |
-src/preprocessing/         validation, labels, feature selection, scaling, windows
-    |
-data/processed/            NumPy windows, labels, engine IDs, metadata (local)
-    |
-src/models/                LSTM, GRU, Transformer, Hybrid, GRU-Att-Deg
-    |
-outputs/checkpoints/       best model checkpoints (local)
-    |
-  +-----+----------------------+------------------+
-  |                            |                  |
-src/uncertainty/       src/explainability/  src/decision_engine/
-  |                            |                  |
-RUL intervals          attributions + ERI   recommendations + constraints
-  +----------------------------+------------------+
-                   |
-              outputs/results, reports,
-              figures, xai, and logs
+NASA C-MAPSS → Preprocessing → Multi-task model → RUL / HI predictions
+                                                         |
+                                          ┌──────────────┴──────────────┐
+                                   EARA-Conformal              IG, SHAP, ERI
+                                   uncertainty                 explanations
+                                          └──────────────┬──────────────┘
+                                                  Decision engine
+                                                  (rules + constraints)
+                                                         |
+                                               Auditable recommendation
+                                                         |
+                                              HITL review → feedback
+                                              → policy refinement
 ```
 
-## Methodology
+Two invariants hold at every stage:
 
-### Data and labels
+- **Engine-disjoint splits.** Windows from one engine are correlated, so train/validation and calibration/test splits are grouped by engine ID, and every stage asserts zero engine overlap before continuing.
+- **Calibration never sees test targets.** Conformal quantiles are estimated on a calibration split carved out of the training set; the test set is used only to measure coverage.
 
-NASA C-MAPSS contains multivariate engine run-to-failure trajectories under four operating and fault-condition subsets. The preprocessing pipeline validates the frames, removes near-constant features, scales retained features, and forms fixed-length windows. The current training pipeline uses a 40-cycle window; experiment reports also contain earlier 30-cycle runs, so reproduce a result with the matching generated data and configuration.
+---
 
-Training labels use a piecewise-linear RUL target capped at 125 cycles. HI is normalized to the range `[0, 1]` and learned as an auxiliary target.
+## Repository Layout
 
-### Multi-task models
+```text
+ARCHITECTURE.md  internal design, data contracts, known gaps
+README.md        this file
+BENCHMARKING_NOTES.md  protocol and numbers for the conformal benchmark
+configs/         subset configuration files (fd001–fd004.yaml) — see note below
+data/
+  external/      example decision input JSON files
+  raw/           NASA C-MAPSS text files — not committed, add manually
+  processed/     NumPy windows and labels — generated by preprocess.py
+scripts/         CLI entry points for each pipeline stage
+src/
+  preprocessing/  loading, validation, labelling, selection, scaling, windowing
+  models/         LSTM, GRU, Transformer, Hybrid, GRU-Att-Deg (+ losses, trainer, evaluator)
+  uncertainty/    conformal prediction, calibration, coverage, adaptive intervals
+  explainability/ IG, SHAP, temporal relevance, ERI
+  decision_engine/ rules, constraints, recommender
+  hitl/           review workflow, feedback schema, policy refinement
+  evaluation/     placeholder stubs — see Implementation Status
+  utils/          logging (config/io/seed are stubs)
+results/          published benchmark artifacts (tracked)
+  conformal_benchmark/  multi-seed conformal comparison outputs
+tests/            pytest suite
+outputs/          generated artifacts — not committed
+  checkpoints/    trained model weights, per model/subset
+  figures/        EDA and experiment plots
+  hitl/           feedback.jsonl — append-only expert feedback log
+  logs/           pipeline logs
+  models/         scalers
+  reports/        HTML reports and CSV summaries
+  results/        metrics, predictions, intervals, decisions
+                  results/uncertainty/<variant>/<subset>/<model>.npz
+  xai/            attribution arrays, ERI JSON, HTML reports
+```
 
-The models share a sequence encoder and predict RUL and HI together. The GRU-Att-Deg variant adds temporal attention, a degradation-aware HI head, and a softplus scale head used by the uncertainty pipeline. Training uses grouped engine-level validation so windows from one engine do not cross the train/validation boundary.
+> **Config files are not wired up.** `configs/*.yaml` record the intended hyperparameters, but no script reads them — `src/utils/config.py::load_config` is a stub and each stage uses its own module-level constants. Treat the scripts as the source of truth until config loading lands. See [ARCHITECTURE.md](ARCHITECTURE.md#caveat-configuration-files-are-not-wired-up).
 
-### Uncertainty and explanations
+---
 
-EARA-Conformal fits regimes on training-engine features, calibrates normalized residuals on held-out calibration engines, and produces adaptive RUL intervals. The current implementation evaluates empirical coverage, coverage error, MPIW, PINAW, and per-regime coverage.
+## Setup
 
-The XAI pipeline generates Integrated Gradients, Kernel SHAP, temporal relevance, plots, `.npz` attribution arrays, ERI JSON, and HTML reports for RUL and HI targets.
-
-## Quick setup
-
-### 1. Install
-
-Python 3.9+ is recommended. On Windows PowerShell:
+Python 3.9+ required.
 
 ```powershell
 python -m venv .venv
@@ -147,49 +159,113 @@ python scripts/decision.py `
   --no-maintenance-window
 ```
 
-Each record should contain `rul`, `hi`, `rul_lower`, `rul_upper`, and `eri`; `top_k_sensors` and engine identifiers are optional. Results are written under `outputs/results/` and human-readable reports under `outputs/reports/`.
+Outputs are written to `outputs/results/` (JSON) and `outputs/reports/` (HTML).
 
-## Current progress
+**Actions:** `CONTINUE_OPERATION`, `MONITOR`, `INSPECT`, `SCHEDULE_MAINTENANCE`, `URGENT_MAINTENANCE`. Each result includes health state, uncertainty level, explanation reliability, risk score, urgency index, risk components, reasons, constraint violations, and a `human_review` flag.
 
-The following status reflects the project reports and implemented modules:
+**Constraints** (all optional; unset means unconstrained):
 
-| Area | Status | Current evidence |
-| --- | --- | --- |
-| Preprocessing and window generation | Implemented | Validation, labeling, scaling, feature selection, and engine metadata are present. |
-| Joint RUL/HI prediction | Implemented and evaluated | Five model families evaluated on FD001–FD004 in the project reports. |
-| Uncertainty quantification | Implemented and evaluated | Split, adaptive, CQR, and EARA-Conformal components are present; the current uncertainty script defaults to 7 regimes. |
-| Explainability | Implemented and evaluated | IG, SHAP, temporal relevance, ERI, plots, and HTML reporting are present. |
-| Decision support | Implemented and tested | Rules, constraints, structured JSON results, HTML reports, and decision tests are present. |
-| HITL updating | In progress | HITL modules exist, but the feedback/update loop still needs broader end-to-end validation. |
-| Publication-grade validation | In progress | Multi-seed stability, ablations, faithfulness checks, and external-dataset validation remain open items. |
+| Flag | Effect |
+|---|---|
+| `--maintenance-window` / `--no-maintenance-window` | Whether scheduled maintenance can be performed now |
+| `--minimum-safe-rul <cycles>` | Minimum RUL to defer maintenance |
+| `--maintenance-lead-time <cycles>` | Cycles required before maintenance can begin |
+| `--max-allowable-delay <cycles>` | Longest wait the operator will accept |
+| `--resource-availability <true\|false>` | Whether crew and parts are available |
 
-## Selected findings
+For testing the engine in isolation, `data/external/decision_input*.json` contains example records (healthy, degrading, critical). A record needs `rul`, `hi`, `rul_lower`, `rul_upper`, and `eri`; `top_k_sensors` and engine identifiers are optional.
 
-These are compact excerpts from the local project reports, included to make the current state visible without presenting every experiment:
+---
 
-- **Point prediction:** On the reported FD001 run, GRU-Att-Deg achieved RUL MAE `10.050`, RUL RMSE `13.644`, R² `0.884`, and NASA Score `308.63`. On FD004, the reported Transformer run was strongest among the evaluated models with RUL MAE `13.559` and R² `0.808`.
-- **Uncertainty:** At 90% nominal coverage, the reported EARA-Conformal results were `0.870` on FD001, `0.897` on FD002, `0.850` on FD003, and `0.928` on FD004. Reported MPIW values were `35.02`, `51.10`, `31.29`, and `56.04` cycles respectively.
-- **Explainability:** The reported mean ERI was `0.880` for HI and `0.872` for RUL across the four subsets and five models. FD003 showed weaker explanation agreement than the other subsets, so its explanations should be reviewed more cautiously.
-- **Decision support:** The engine produces explicit actions such as `CONTINUE_OPERATION`, `INSPECT`, `SCHEDULE_MAINTENANCE`, and `URGENT_MAINTENANCE`, with constraint overrides and human-review flags instead of hiding those decisions in a single score.
+## HITL Review
 
-The numbers above depend on the data preprocessing, checkpoint, seed, and report run. Re-run the relevant scripts before using them as a formal comparison.
+The HITL runner consumes the JSON produced by `scripts/decision.py`, creates review items for decisions flagged `human_review`, and writes JSON results, an HTML report, and a log. It then applies conservative policy refinement from accumulated expert feedback.
 
-## Outputs and repository hygiene
+```powershell
+python scripts/hitl.py --subset FD001 --model gru
+python scripts/hitl.py --subset all --model all
 
-Generated artifacts are intentionally local. The ignore rules exclude `outputs/`, raw and processed data, checkpoints, logs, `docs/`, virtual environments, and archives from version control. Typical generated locations are:
-
-```text
-outputs/
-├── checkpoints/   trained model weights
-├── figures/       EDA and experiment plots
-├── logs/          pipeline logs
-├── models/        scalers and related artifacts
-├── reports/       CSV and HTML reports
-├── results/       metrics, predictions, intervals, decisions
-└── xai/           attribution arrays, plots, ERI, HTML reports
+# Resolve a queued review
+python scripts/hitl.py `
+  --input outputs/results/decision_FD001_gru.json `
+  --review-id decision-0-0 `
+  --reviewer operator-1 `
+  --action APPROVE `
+  --confidence 0.9 `
+  --reason "Reviewed by maintenance control"
 ```
 
-The tracked source of truth is the code, configuration, tests, and this README. Local reports under `docs/` are useful for reproducing project context but are not distributed by Git according to the current `.gitignore`.
+Supported actions: `APPROVE`, and `OVERRIDE` (requires `--override-action`, which must differ from the AI action). Resolving a review requires `--review-id`, `--reviewer`, `--action`, and `--confidence` together.
+
+Feedback is appended to the append-only log `outputs/hitl/feedback.jsonl`. An alternative action is adopted only with repeated, high-confidence, high-consensus expert support (≥3 observations, weighted support ≥2.0, consensus ≥0.70), and `URGENT_MAINTENANCE` is never automatically weakened. Constraints are re-checked after every adaptation.
+
+> **HITL does not retrain the model.** It refines the decision *policy* only — `prognostic_model_updated` is `false` on every output. A review submitted in a run is recorded but excluded from that same run's adaptation pass, so it becomes evidence for the next run rather than leaking into the decision it just reviewed.
+
+---
+
+## Results Summary
+
+Results below are from specific project runs and depend on the preprocessing config, checkpoint, and seed. Re-run the relevant scripts before using them as a formal comparison.
+
+| Area | Key result |
+|---|---|
+| Point prediction (FD001, GRU-Att-Deg) | RUL MAE 10.05, RMSE 13.64, R² 0.884, NASA Score 308.63 |
+| Point prediction (FD004, Transformer) | RUL MAE 13.56, R² 0.808 |
+| Uncertainty (GRU, split conformal, 90%) | Coverage 0.880 / 0.897 / 0.850 / 0.928 on FD001–FD004; MPIW 42.06 / 57.88 / 37.87 / 70.81 cycles |
+| Explanation reliability (mean ERI) | 0.880 (HI), 0.872 (RUL) across subsets and models |
+
+ERI is the Explainability Reliability Index — cross-method agreement between Integrated Gradients, SHAP, and temporal relevance, with an uncorrelated pair scoring 0.5 (see [ARCHITECTURE.md](ARCHITECTURE.md#eri--explainability-reliability-index-eripy)).
+
+The multi-seed conformal benchmark (five methods, FD001–FD004, seeds 42–46) is the reference comparison; see [BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md) and `results/conformal_benchmark/`.
+
+---
+
+## Evaluation Metrics
+
+### RUL (Remaining Useful Life)
+
+| Metric | Description |
+|--------|-------------|
+| **MAE** | Mean Absolute Error in cycles |
+| **RMSE** | Root Mean Squared Error |
+| **R²** | Coefficient of determination |
+| **NASA Score** | Asymmetric penalty — late predictions penalized more heavily |
+
+### Health Index (HI)
+
+| Metric | Description |
+|--------|-------------|
+| **MAE** | Mean Absolute Error |
+| **RMSE** | Root Mean Squared Error |
+| **R²** | Coefficient of determination |
+
+Interval methods additionally report empirical coverage, signed coverage gap, MPIW, PINAW, and Winkler score.
+
+---
+
+## Implementation Status
+
+| Component | Status |
+|---|---|
+| Preprocessing and windowing | Complete |
+| Joint RUL/HI prediction (5 model families) | Complete |
+| Conformal uncertainty — four methods | Implemented |
+| Conformal benchmark (5 methods × 4 subsets × 5 seeds) | Implemented; see `results/conformal_benchmark/` |
+| Explainability (IG, SHAP, temporal relevance, ERI) | Implemented; faithfulness validation pending |
+| Decision engine (rules, constraints, HTML reports) | Complete |
+| HITL review and policy refinement | Complete; model retraining intentionally out of scope |
+| `src/evaluation/` (benchmark, ablation, robustness) | Placeholder stubs |
+| Config file loading | Not implemented — scripts use module-level constants |
+
+Additional gaps that affect how results should be read:
+
+- **Checkpoints are loaded tolerantly.** `src/models/checkpoint.py` loads state dicts non-strictly and re-initialises a missing scale head to a neutral scale, so evaluation and uncertainty runs no longer fail when a checkpoint was trained with a different set of heads.
+- **`src/evaluation/` returns hard-coded values.** The real metrics live in `src/models/evaluator.py`; ablation and robustness experiments are not implemented.
+- **`cqr` in `scripts/uncertainty.py` is not conventional CQR** — the pipeline checkpoint exposes no separately trained quantile heads, so it uses `prediction ± scale` as conditional bounds. The benchmark's `cqr` method does train quantile heads and is conventional CQR.
+
+[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps) documents all of these with the code locations involved.
+
+---
 
 ## Tests
 

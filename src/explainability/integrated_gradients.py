@@ -44,7 +44,8 @@ def integrated_gradients(
     if steps < 1:
         raise ValueError("steps must be >= 1.")
 
-    model.train()
+    was_training = model.training
+    model.eval()
     x = x.detach()
 
     if baseline is None:
@@ -59,24 +60,27 @@ def integrated_gradients(
     delta = x - baseline
     total_gradients = torch.zeros_like(x, device=device)
 
-    for step in range(1, steps + 1):
-        alpha = float(step) / float(steps)
-        interpolated = (baseline + alpha * delta)
-        interpolated.requires_grad_()
+    try:
+        with torch.backends.cudnn.flags(enabled=False):
+            for step in range(1, steps + 1):
+                alpha = float(step) / float(steps)
+                interpolated = (baseline + alpha * delta)
+                interpolated.requires_grad_()
 
-        output = _select_output(model=model, x=interpolated, target=target)
-        scalar_output = output.sum()
+                output = _select_output(model=model, x=interpolated, target=target)
+                scalar_output = output.sum()
 
-        gradients = torch.autograd.grad(
-            outputs=scalar_output,
-            inputs=interpolated,
-            retain_graph=False,
-            create_graph=False,
-        )[0]
+                gradients = torch.autograd.grad(
+                    outputs=scalar_output,
+                    inputs=interpolated,
+                    retain_graph=False,
+                    create_graph=False,
+                )[0]
 
-        total_gradients += gradients.detach()
+                total_gradients += gradients.detach()
+    finally:
+        model.train(was_training)
 
-    model.eval()
     attributions = delta * (total_gradients / float(steps))
     return attributions
 

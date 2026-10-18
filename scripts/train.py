@@ -145,6 +145,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SUBSET,
         help="C-MAPSS subset to train, or 'all'.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed; explicit seeds use isolated output paths.",
+    )
 
     return parser.parse_args()
 
@@ -305,10 +311,20 @@ def build_model(
 # Main
 # ------------------------------------------------------------------
 
-def run(model_name: str, subset: str) -> None:
+def run(
+    model_name: str,
+    subset: str,
+    seed: int = SEED,
+    seed_specific_output: bool = False,
+) -> None:
     """Run the full training pipeline for a single model/subset combination."""
-    log = get_script_logger("training", f"train_{subset}_{model_name}")
+    logger_name = f"train_{subset}_{model_name}"
+    if seed_specific_output:
+        logger_name += f"_seed{seed}"
+    log = get_script_logger("training", logger_name)
 
+    # Seed is set per (model, subset) run so different combinations
+    # get different weight initialisations while remaining reproducible.
     set_seed(SEED)
 
     device = get_device()
@@ -369,7 +385,7 @@ def run(model_name: str, subset: str) -> None:
     splitter = GroupShuffleSplit(
         n_splits=1,
         test_size=VALIDATION_SIZE,
-        random_state=SEED,
+        random_state=seed,
     )
 
     train_indices, val_indices = next(
@@ -507,6 +523,8 @@ def run(model_name: str, subset: str) -> None:
         / model_name
         / subset
     )
+    if seed_specific_output:
+        model_checkpoint_dir /= f"seed_{seed}"
 
     # --------------------------------------------------------------
     # Trainer
@@ -559,10 +577,10 @@ def run(model_name: str, subset: str) -> None:
         exist_ok=True,
     )
 
-    history_path = (
-        RESULTS_DIR
-        / f"{subset}_{model_name}_history.npz"
-    )
+    history_name = f"{subset}_{model_name}_history.npz"
+    if seed_specific_output:
+        history_name = f"{subset}_{model_name}_seed{seed}_history.npz"
+    history_path = RESULTS_DIR / history_name
 
     np.savez(
         str(history_path),
@@ -598,11 +616,17 @@ def run(model_name: str, subset: str) -> None:
 
 def main():
     args = parse_args()
+    seed = SEED if args.seed is None else args.seed
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
     models  = ALL_MODELS  if args.model  == "all" else [args.model]
     for subset in subsets:
         for model_name in models:
-            run(model_name, subset)
+            run(
+                model_name,
+                subset,
+                seed=seed,
+                seed_specific_output=args.seed is not None,
+            )
 
 
 # ------------------------------------------------------------------
