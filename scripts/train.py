@@ -63,12 +63,8 @@ from src.utils.logger import get_script_logger
 from src.models.gru import GRUPrognosticsModel
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
-<<<<<<< HEAD
-from src.models.hybrid import CNNGRUTransformerPrognostics as HybridPrognosticsModel
-=======
 from src.models.hybrid import HybridPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 from src.models.losses import MultiTaskLoss
 from src.models.trainer import ModelTrainer
 
@@ -207,37 +203,51 @@ def get_device() -> torch.device:
 # Data Loading
 # ------------------------------------------------------------------
 
-def load_training_data( subset:str ):
+def load_training_data(subset: str):
     """
-    Load processed training arrays and engine IDs.
+    Load processed training arrays, engine IDs, and preprocessing metadata.
 
-    Engine IDs are required for group-wise validation so that
-    windows from the same engine cannot appear in both training
-    and validation sets.
+    Reads the metadata JSON written by preprocess.py so that train.py
+    always knows the window_size and feature count the data was built with.
+    Raises if any expected file is missing or array lengths disagree.
     """
+    import json
 
-    x_path = DATA_DIR / f"{subset}_train_X.npy"
-    rul_path = DATA_DIR / f"{subset}_train_y_rul.npy"
-    hi_path = DATA_DIR / f"{subset}_train_y_hi.npy"
+    x_path      = DATA_DIR / f"{subset}_train_X.npy"
+    rul_path    = DATA_DIR / f"{subset}_train_y_rul.npy"
+    hi_path     = DATA_DIR / f"{subset}_train_y_hi.npy"
     engine_path = DATA_DIR / f"{subset}_train_engine_ids.npy"
+    meta_path   = DATA_DIR / f"{subset}_train_metadata.json"
 
-    X = np.load(x_path)
-    y_rul = np.load(rul_path)
-    y_hi = np.load(hi_path)
+    for p in (x_path, rul_path, hi_path, engine_path, meta_path):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Processed file not found: {p}\n"
+                f"Run: python scripts/preprocess.py --subset {subset}"
+            )
+
+    X          = np.load(x_path)
+    y_rul      = np.load(rul_path)
+    y_hi       = np.load(hi_path)
     engine_ids = np.load(engine_path)
 
-    if not (
-        len(X)
-        == len(y_rul)
-        == len(y_hi)
-        == len(engine_ids)
-    ):
+    with open(meta_path) as f:
+        metadata = json.load(f)
+
+    if not (len(X) == len(y_rul) == len(y_hi) == len(engine_ids)):
         raise ValueError(
-            "X, RUL, HI and engine IDs must contain "
-            "the same number of samples."
+            "X, RUL, HI and engine IDs must contain the same number of samples."
         )
 
-    return X, y_rul, y_hi, engine_ids
+    # Sanity-check: feature count in array must match metadata
+    if X.shape[-1] != metadata["features"]:
+        raise ValueError(
+            f"Feature count mismatch: array has {X.shape[-1]} features "
+            f"but metadata says {metadata['features']}. "
+            f"Re-run preprocess.py --subset {subset}."
+        )
+
+    return X, y_rul, y_hi, engine_ids, metadata
 
 
 # ------------------------------------------------------------------
@@ -294,13 +304,9 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
-<<<<<<< HEAD
             num_gru_layers=NUM_LAYERS,
             num_transformer_layers=NUM_LAYERS,
             num_heads=4,
-=======
-            num_layers=NUM_LAYERS,
-            kernel_size=3,
             dropout=DROPOUT,
         )
 
@@ -310,7 +316,6 @@ def build_model(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
             num_layers=NUM_LAYERS,
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
             dropout=DROPOUT,
         )
 
@@ -326,54 +331,30 @@ def run(model_name: str, subset: str) -> None:
     """Run the full training pipeline for a single model/subset combination."""
     log = get_script_logger("training", f"train_{subset}_{model_name}")
 
+    # Seed is set per (model, subset) run so different combinations
+    # get different weight initialisations while remaining reproducible.
     set_seed(SEED)
 
     device = get_device()
 
-    log.info(
-        "=" * 60
-    )
-
-    log.info(
-        "TRAINING MODEL: %s",
-        model_name.upper(),
-    )
-
-    log.info(
-        "=" * 60
-    )
-
-    log.info(
-        "Using device: %s",
-        device,
-    )
+    log.info("=" * 60)
+    log.info("TRAINING MODEL: %s  |  SUBSET: %s", model_name.upper(), subset)
+    log.info("=" * 60)
+    log.info("Using device: %s", device)
 
     # --------------------------------------------------------------
-    # Load data
+    # Load data + metadata
     # --------------------------------------------------------------
+    log.info("Loading processed training data...")
 
-    log.info(
-        "Loading processed training data..."
-    )
+    X, y_rul, y_hi, engine_ids, metadata = load_training_data(subset=subset)
 
-    X, y_rul, y_hi, engine_ids = (
-        load_training_data( subset=subset )
-    )
-
-    log.info(
-        "X shape      : %s",
-        X.shape,
-    )
-
-    log.info(
-        "RUL shape    : %s",
-        y_rul.shape,
-    )
-
-    log.info(
-        "HI shape     : %s",
-        y_hi.shape,
-    )
+    window_size = metadata["window_size"]
+    log.info("X shape        : %s", X.shape)
+    log.info("RUL shape      : %s", y_rul.shape)
+    log.info("HI shape       : %s", y_hi.shape)
+    log.info("window_size    : %d  (from preprocessing metadata)", window_size)
+    log.info("features       : %d", metadata["features"])
 
     # --------------------------------------------------------------
     # Engine-wise Train / Validation Split
@@ -540,7 +521,9 @@ def run(model_name: str, subset: str) -> None:
         checkpoint_dir=model_checkpoint_dir,
     )
 
-    trainer.input_size = input_size
+    trainer.input_size  = input_size
+    trainer.window_size = window_size
+    trainer.subset      = subset
 
     # --------------------------------------------------------------
     # DataLoaders

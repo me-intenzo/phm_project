@@ -7,8 +7,9 @@ Example:
     # Explicitly set five or more seeds:
     python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
 
-NEX-SCP uses cycle-time-weighted calibration residuals for each final test
-window; it does not use test labels or update from test outcomes.
+NEX-SCP is implemented as prequential adaptive conformal inference: the
+miscoverage level is updated from each test engine's realised outcome in
+stored order, so later engines see a recalibrated alpha.
 """
 
 from __future__ import annotations
@@ -34,11 +35,15 @@ from torch.utils.data import DataLoader, TensorDataset
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "processed"
-OUT = ROOT / "outputs" / "results" / "multiseed_conformal_benchmark"
+OUT = ROOT / "results" / "conformal_benchmark"
 SUBSETS = ("FD001", "FD002", "FD003", "FD004")
 COVERAGES = (0.80, 0.90, 0.95)
-METHODS = ("split_conformal", "cqr", "nex_scp", "eara_conformal")
+METHODS = ("split_conformal", "cqr", "adaptive", "nex_scp", "eara_conformal")
 QUANTILE_LEVELS = (0.025, 0.05, 0.10, 0.20, 0.80, 0.90, 0.95, 0.975)
+# Shared scale floor. The same constant is applied whenever a predicted scale
+# is normalised into a calibration score and whenever it multiplies a quantile
+# into an interval radius, so calibration and prediction stay aligned.
+SCALE_FLOOR = 1e-3
 
 
 class IntervalRegressor(nn.Module):
@@ -56,7 +61,7 @@ class IntervalRegressor(nn.Module):
         state = hidden[-1]
         point = self.point(state).squeeze(-1)
         quantiles = torch.sort(self.quantiles(state), dim=-1).values
-        scale = torch.nn.functional.softplus(self.scale(state).squeeze(-1)) + 1e-3
+        scale = torch.nn.functional.softplus(self.scale(state).squeeze(-1)) + SCALE_FLOOR
         return point, quantiles, scale
 
 
@@ -160,44 +165,48 @@ def sample_calibration_indices(engine_ids: np.ndarray, seed: int) -> np.ndarray:
     ], dtype=np.int64)
 
 
-def window_cycle_indices(engine_ids: np.ndarray, window_size: int, stride: int) -> np.ndarray:
-    """Recover each training window's final source cycle from ordered windows."""
-    cycle_indices = np.empty(len(engine_ids), dtype=np.int64)
-    for engine in np.unique(engine_ids):
-        indices = np.flatnonzero(engine_ids == engine)
-        cycle_indices[indices] = window_size + np.arange(len(indices)) * stride
-    return cycle_indices
-
-
-def test_cycle_indices(subset: str, engine_ids: np.ndarray) -> np.ndarray:
-    """Read each censored test engine's last observed cycle, without using RUL."""
-    raw_path = DATA.parent / "raw" / f"test_{subset}.txt"
-    raw = np.loadtxt(raw_path, usecols=(0, 1), dtype=np.int64)
-    final_cycle = {
-        int(engine): int(raw[raw[:, 0] == engine, 1].max())
-        for engine in np.unique(engine_ids)
-    }
-    return np.asarray([final_cycle[int(engine)] for engine in engine_ids], dtype=np.int64)
-
-
-def nex_scp_quantile(
+def prequential_aci_intervals(
     scores: np.ndarray,
-    calibration_cycles: np.ndarray,
-    test_cycle: int,
+    y_pred: np.ndarray,
+    scales: np.ndarray,
+    y_true: np.ndarray,
     alpha: float,
-    decay: float = 0.99,
-) -> float:
-    """NEX-SCP weighted residual quantile, including its conformal infinity mass."""
-    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
-    calibration_cycles = np.asarray(calibration_cycles, dtype=np.float64).reshape(-1)
-    if scores.size == 0 or scores.shape != calibration_cycles.shape:
-        raise ValueError("NEX-SCP scores and calibration cycles must be non-empty and aligned.")
-    weights = np.power(decay, np.abs(float(test_cycle) - calibration_cycles))
-    denominator = 1.0 + float(weights.sum())
-    order = np.argsort(scores, kind="stable")
-    cumulative_mass = np.cumsum(weights[order]) / denominator
-    rank = int(np.searchsorted(cumulative_mass, 1.0 - alpha, side="left"))
-    return float(scores[order[rank]]) if rank < scores.size else float("inf")
+    gamma: float,
+) -> tuple[np.ndarray, np.ndarray, list[float]]:
+    """Prequential adaptive conformal inference (Gibbs & Candes, 2021).
+
+    The miscoverage level adapts online from realised coverage:
+
+        alpha_{t+1} = clip(alpha_t + gamma * (alpha - err_t), 0, 1)
+
+    ``err_t`` is 1 when the realised label falls outside the interval produced
+    for unit ``t``. Test units are consumed in stored order, so each engine's
+    outcome updates the level used for the next engine.
+    """
+    scores = np.sort(np.asarray(scores, dtype=np.float64).reshape(-1))
+    if scores.size == 0:
+        raise ValueError("Cannot calibrate with no calibration scores")
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    scales = np.asarray(scales, dtype=np.float64).reshape(-1)
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    if not (y_pred.shape == scales.shape == y_true.shape):
+        raise ValueError("Predictions, scales, and targets must align")
+
+    lower = np.empty_like(y_pred)
+    upper = np.empty_like(y_pred)
+    alpha_stream: list[float] = []
+    alpha_t = float(alpha)
+    for index in range(len(y_pred)):
+        quantile = finite_sample_quantile(scores, alpha_t)
+        radius = quantile * max(float(scales[index]), SCALE_FLOOR)
+        lo = float(np.clip(y_pred[index] - radius, 0.0, 125.0))
+        hi = float(np.clip(y_pred[index] + radius, 0.0, 125.0))
+        lower[index] = lo
+        upper[index] = hi
+        alpha_stream.append(alpha_t)
+        error = 0.0 if lo <= y_true[index] <= hi else 1.0
+        alpha_t = float(np.clip(alpha_t + gamma * (alpha - error), 0.0, 1.0))
+    return lower, upper, alpha_stream
 
 
 def interval_metrics(y: np.ndarray, lower: np.ndarray, upper: np.ndarray, coverage: float) -> dict[str, float]:
@@ -219,7 +228,7 @@ def eara_scores(
     y: np.ndarray, point: np.ndarray, scale: np.ndarray, regimes: np.ndarray,
     engines: np.ndarray, n_regimes: int,
 ) -> tuple[dict[int, np.ndarray], np.ndarray]:
-    raw = np.abs(y - point) / np.maximum(scale, 1e-3)
+    raw = np.abs(y - point) / np.maximum(scale, SCALE_FLOOR)
     _, global_scores = engine_max(raw, engines)
     by_regime: dict[int, np.ndarray] = {}
     for regime in range(n_regimes):
@@ -235,9 +244,6 @@ def eara_scores(
 def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.device) -> tuple[list[dict], dict]:
     x_all, y_all, engine_all = load_arrays(subset, "train")
     x_test, y_test, test_engines = load_arrays(subset, "test")
-    metadata = json.loads((DATA / f"{subset}_train_metadata.json").read_text(encoding="utf-8"))
-    window_size = int(metadata["window_size"])
-    stride = int(metadata["stride"])
     train_idx, cal_idx = grouped_split(engine_all, seed)
     model = train_model(x_all[train_idx], y_all[train_idx], seed, args.epochs, args.batch_size, device)
     cal_sample_idx = sample_calibration_indices(engine_all[cal_idx], seed)
@@ -247,14 +253,10 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
     point_cal, quantiles_cal, scale_cal = predict(model, x_cal_sample, device, args.batch_size)
     point_test, quantiles_test, scale_test = predict(model, x_test, device, args.batch_size)
     _, split_scores = engine_max(np.abs(y_cal_sample - point_cal), cal_engines)
-    # NEX-SCP uses all windows from held-out calibration engines, localized by
-    # the observed cycle index of each censored test endpoint.
-    x_nex_cal = x_all[cal_idx]
-    y_nex_cal = y_all[cal_idx]
-    point_nex_cal, _, _ = predict(model, x_nex_cal, device, args.batch_size)
-    nex_scores = np.abs(y_nex_cal - point_nex_cal)
-    calibration_cycles = window_cycle_indices(engine_all[cal_idx], window_size, stride)
-    test_cycles = test_cycle_indices(subset, test_engines)
+    # Scale-normalised calibration scores shared by the global adaptive and the
+    # prequential ACI methods. Engine-level maxima match the other methods.
+    adaptive_raw = np.abs(y_cal_sample - point_cal) / np.maximum(scale_cal, SCALE_FLOOR)
+    _, adaptive_scores = engine_max(adaptive_raw, cal_engines)
     regimes = None
     eara_cal_scores = None
     if args.n_regimes > 0:
@@ -280,8 +282,8 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
         "train_engine_ids": train_engine_ids.tolist(),
         "calibration_engine_ids": calibration_engine_ids.tolist(),
         "calibration_scoring": (
-            "split/CQR/EARA: one seeded random window per calibration engine; "
-            "NEX-SCP: all windows from held-out calibration engines, weighted by cycle distance"
+            "One seeded random window per calibration engine for every method; "
+            "NEX-SCP then adapts its miscoverage level from test outcomes in stored order"
         ),
     }
     for coverage in COVERAGES:
@@ -297,26 +299,29 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
         ))
         _, cqr_scores = engine_max(cqr_nonconformity, cal_engines)
         cqr_delta = finite_sample_quantile(cqr_scores, alpha)
-        eara_global = finite_sample_quantile(
-            np.abs(y_cal_sample - point_cal) / np.maximum(scale_cal, 1e-3), alpha
+        eara_global = finite_sample_quantile(adaptive_raw, alpha)
+        # Global scale-adaptive split conformal.
+        adaptive_q = finite_sample_quantile(adaptive_scores, alpha)
+        # Prequential nex-SCP: adapt the miscoverage level from test outcomes.
+        nex_lower, nex_upper, _ = prequential_aci_intervals(
+            adaptive_scores, point_test, scale_test, y_test, alpha, args.aci_gamma,
         )
         for i in range(len(y_test)):
+            adaptive_radius = adaptive_q * max(float(scale_test[i]), SCALE_FLOOR)
             candidates: dict[str, tuple[float, float]] = {
                 "split_conformal": (point_test[i] - radius, point_test[i] + radius),
                 "cqr": (qlo_test[i] - cqr_delta, qhi_test[i] + cqr_delta),
+                "adaptive": (point_test[i] - adaptive_radius, point_test[i] + adaptive_radius),
+                "nex_scp": (nex_lower[i], nex_upper[i]),
             }
-            nex_radius = nex_scp_quantile(
-                nex_scores, calibration_cycles, int(test_cycles[i]), alpha,
-                decay=args.nex_scp_decay,
-            )
-            candidates["nex_scp"] = (point_test[i] - nex_radius, point_test[i] + nex_radius)
             regime = int(regimes[i]) if regimes is not None else -1
             regime_scores = eara_cal_scores.get(regime, np.empty(0)) if eara_cal_scores is not None else np.empty(0)
             # Small or absent regime calibration sets use the engine-level global calibration pool.
             q_regime = finite_sample_quantile(regime_scores, alpha) if regime_scores.size >= 5 else eara_global
+            scaled = max(float(scale_test[i]), SCALE_FLOOR)
             candidates["eara_conformal"] = (
-                point_test[i] - q_regime * scale_test[i],
-                point_test[i] + q_regime * scale_test[i],
+                point_test[i] - q_regime * scaled,
+                point_test[i] + q_regime * scaled,
             )
 
             for method, (lo, hi) in candidates.items():
@@ -463,7 +468,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--n-regimes", type=int, default=7)
-    parser.add_argument("--nex-scp-decay", type=float, default=0.99)
+    parser.add_argument("--aci-gamma", type=float, default=0.02)
     return parser.parse_args()
 
 
@@ -474,8 +479,8 @@ def main() -> None:
         raise SystemExit(f"Unknown subset(s): {set(subsets) - set(SUBSETS)}")
     if len(set(args.seeds)) < 5:
         raise SystemExit("At least five distinct seeds are required")
-    if not 0.0 < args.nex_scp_decay <= 1.0:
-        raise SystemExit("--nex-scp-decay must be in (0, 1]")
+    if not 0.0 < args.aci_gamma <= 1.0:
+        raise SystemExit("--aci-gamma must be in (0, 1]")
     if args.n_regimes < 2:
         raise SystemExit("--n-regimes must be at least 2 for EARA-Conformal")
     OUT.mkdir(parents=True, exist_ok=True)
@@ -497,12 +502,12 @@ def main() -> None:
     write_csv(OUT / "paired_comparisons.csv", comparisons)
     (OUT / "split_manifest.json").write_text(json.dumps(split_manifests, indent=2), encoding="utf-8")
     (OUT / "run_config.json").write_text(json.dumps({
-        "subsets": subsets, "seeds": args.seeds, "epochs": args.epochs,
+        "subsets": list(subsets), "seeds": args.seeds, "epochs": args.epochs,
         "batch_size": args.batch_size, "n_regimes": args.n_regimes,
-        "nex_scp_decay": args.nex_scp_decay, "coverage_levels": COVERAGES,
-        "methods": METHODS, "device": str(device),
-        "nex_scp_protocol": "Calibration residuals weighted by decay^absolute_cycle_distance; includes the conformal infinity mass.",
-        "calibration_unit": "One seeded random window per calibration engine for split/CQR/EARA; all held-out calibration-engine windows for NEX-SCP; one final test window per engine.",
+        "aci_gamma": args.aci_gamma, "coverage_levels": list(COVERAGES),
+        "methods": list(METHODS), "device": str(device),
+        "nex_scp_protocol": "Prequential adaptive miscoverage; each test engine outcome updates alpha for the next engine.",
+        "calibration_unit": "One seeded random window per calibration engine as a censored-endpoint proxy; test unit is one final window per engine.",
     }, indent=2), encoding="utf-8")
     plot_summary(summary)
     print(f"Wrote benchmark outputs to {OUT}")

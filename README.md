@@ -1,318 +1,3 @@
-<<<<<<< HEAD
-# PHM-XAI — Prognostics and Health Monitoring for Aircraft Engines
-
-A research framework for **predictive maintenance** on multivariate sensor time-series from the **NASA C-MAPSS** turbofan engine degradation dataset. PHM-XAI delivers a complete **multi-task deep learning pipeline** for joint **Remaining Useful Life (RUL)** and **Health Index (HI)** prediction using LSTM, GRU, Transformer, and Hybrid architectures.
-
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-1.13+-ee4c2c.svg)](https://pytorch.org/)
-
----
-
-## Table of Contents
-
-- [What is PHM-XAI?](#what-is-phm-xai)
-- [How It Works](#how-it-works)
-- [Key Features](#key-features)
-- [Tech Stack](#tech-stack)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Evaluation Metrics](#evaluation-metrics)
-- [Testing](#testing)
-- [Future Development](#future-development)
-- [Contributing](#contributing)
-- [Citation](#citation)
-
----
-
-## What is PHM-XAI?
-
-PHM-XAI is a modular **prognostics and health monitoring (PHM)** framework built for aircraft engine degradation modeling. It ingests NASA C-MAPSS sensor readings and produces two complementary outputs:
-
-1. **Remaining Useful Life (RUL)** — estimated cycles until engine failure (regression)
-2. **Health Index (HI)** — normalized engine health score from 0.0 to 1.0 (regression)
-
-### Real-World Applications
-
-- **Aerospace maintenance** — schedule inspections before critical failure
-- **Fleet monitoring** — track degradation trends across multiple engines
-- **Research benchmarking** — compare recurrent and attention-based prognostics models
-- **Predictive maintenance pipelines** — foundation layer for downstream decision systems
-
-### Current Scope (Objective 1 — Complete)
-
-The implemented pipeline covers the full **data-to-evaluation** workflow:
-
-| Stage | Status |
-|-------|--------|
-| Data loading and validation | Complete |
-| RUL and HI label generation | Complete |
-| Feature selection and scaling | Complete |
-| Sliding-window sequence generation | Complete |
-| Multi-task model training (LSTM, GRU, Transformer, Hybrid) | Complete |
-| Model evaluation with NASA scoring | Complete |
-
----
-
-## How It Works
-
-### End-to-End Pipeline
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    NASA C-MAPSS Raw Data                    │
-│         train_FD00X.txt │ test_FD00X.txt │ RUL_FD00X.txt    │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   PREPROCESSING PIPELINE                    │
-│  Load → Validate → Label (RUL/HI) → Feature Selection       │
-│       → StandardScaler → Sliding Windows → Save .npy        │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   MULTI-TASK PROGNOSTICS                    │
-│  Engine-wise Train/Val Split → Model Selection              │
-│  LSTM │ GRU │ Transformer │ Hybrid                          │
-│  MultiTaskLoss (α·RUL + β·HI) → Early Stopping → Checkpoint │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      EVALUATION                             │
-│  Test Inference → MAE, RMSE, R², NASA Score → Save Results  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Step-by-Step Process
-
-1. **Load** — Read C-MAPSS train, test, and RUL files into structured DataFrames
-2. **Validate** — Check schema, missing values, and column integrity
-3. **Label** — Compute RUL (capped at 125 cycles) and normalized HI per engine
-4. **Preprocess** — Remove low-variance sensors, apply StandardScaler (fit on train only)
-5. **Window** — Generate 30-step sliding windows for training; final window per engine for test
-6. **Train** — Multi-task learning with engine-level train/validation split (no data leakage)
-7. **Evaluate** — Run inference on test set and compute RUL/HI metrics including NASA score
-8. **Save** — Store checkpoints, predictions, training history, and logs under `outputs/`
-
----
-
-## Key Features
-
-### Data Processing
-
-- **NASA C-MAPSS support** — FD001, FD002, FD003, FD004 subsets
-- **Automated validation** — schema checks, missing value detection, summary reports
-- **RUL labeling** — piecewise linear RUL with 125-cycle cap (standard C-MAPSS convention)
-- **Health Index** — per-engine normalized degradation score
-- **Variance-based feature selection** — removes uninformative sensors automatically
-- **Sliding-window generation** — configurable window size and stride with engine ID tracking
-- **EDA utilities** — lifetime plots, sensor trends, correlation heatmaps, variance analysis
-
-### Multi-Task Deep Learning
-
-- **Four model architectures** — LSTM, GRU, Transformer, and Hybrid (LSTM + Transformer fusion)
-- **Shared encoder design** — single representation with separate RUL and HI prediction heads
-- **Multi-task loss** — weighted combination of RUL and HI MSE losses
-- **Engine-wise splitting** — GroupShuffleSplit ensures no engine appears in both train and validation
-- **Training controls** — early stopping, learning rate scheduling, best-checkpoint saving
-- **Reproducibility** — fixed random seeds across Python, NumPy, and PyTorch
-
-### Evaluation
-
-- **RUL metrics** — MAE, RMSE, R², NASA C-MAPSS asymmetric scoring function
-- **HI metrics** — MAE, RMSE, R²
-- **Artifact export** — predictions, training history, and evaluation logs saved automatically
-
----
-
-## Tech Stack
-
-| Technology | Purpose |
-|------------|---------|
-| **Python 3.9+** | Core language |
-| **PyTorch 1.13+** | Deep learning models and training |
-| **NumPy / Pandas** | Data manipulation and array storage |
-| **scikit-learn** | Scaling, feature selection, train/val splitting |
-| **SciPy** | Scientific computing utilities |
-| **Matplotlib / Seaborn** | Exploratory data visualization |
-| **PyYAML** | Experiment configuration |
-| **pytest** | Automated testing |
-| **joblib** | Scaler persistence |
-
----
-
-## Architecture
-
-### System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      ENTRY POINTS                           │
-│  main.py │ preprocess.py │ train.py │ evaluate.py           │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│                    CORE LIBRARY (src/)                      │
-│                                                              │
-│  ┌─────────────────┐  ┌─────────────────┐                   │
-│  │  preprocessing/ │  │     models/     │                   │
-│  │  Loader         │  │  LSTM / GRU     │                   │
-│  │  Validator      │  │  Transformer    │                   │
-│  │  LabelGenerator │  │  Hybrid         │                   │
-│  │  FeatureScaler  │  │  MultiTaskLoss  │                   │
-│  │  WindowGenerator│  │  ModelTrainer   │                   │
-│  └─────────────────┘  │  Evaluator      │                   │
-│                       └─────────────────┘                   │
-│  ┌─────────────────┐                                        │
-│  │     utils/      │  config, logging, seed, I/O             │
-│  └─────────────────┘                                        │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│                      DATA & OUTPUTS                         │
-│  data/raw/ │ data/processed/ │ outputs/checkpoints/         │
-│  outputs/results/ │ outputs/logs/ │ outputs/figures/        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Model Architecture (Multi-Task Design)
-
-All four models follow the same interface: `forward(x) → (pred_rul, pred_hi)`.
-
-```
-Input Tensor (batch, 30, features)
-              │
-              ▼
-     ┌─────────────────┐
-     │  Shared Encoder  │  ← LSTM / GRU / Transformer / Hybrid
-     └────────┬────────┘
-              │
-     ┌────────▼────────┐
-     │  Shared FC Layer │  Linear → BatchNorm → ReLU → Dropout
-     └────────┬────────┘
-              │
-       ┌──────┴──────┐
-       ▼             ▼
-   RUL Head       HI Head
-  (regression)  (regression)
-```
-
-**Hybrid model** runs parallel LSTM and Transformer branches, concatenates their representations, and fuses them before the task heads.
-
-### Preprocessing Pipeline
-
-```
-CMAPSSLoader
-     ↓
-DatasetValidator → summary reports
-     ↓
-LabelGenerator (RUL + HI)
-     ↓
-FeatureSelector (variance threshold)
-     ↓
-FeatureScaler (StandardScaler, train-only fit)
-     ↓
-WindowGenerator
-     ├── Train: sliding windows (stride=1)
-     └── Test:  final window per engine
-     ↓
-Save .npy arrays + metadata.json
-```
-
----
-
-## Project Structure
-
-```
-phm_project/
-├── main.py                     # EDA entry point
-├── configs/                    # YAML experiment configs (FD001–FD004)
-├── data/
-│   ├── raw/                    # NASA C-MAPSS source files (not in repo)
-│   └── processed/              # Generated .npy arrays
-├── scripts/
-│   ├── preprocess.py           # Full preprocessing pipeline
-│   ├── train.py                # Model training
-│   └── evaluate.py             # Model evaluation
-├── src/
-│   ├── preprocessing/          # Data loading, labeling, windowing
-│   ├── models/                 # LSTM, GRU, Transformer, Hybrid
-│   ├── evaluation/             # Metrics and benchmarking utilities
-│   └── utils/                  # Config, logging, seed, I/O
-├── tests/                      # pytest test suite
-├── outputs/                    # Checkpoints, results, logs, figures
-├── requirements.txt
-├── CONTRIBUTING.md
-└── README.md
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.9+
-- pip
-- CUDA-compatible GPU (recommended for training)
-
-### Installation
-
-```bash
-git clone <repository-url>
-cd phm_project
-
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# Linux / macOS
-source .venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-Verify PyTorch and GPU availability:
-
-```bash
-python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available())"
-```
-
-### Dataset Setup
-
-Download the [NASA C-MAPSS Turbofan Engine Degradation Dataset](https://ti.arc.nasa.gov/tech/dash/groups/pcoe/prognostic-data-repository/) and place files in:
-
-```
-data/raw/
-├── train_FD001.txt
-├── test_FD001.txt
-├── RUL_FD001.txt
-└── ... (repeat for FD002, FD003, FD004)
-```
-
-### Run the Pipeline
-
-```bash
-# 1. Preprocess a dataset subset
-python scripts/preprocess.py --subset FD001
-
-# 2. Train a model
-python scripts/train.py --model lstm --subset FD001
-python scripts/train.py --model gru --subset FD001
-python scripts/train.py --model transformer --subset FD001
-python scripts/train.py --model hybrid --subset FD001
-
-# 3. Evaluate the trained model
-python scripts/evaluate.py --model lstm --subset FD001
-
-# 4. (Optional) Run exploratory data analysis
-=======
 # PHM-XAI: Engine-Aware Trustworthy Prognostics
 
 End-to-end prognostics pipeline for **remaining useful life (RUL)** and **health index (HI)** estimation on the NASA C-MAPSS turbofan dataset. Point predictions are extended with calibrated uncertainty intervals, post-hoc explanations, and constraint-aware maintenance recommendations.
@@ -329,9 +14,12 @@ End-to-end prognostics pipeline for **remaining useful life (RUL)** and **health
 - [Repository Layout](#repository-layout)
 - [Setup](#setup)
 - [Pipeline](#pipeline)
+- [Uncertainty Methods](#uncertainty-methods)
+- [Conformal Benchmark](#conformal-benchmark)
 - [Decision Support](#decision-support)
 - [HITL Review](#hitl-review)
 - [Results Summary](#results-summary)
+- [Evaluation Metrics](#evaluation-metrics)
 - [Implementation Status](#implementation-status)
 - [Tests](#tests)
 
@@ -374,6 +62,7 @@ Two invariants hold at every stage:
 ```text
 ARCHITECTURE.md  internal design, data contracts, known gaps
 README.md        this file
+BENCHMARKING_NOTES.md  protocol and numbers for the conformal benchmark
 configs/         subset configuration files (fd001–fd004.yaml) — see note below
 data/
   external/      example decision input JSON files
@@ -383,12 +72,14 @@ scripts/         CLI entry points for each pipeline stage
 src/
   preprocessing/  loading, validation, labelling, selection, scaling, windowing
   models/         LSTM, GRU, Transformer, Hybrid, GRU-Att-Deg (+ losses, trainer, evaluator)
-  uncertainty/    conformal prediction and EARA-Conformal
+  uncertainty/    conformal prediction, calibration, coverage, adaptive intervals
   explainability/ IG, SHAP, temporal relevance, ERI
   decision_engine/ rules, constraints, recommender
   hitl/           review workflow, feedback schema, policy refinement
   evaluation/     placeholder stubs — see Implementation Status
   utils/          logging (config/io/seed are stubs)
+results/          published benchmark artifacts (tracked)
+  conformal_benchmark/  multi-seed conformal comparison outputs
 tests/            pytest suite
 outputs/          generated artifacts — not committed
   checkpoints/    trained model weights, per model/subset
@@ -439,7 +130,6 @@ Each stage depends on outputs from the previous one. `--subset all` and `--model
 
 ```powershell
 # Exploratory data analysis (FD001 only, hard-coded)
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 python main.py
 
 # Preprocess (one subset or all)
@@ -450,44 +140,19 @@ python scripts/preprocess.py --subset all
 python scripts/train.py    --model gru --subset FD001
 python scripts/evaluate.py --model gru --subset FD001
 
-# Uncertainty intervals
-python scripts/uncertainty.py --model gru --subset FD001 --n_regimes 7
+# Uncertainty intervals (one method at a time)
+python scripts/uncertainty.py --model gru --subset FD001 --method engine_joint
 
 # Explanations (one target or all)
 python scripts/explain.py --model gru_att_deg --subset FD001 --target rul
 python scripts/explain.py --model all --subset all --target all
 ```
 
-<<<<<<< HEAD
-### Output Locations
+Valid model names: `lstm`, `gru`, `transformer`, `hybrid`, `gru_att_deg`  
+Valid subsets: `FD001`, `FD002`, `FD003`, `FD004`  
+Valid explain targets: `rul`, `hi`, `all`
 
-```
-outputs/
-├── checkpoints/{model}/best_model.pt     # Best model weights
-├── results/{subset}_{model}_history.npz  # Training curves
-├── results/{subset}_{model}_predictions.npz # Test predictions
-├── reports/{subset}/                     # Validation summaries
-├── figures/{subset}/                     # EDA plots
-└── logs/                                 # Preprocessing, training, eval logs
-```
-
----
-
-## Configuration
-
-Experiment parameters are defined in `configs/` (one file per C-MAPSS subset):
-
-```yaml
-dataset: FD001
-window_size: 30
-batch_size: 64
-epochs: 50
-learning_rate: 0.001
-random_seed: 42
-device: cuda
-```
-
-Default training hyperparameters (in `scripts/train.py`):
+Default training hyperparameters (from `scripts/train.py`):
 
 | Parameter | Default |
 |-----------|---------|
@@ -503,124 +168,76 @@ Default training hyperparameters (in `scripts/train.py`):
 | Validation split | 20% (engine-wise) |
 | Early stopping patience | 10 |
 
----
+### Quick demo (one command)
 
-## Evaluation Metrics
+`scripts/demo.py` runs every stage above in one shot — preprocess → train →
+evaluate → EARA-Conformal uncertainty → explainability → decision → HITL —
+by invoking the same CLI entry points, and finishes by verifying every key
+artifact. Per-stage skip flags and operational-constraint passthroughs are
+available (`python scripts/demo.py --help`).
 
-### RUL (Remaining Useful Life)
-
-| Metric | Description |
-|--------|-------------|
-| **MAE** | Mean Absolute Error in cycles |
-| **RMSE** | Root Mean Squared Error |
-| **R²** | Coefficient of determination |
-| **NASA Score** | Asymmetric penalty — late predictions penalized more heavily |
-
-### Health Index (HI)
-
-| Metric | Description |
-|--------|-------------|
-| **MAE** | Mean Absolute Error |
-| **RMSE** | Root Mean Squared Error |
-| **R²** | Coefficient of determination |
-
----
-
-## Future Development
-
-The following research objectives are planned as extensions to the completed prognostics core:
-
-### Phase 2 — Uncertainty Quantification (O2)
-
-- [ ] Conformal prediction intervals for RUL estimates
-- [ ] Probability calibration for health index outputs
-- [ ] Coverage and reliability metrics
-
-### Phase 3 — Multi-Level Explainability (O3)
-
-- [ ] SHAP-based sensor importance analysis
-- [ ] Integrated Gradients attributions (Captum)
-- [ ] Temporal attention visualization
-- [ ] Explainable RUL Index (ERI)
-
-### Phase 4 — Explainable Decision Intelligence (O4)
-
-- [ ] Rule-based maintenance decision engine
-- [ ] Operational constraint checking
-- [ ] Action recommendation with traceable rationale
-
-### Phase 5 — Human-in-the-Loop Learning (O5)
-
-- [ ] Expert feedback capture and logging
-- [ ] Model refinement from maintenance operator input
-
-### Phase 6 — Multi-Dimensional Evaluation (O6)
-
-- [ ] Benchmark predictive accuracy across models and C-MAPSS subsets
-- [ ] Evaluate uncertainty reliability and calibration
-- [ ] Evaluate explainability quality
-- [ ] Evaluate maintenance decision effectiveness
-- [ ] Conduct ablation studies and robustness testing
-- [ ] Assess usability and user trust
-
----
-
-## Contributing
-
-Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup instructions, coding standards, and the pull request workflow.
-
-Areas where contributions are especially valuable:
-
-- New prognostics model architectures
-- Preprocessing improvements
-- Evaluation and benchmarking
-- Documentation and test coverage
-
----
-
-## Citation
-
-If you use PHM-XAI in your research, please cite:
-
-```bibtex
-@software{phm_xai,
-  title  = {PHM-XAI: Explainable Prognostics and Health Monitoring},
-  author = {Nagesh Tiwari and Suraj Vishwakarma and Shani Vishwakarma and Vishwa Save},
-  year   = {2026}
-}
+```powershell
+python scripts/demo.py                    # full pipeline, FD001 / gru
+python scripts/demo.py --subset all       # all four subsets
+python scripts/demo.py --eda              # also run the EDA entry point (FD001)
 ```
 
+> `demo.py` accepts only the architectures wired through the full chain
+> (`lstm`, `gru`, `transformer`, `hybrid`). Only stages that were *not*
+> skipped must be re-run — the demo aborts on the first stage that fails.
+
 ---
 
-<div align="center">
-  <p>Built for predictive maintenance research on NASA C-MAPSS engine degradation data.</p>
-</div>
-=======
-Valid model names: `lstm`, `gru`, `transformer`, `hybrid`, `gru_att_deg`  
-Valid subsets: `FD001`, `FD002`, `FD003`, `FD004`  
-Valid explain targets: `rul`, `hi`, `all`
+## Uncertainty Methods
 
-### Uncertainty variants
+`scripts/uncertainty.py` implements four conformal methods, selected with `--method`:
 
-`scripts/uncertainty.py` implements five calibration methods, selected with `--variant`:
-
-| Variant | Interval | Character |
+| Method | Interval | Character |
 |---|---|---|
-| `eara_conformal` *(default)* | `ŷ ± q̂_k · s(x)` | Per-regime, scale-adaptive |
-| `adaptive_conformal` | `ŷ ± q̂ · s(x)` | Global, scale-adaptive |
-| `conformal` | `ŷ ± q̂` | Global split conformal (baseline) |
+| `split` *(default)* | `ŷ ± q̂` | Global split conformal (baseline) |
 | `cqr` | `ŷ ± (s(x) + q̂)` | Scale-based conformalized |
-| `engine_joint_conformal` | `ŷ ± q̂` | One score per calibration engine |
+| `adaptive` | `ŷ ± q̂ · s(x)` | Global, scale-adaptive |
+| `engine_joint` | `ŷ ± q̂_k · s(x)` | Engine/regime-aware (EARA-Conformal) |
 
-`--n_regimes` (default 7) sets the k-means regime count used by `eara_conformal`. The default was selected by sweeping k = 2..10:
+All four share the same engine-disjoint calibration split and the same `[0, 125]` clipping. `engine_joint` (EARA-Conformal) retrieves the `top_k = 5` nearest training-engine profiles and conditions the residual scale on three learned degradation regimes; it is the CLI-compatible endpoint for the engine-aware method.
+
+Coverage is evaluated at nominal 80% / 90% / 95%, reporting empirical coverage, coverage error, MPIW, PINAW, and the stricter engine-level coverage. Intervals are written to `outputs/results/{subset}_{model}_{method}.npz`, where the file suffix is `conformal` (split), `cqr`, `adaptive_conformal`, and `engine_joint_conformal`.
+
+The k-means regime count used by the offline sweep is validated with:
 
 ```powershell
 python scripts/regime_sweep.py    # writes outputs/results/regime_sweep.json
 ```
 
-Coverage is evaluated at nominal 80% / 90% / 95%, reporting empirical coverage, coverage error, MPIW, PINAW, per-regime coverage, and the stricter engine-level coverage. Results land in `outputs/results/uncertainty/<variant>/<subset>/`.
+> The methods differ only in how the interval radius is calibrated. Calibration scores and prediction radii share a common scale floor so the two paths cannot disagree on near-zero scales.
 
-> The variants differ only in how the interval radius is calibrated; all five share the same engine-disjoint calibration split and the same `[0, 125]` clipping.
+---
+
+## Conformal Benchmark
+
+`scripts/multiseed_conformal_benchmark.py` runs a repeatable, engine-disjoint comparison of five interval methods on FD001–FD004 across five fixed seeds (42–46):
+
+| Method | Description |
+|---|---|
+| `split_conformal` | Global split conformal on absolute residuals |
+| `cqr` | Conformalized quantile regression |
+| `adaptive` | Global scale-adaptive conformal |
+| `nex_scp` | Prequential adaptive conformal inference (Gibbs & Candès) |
+| `eara_conformal` | Engine/regime-aware scale-adaptive conformal |
+
+`nex_scp` is implemented as **prequential adaptive conformal inference** rather than an offline weighted quantile: the miscoverage level is updated from each test engine's realised outcome in stored order,
+
+```text
+alpha_{t+1} = clip(alpha_t + gamma * (alpha - err_t), 0, 1)
+```
+
+where `err_t` is 1 when the true label falls outside the interval produced for engine `t`. The adaptation rate is `--aci-gamma` (default `0.02`).
+
+```powershell
+python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
+```
+
+Outputs are written to `results/conformal_benchmark/`: `per_engine_intervals.csv`, `per_seed_metrics.csv`, `summary_mean_std.csv`, `paired_comparisons.csv`, `split_manifest.json`, `run_config.json`, and one coverage/width plot per subset. See [BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md) for the protocol and an initial run.
 
 ---
 
@@ -635,7 +252,7 @@ It normally consumes upstream artifacts directly — predictions, the 90% interv
 python scripts/decision.py --subset all
 
 # Pick a specific uncertainty variant and model
-python scripts/decision.py --subset FD001 --model hybrid --uncertainty-variant adaptive_conformal
+python scripts/decision.py --subset FD001 --model hybrid --uncertainty-variant engine_joint_conformal
 
 # Run with custom operational constraints
 python scripts/decision.py `
@@ -702,7 +319,30 @@ Results below are from specific project runs and depend on the preprocessing con
 
 ERI is the Explainability Reliability Index — cross-method agreement between Integrated Gradients, SHAP, and temporal relevance, with an uncorrelated pair scoring 0.5 (see [ARCHITECTURE.md](ARCHITECTURE.md#eri--explainability-reliability-index-eripy)).
 
-EARA-Conformal adaptive figures are not reported here pending repeated engine-level evaluation. The adaptive variants size intervals from a learned per-sample scale `s(x)`; that head is now supervised during training, so **these figures should be regenerated from retrained checkpoints** — see below.
+The multi-seed conformal benchmark (five methods, FD001–FD004, seeds 42–46) is the reference comparison; see [BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md) and `results/conformal_benchmark/`.
+
+---
+
+## Evaluation Metrics
+
+### RUL (Remaining Useful Life)
+
+| Metric | Description |
+|--------|-------------|
+| **MAE** | Mean Absolute Error in cycles |
+| **RMSE** | Root Mean Squared Error |
+| **R²** | Coefficient of determination |
+| **NASA Score** | Asymmetric penalty — late predictions penalized more heavily |
+
+### Health Index (HI)
+
+| Metric | Description |
+|--------|-------------|
+| **MAE** | Mean Absolute Error |
+| **RMSE** | Root Mean Squared Error |
+| **R²** | Coefficient of determination |
+
+Interval methods additionally report empirical coverage, signed coverage gap, MPIW, PINAW, and Winkler score.
 
 ---
 
@@ -712,7 +352,8 @@ EARA-Conformal adaptive figures are not reported here pending repeated engine-le
 |---|---|
 | Preprocessing and windowing | Complete |
 | Joint RUL/HI prediction (5 model families) | Complete |
-| Conformal uncertainty — all five variants | Implemented; multi-seed validation pending |
+| Conformal uncertainty — four methods | Implemented |
+| Conformal benchmark (5 methods × 4 subsets × 5 seeds) | Implemented; see `results/conformal_benchmark/` |
 | Explainability (IG, SHAP, temporal relevance, ERI) | Implemented; faithfulness validation pending |
 | Decision engine (rules, constraints, HTML reports) | Complete |
 | HITL review and policy refinement | Complete; model retraining intentionally out of scope |
@@ -721,9 +362,9 @@ EARA-Conformal adaptive figures are not reported here pending repeated engine-le
 
 Additional gaps that affect how results should be read:
 
-- **Existing checkpoints have an untrained scale head.** `MultiTaskLoss` now includes a Gaussian NLL term that supervises `s(x)` toward `|y − ŷ|`, resolving the earlier gap where no loss referenced the scale head at all. Checkpoints trained before this change still carry an untrained head, so **retrain before trusting adaptive interval widths**. See [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
+- **Checkpoints are loaded tolerantly.** `src/models/checkpoint.py` loads state dicts non-strictly and re-initialises a missing scale head to a neutral scale, so evaluation and uncertainty runs no longer fail when a checkpoint was trained with a different set of heads.
 - **`src/evaluation/` returns hard-coded values.** The real metrics live in `src/models/evaluator.py`; ablation and robustness experiments are not implemented.
-- **`cqr` is not conventional CQR** — the checkpoint exposes no trained quantile heads, so it uses `prediction ± scale` as conditional bounds.
+- **`cqr` in `scripts/uncertainty.py` is not conventional CQR** — the pipeline checkpoint exposes no separately trained quantile heads, so it uses `prediction ± scale` as conditional bounds. The benchmark's `cqr` method does train quantile heads and is conventional CQR.
 
 [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps) documents all of these with the code locations involved.
 
@@ -743,4 +384,36 @@ The decision and uncertainty suites are the meaningful regression net: they cove
 | `tests/test_uncertainty.py` | Conformal quantiles, interval clipping, coverage semantics | No |
 | `tests/test_preprocessing.py` | Short test engines are padded, not dropped | **Yes — `data/raw/`** |
 | `tests/test_models.py`, `tests/test_xai.py` | Placeholder | No |
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
+
+---
+
+## Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup instructions, coding standards, and the pull request workflow.
+
+Areas where contributions are especially valuable:
+
+- New prognostics model architectures
+- Preprocessing improvements
+- Evaluation and benchmarking
+- Documentation and test coverage
+
+---
+
+## Citation
+
+If you use PHM-XAI in your research, please cite:
+
+```bibtex
+@software{phm_xai,
+  title  = {PHM-XAI: Explainable Prognostics and Health Monitoring},
+  author = {Nagesh Tiwari and Suraj Vishwakarma and Shani Vishwakarma and Vishwa Save},
+  year   = {2026}
+}
+```
+
+---
+
+<div align="center">
+  <p>Built for predictive maintenance research on NASA C-MAPSS engine degradation data.</p>
+</div>

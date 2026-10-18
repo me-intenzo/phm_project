@@ -244,6 +244,7 @@ class TransformerPrognosticsModel(nn.Module):
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor,
     ]:
         """
         Parameters
@@ -261,6 +262,9 @@ class TransformerPrognosticsModel(nn.Module):
 
         pred_hi : torch.Tensor
             Shape: (batch,)
+
+        pred_scale : torch.Tensor
+            Shape: (batch,); softplus-activated per-sample scale.
         """
 
         # --------------------------------------------------
@@ -343,7 +347,7 @@ if __name__ == "__main__":
         14,
     )
 
-    rul, hi = model(x)
+    rul, hi, scale = model(x)
 
     print(
         f"RUL Output Shape : {rul.shape}"
@@ -351,6 +355,10 @@ if __name__ == "__main__":
 
     print(
         f"HI Output Shape  : {hi.shape}"
+    )
+
+    print(
+        f"Scale Output Shape : {scale.shape}"
     )
 
     print(

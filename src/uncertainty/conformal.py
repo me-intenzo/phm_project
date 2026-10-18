@@ -1,18 +1,17 @@
-<<<<<<< HEAD
 """
-Split-Conformal Prediction
---------------------------
+Conformal prediction for RUL estimation.
 
-Baseline uncertainty quantification for RUL prediction.
+This module contains three layers:
 
-Method:
-    Absolute residual nonconformity
+  1. Split-conformal baseline -- absolute residual nonconformity scores
+     and a finite-sample global quantile.
+  2. Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal) --
+     regime detection, scale-normalised scores, and per-regime quantiles.
+  3. Named conformal variants -- global, scale-adaptive, CQR-style, and
+     engine-block intervals used by the uncertainty pipeline and tests.
 
-Calibration:
-    Split-conformal prediction
-
-Output:
-    Symmetric prediction intervals around a point prediction.
+Calibration and prediction share the same scale floor (``_EPS``) so that
+normalised scores and adaptive radii remain numerically consistent.
 
 author: me-intenzo
 """
@@ -20,7 +19,20 @@ author: me-intenzo
 from __future__ import annotations
 
 import numpy as np
+from sklearn.cluster import KMeans
 
+# RUL domain bounds (C-MAPSS piecewise-linear cap)
+RUL_MIN: float = 0.0
+RUL_MAX: float = 125.0
+# Shared scale floor. The same constant is applied when a predicted scale
+# is used in a normalised score (calibration) or an interval radius
+# (prediction), keeping the two aligned.
+_EPS: float = 1e-6
+
+
+# ------------------------------------------------------------------
+# Baseline nonconformity scores
+# ------------------------------------------------------------------
 
 def absolute_nonconformity(
     y_true: np.ndarray,
@@ -138,37 +150,6 @@ def conformal_quantile(
     return float(
         sorted_scores[rank - 1]
     )
-=======
-"""
-Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal)
-------------------------------------------------------------------
-
-Novel method that replaces the single global radius with:
-
-  1. Regime detection   — k-means on per-window operating-condition
-                          features assigns each window to a regime.
-  2. Scale estimation   — the GRU scale head predicts a per-sample
-                          heteroscedastic error magnitude s(x).
-  3. Normalised scores  — r_i = |y_i - ŷ_i| / (s(x_i) + ε)
-  4. Regime-conditional calibration — one q̂_k per regime, estimated
-                          on engine-disjoint calibration windows.
-  5. Adaptive intervals — C(x) = [ŷ - q̂_k · s(x), ŷ + q̂_k · s(x)]
-                          clipped to [0, 125].
-
-The engine-disjoint evaluation principle is preserved throughout.
-
-author: me-intenzo
-"""
-
-from __future__ import annotations
-
-import numpy as np
-from sklearn.cluster import KMeans
-
-# RUL domain bounds (C-MAPSS piecewise-linear cap)
-RUL_MIN: float = 0.0
-RUL_MAX: float = 125.0
-_EPS: float = 1e-6
 
 
 # ------------------------------------------------------------------
@@ -198,7 +179,7 @@ def fit_regime_detector(
     KMeans
         Fitted detector.
     """
-    descriptors = X[:, -1, :]          # (N, F) — last timestep
+    descriptors = X[:, -1, :]          # (N, F) - last timestep
     km = KMeans(
         n_clusters=n_regimes,
         random_state=random_state,
@@ -234,11 +215,11 @@ def normalised_nonconformity(
     """
     Compute normalised nonconformity scores.
 
-    r_i = |y_i - ŷ_i| / (s_i + ε)
+    r_i = |y_i - y_hat_i| / (s_i + eps)
     """
     y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
     y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
-    scale  = np.asarray(scale,  dtype=np.float64).reshape(-1)
+    scale = np.asarray(scale, dtype=np.float64).reshape(-1)
 
     if not (y_true.shape == y_pred.shape == scale.shape):
         raise ValueError("y_true, y_pred and scale must have the same length.")
@@ -257,11 +238,11 @@ def regime_conformal_quantile(
     """
     Finite-sample conformal quantile for a single regime.
 
-    k = ceil((n + 1)(1 - α))
+    k = ceil((n + 1)(1 - alpha))
     """
     scores = np.asarray(scores, dtype=np.float64).reshape(-1)
     if scores.size == 0:
-        return float("inf")          # no calibration data → infinite radius
+        return float("inf")          # no calibration data -> infinite radius
     n = len(scores)
     rank = int(np.ceil((n + 1) * (1.0 - alpha)))
     rank = min(max(rank, 1), n)
@@ -309,7 +290,7 @@ def adaptive_prediction_interval(
     """
     Construct per-sample adaptive intervals.
 
-    C(x) = [ŷ - q̂_k · s(x), ŷ + q̂_k · s(x)]  clipped to [0, 125]
+    C(x) = [y_hat - q_k * s(x), y_hat + q_k * s(x)]  clipped to [0, 125]
 
     Parameters
     ----------
@@ -326,13 +307,13 @@ def adaptive_prediction_interval(
     -------
     lower, upper : np.ndarray, shape (N,)
     """
-    y_pred  = np.asarray(y_pred,  dtype=np.float64).reshape(-1)
-    scale   = np.asarray(scale,   dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    scale = np.asarray(scale, dtype=np.float64).reshape(-1)
     regimes = np.asarray(regimes, dtype=np.int32).reshape(-1)
 
     radius = q_hats[regimes] * (scale + _EPS)
-    lower  = np.clip(y_pred - radius, RUL_MIN, RUL_MAX)
-    upper  = np.clip(y_pred + radius, RUL_MIN, RUL_MAX)
+    lower = np.clip(y_pred - radius, RUL_MIN, RUL_MAX)
+    upper = np.clip(y_pred + radius, RUL_MIN, RUL_MAX)
     return lower, upper
 
 
@@ -396,37 +377,13 @@ def eara_conformal_predict(
 
 
 # ------------------------------------------------------------------
-# Legacy baseline helpers (kept for backward compatibility)
+# Symmetric prediction intervals
 # ------------------------------------------------------------------
-
-def absolute_nonconformity(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-) -> np.ndarray:
-    """Absolute residual nonconformity scores (baseline)."""
-    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
-    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
-    return np.abs(y_true - y_pred)
-
-
-def conformal_quantile(
-    scores: np.ndarray,
-    alpha: float,
-) -> float:
-    """Global split-conformal quantile (baseline)."""
-    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
-    n = len(scores)
-    rank = int(np.ceil((n + 1) * (1.0 - alpha)))
-    rank = min(max(rank, 1), n)
-    return float(np.sort(scores)[rank - 1])
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
-
 
 def prediction_interval(
     y_pred: np.ndarray,
     q_hat: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-<<<<<<< HEAD
     """Construct symmetric split-conformal prediction intervals.
 
     ``q_hat`` is the calibration residual quantile, so it must be a
@@ -490,10 +447,7 @@ def conformal_predict(
         ),
         "upper": upper,
         "calibration_scores": calibration_scores,
-=======
-    """Symmetric global interval (baseline)."""
-    y_pred = np.asarray(y_pred, dtype=np.float64)
-    return y_pred - q_hat, y_pred + q_hat
+    }
 
 
 # ------------------------------------------------------------------
@@ -609,5 +563,4 @@ def engine_joint_interval(
         "engine_scores": engine_scores,
         "lower": lower,
         "upper": upper,
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     }

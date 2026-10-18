@@ -63,6 +63,7 @@ from src.models.gru_att_deg import GruAttDeg
 from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
+from src.models.checkpoint import load_state_dict_compat
 from src.preprocessing.feature_selection import FeatureSelector
 from src.preprocessing.labeling import LabelGenerator
 from src.preprocessing.loader import CMAPSSLoader
@@ -119,7 +120,13 @@ MODEL_REGISTRY: dict[str, tuple] = {
     ),
     "hybrid": (
         HybridPrognosticsModel,
-        {"hidden_size": 128, "num_layers": 2, "dropout": 0.3},
+        {
+            "hidden_size": 128,
+            "num_gru_layers": 2,
+            "num_transformer_layers": 2,
+            "num_heads": 4,
+            "dropout": 0.3,
+        },
     ),
 }
 
@@ -229,7 +236,7 @@ def load_model(model_name: str, input_size: int, subset: str, device: torch.devi
     model = cls(input_size=input_size, **kwargs)
 
     ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    load_state_dict_compat(model, ckpt["model_state_dict"])
     model.to(device).eval()
     return model, ckpt
 

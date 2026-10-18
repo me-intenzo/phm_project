@@ -86,3 +86,26 @@ def test_engine_level_coverage_requires_every_window_per_engine():
 
 def test_placeholder():
     assert True
+
+
+def test_adaptive_score_and_interval_share_scale_floor():
+    """Calibration scoring and interval construction must use one scale floor."""
+    from src.uncertainty.adaptive import (
+        SCALE_FLOOR,
+        normalized_nonconformity,
+        prediction_interval,
+    )
+
+    y_true = np.array([10.0, 20.0])
+    y_pred = np.array([8.0, 16.0])
+    scales = np.array([2.0, 4.0])
+
+    scores = normalized_nonconformity(y_true, y_pred, scales)
+    assert scores == pytest.approx(
+        [2.0 / (2.0 + SCALE_FLOOR), 4.0 / (4.0 + SCALE_FLOOR)]
+    )
+
+    lower, upper = prediction_interval(y_pred, q_hat=1.0, scales=scales)
+    radius = scales + SCALE_FLOOR
+    assert lower == pytest.approx(y_pred - radius)
+    assert upper == pytest.approx(y_pred + radius)

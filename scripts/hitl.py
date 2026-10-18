@@ -171,7 +171,7 @@ def _validate_choice(
         for choice in choices
     ]
 
-    if value != "all" and value not in normalized:
+    if value.lower() != "all" and value not in normalized:
         raise ValueError(
             f"Unsupported {name} '{value}'. "
             f"Choose {choices} or all."

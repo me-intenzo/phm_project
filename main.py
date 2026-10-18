@@ -1,32 +1,50 @@
-if __name__ == "__main__":
+"""
+main.py
 
-    from src.preprocessing.loader import CMAPSSLoader
-    from src.preprocessing.validator import DatasetValidator
-    from src.preprocessing.visualization import DatasetVisualizer
-    from src.utils.logger import get_script_logger
-    from pathlib import Path
+Exploratory Data Analysis entry point for NASA C-MAPSS FD001.
 
-    from src.hitl.feedback import create_feedback
-    from src.hitl.logger import log_feedback, feedback_statistics
-    from src.hitl.updater import update_from_log
+Runs dataset validation, summary statistics, and sensor visualisations.
+All outputs are written to outputs/reports/EDA/ and outputs/figures/EDA/.
 
-    _report_dir = Path("outputs/reports/EDA")
-    _figures_dir = Path("outputs/figures/EDA")
+Usage
+-----
+    python main.py
+"""
 
-    log = get_script_logger("eda", "eda_FD001")
+from __future__ import annotations
 
-    log.info("Starting EDA for FD001...")
+import sys
+from pathlib import Path
 
-    train, test, rul = CMAPSSLoader().load_dataset("FD001")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-    validator = DatasetValidator(output_dir=_report_dir)
+from src.preprocessing.loader import CMAPSSLoader
+from src.preprocessing.validator import DatasetValidator
+from src.preprocessing.visualization import DatasetVisualizer
+from src.utils.logger import get_script_logger
+
+REPORT_DIR  = Path("outputs/reports/EDA")
+FIGURES_DIR = Path("outputs/figures/EDA")
+SUBSET      = "FD001"
+
+
+def run_eda() -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    log = get_script_logger("eda", f"eda_{SUBSET}")
+    log.info("Starting EDA for %s...", SUBSET)
+
+    train, _, _ = CMAPSSLoader().load_dataset(SUBSET)
+
+    validator = DatasetValidator(output_dir=REPORT_DIR)
     validator.validate(train, "Training")
 
     summary = validator.summarize(train, "Training")
     validator.save_report(summary, "training_summary.csv")
     log.info("\n%s", summary.to_string(index=False))
 
-    viz = DatasetVisualizer(output_dir=_figures_dir)
+    viz = DatasetVisualizer(output_dir=FIGURES_DIR)
     viz.plot_engine_lifetime(train)
     viz.plot_sensor_trend(train, sensor="sensor_2")
     viz.plot_sensor_trend(train, sensor="sensor_3")
@@ -36,25 +54,12 @@ if __name__ == "__main__":
     viz.plot_correlation(train)
     viz.sensor_variance(train)
 
-    log.info("EDA complete. Figures → %s | Reports → %s", _figures_dir, _report_dir)
-
-    
-
-    feedback = create_feedback(
-        engine_id=1,
-        subset="FD001",
-        model="gru",
-        ai_action="SCHEDULE_MAINTENANCE",
-        expert_action="INSPECT",
-        expert_confidence=0.90,
-        reason="Inspection should precede scheduled maintenance.",
-        risk_score=0.72,
-        urgency_index=0.76,
-        health_state="AT_RISK",
-        uncertainty_level="MODERATE",
-        explanation_reliability="HIGH",
+    log.info(
+        "EDA complete.  Figures -> %s  |  Reports -> %s",
+        FIGURES_DIR.resolve(),
+        REPORT_DIR.resolve(),
     )
 
-    log_feedback(feedback)
 
-    print(feedback_statistics())
+if __name__ == "__main__":
+    run_eda()

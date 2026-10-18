@@ -119,7 +119,7 @@ class GRUPrognosticsModel(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Parameters
         ----------
@@ -135,6 +135,9 @@ class GRUPrognosticsModel(nn.Module):
 
             pred_hi:
                 Shape (batch,)
+
+            pred_scale:
+                Shape (batch,); softplus-activated per-sample scale.
         """
 
         _, hidden = self.encoder(x)
@@ -150,12 +153,6 @@ class GRUPrognosticsModel(nn.Module):
 
         pred_hi = self.hi_head(features)
 
-<<<<<<< HEAD
-        return (
-            pred_rul.squeeze(-1),
-            pred_hi.squeeze(-1),
-        )
-=======
         # Softplus ensures scale > 0
         pred_scale = torch.nn.functional.softplus(
             self.scale_head(features)
@@ -166,7 +163,6 @@ class GRUPrognosticsModel(nn.Module):
             pred_hi.squeeze(-1),
             pred_scale.squeeze(-1),
         )
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
 
 # ----------------------------------------------------------
@@ -188,7 +184,7 @@ if __name__ == "__main__":
         14,
     )
 
-    rul, hi = model(x)
+    rul, hi, _ = model(x)
 
     print(
         f"RUL Output Shape : {rul.shape}"

@@ -6,7 +6,7 @@ Full preprocessing pipeline for NASA C-MAPSS.
 Pipeline
 --------
 Load → Validate → Summary → Visualize → Generate RUL/HI
-→ Feature Scaling → Feature Selection → Sliding Windows
+→ Feature Selection → Feature Scaling → Sliding Windows
 → Save → Logging → Done
 """
 
@@ -30,47 +30,55 @@ DEFAULT_SUBSET = "FD001"
 ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 PROCESSED_DIR = Path("data/processed")
 MODELS_DIR = Path("outputs/models")
+WINDOW_SIZE = 40
 
 
 def parse_args() -> argparse.Namespace:
-    """
-    Parse preprocessing configuration from the command line.
-    """
-
     parser = argparse.ArgumentParser(
         description="Preprocess a NASA C-MAPSS dataset subset."
     )
-
     parser.add_argument(
         "--subset",
         type=str,
         default=DEFAULT_SUBSET,
         help="C-MAPSS subset to preprocess, or 'all'.",
     )
-
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=WINDOW_SIZE,
+        help="Sliding window length in cycles (default: 40).",
+    )
     return parser.parse_args()
+
 
 def setup_logging(subset: str):
     return get_script_logger("preprocessing", f"preprocess_{subset}")
+
 
 # ------------------------------------------------------------------ #
 # Pipeline
 # ------------------------------------------------------------------ #
 
-def run(subset: str) -> None:
+def run(subset: str, window_size: int) -> None:
     """Run the full preprocessing pipeline for a single subset."""
     log = setup_logging(subset)
-    _step = lambda name: (log.info("=" * 50), log.info("  %s", name), log.info("=" * 50))
-    _step = lambda name: (log.info("=" * 50), log.info("  %s", name), log.info("=" * 50))
+
+    def _step(name: str) -> None:
+        log.info("=" * 50)
+        log.info("  %s", name)
+        log.info("=" * 50)
 
     figures_dir = Path("outputs") / "figures" / subset
     figures_dir.mkdir(parents=True, exist_ok=True)
-    viz = DatasetVisualizer(figures_dir)
 
     reports_dir = Path("outputs") / "reports" / subset
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info("Selected subset for C-MAPSS subset: %s", subset)
+    # subset-scoped scaler path — prevents subsets overwriting each other
+    scaler_path = MODELS_DIR / f"scaler_{subset}.pkl"
+
+    log.info("Subset: %s  |  window_size: %d", subset, window_size)
 
     # ── Load Dataset ──────────────────────────────────────────────
     _step("Load Dataset")
@@ -106,32 +114,19 @@ def run(subset: str) -> None:
 
     # ── Generate Labels ───────────────────────────────────────────
     _step("Generate Labels")
-
     label_gen = LabelGenerator(max_rul=125)
-
     train_df = label_gen.generate_labels(train_df)
-
     viz.plot_label_distributions(train_df)
-
     log.info(
         "\n%s",
-        train_df[
-            [
-                "unit_number",
-                "time_in_cycles",
-                "RUL",
-                "HI",
-            ]
-        ].head(10),
+        train_df[["unit_number", "time_in_cycles", "RUL", "HI"]].head(10),
     )
 
-    # Assign RUL to test set using ground-truth RUL file
+    # Assign RUL/HI to test set using ground-truth RUL file
     max_cycles = test_df.groupby("unit_number")["time_in_cycles"].transform("max")
     test_df["RUL"] = (
         max_cycles - test_df["time_in_cycles"]
-        + rul_df["RUL"].reindex(
-            test_df["unit_number"] - 1
-        ).values
+        + rul_df["RUL"].reindex(test_df["unit_number"] - 1).values
     ).clip(upper=125)
     test_df["HI"] = (
         test_df.groupby("unit_number")["RUL"]
@@ -141,139 +136,43 @@ def run(subset: str) -> None:
 
     # ── Feature Selection ─────────────────────────────────────────
     _step("Feature Selection")
-
-    selector = FeatureSelector(
-        method="variance",
-        threshold=1e-4,
-    )
-
+    selector = FeatureSelector(method="variance", threshold=1e-4)
     train_df = selector.fit_transform(train_df)
     test_df = selector.transform(test_df)
-
-    selector.save(
-        reports_dir / "selected_features.csv"
-    )
-
-    log.info(
-        "Retained %d features.",
-        len(selector.selected_features),
-    )
+    selector.save(reports_dir / "selected_features.csv")
+    log.info("Retained %d features.", len(selector.selected_features))
 
     # ── Feature Scaling ───────────────────────────────────────────
     _step("Feature Scaling")
-
     scaler = FeatureScaler()
-
     train_df = scaler.fit_transform(train_df)
-
     test_df = scaler.transform(test_df)
-
-    scaler.save(
-        MODELS_DIR / "scaler.pkl"
-    )
+    scaler.save(scaler_path)
+    log.info("Scaler saved to: %s", scaler_path)
 
     # ── Sliding Windows ───────────────────────────────────────────
     _step("Sliding Windows")
+    win_gen = WindowGenerator(window_size=window_size, stride=1)
 
-    win_gen = WindowGenerator(
-        window_size=40,
-        stride=1,
-    )
+    X_train, y_rul_train, y_hi_train, train_engine_ids = win_gen.create_windows(train_df)
+    log.info("X_train shape    : %s", X_train.shape)
+    log.info("y_rul shape      : %s", y_rul_train.shape)
+    log.info("y_hi shape       : %s", y_hi_train.shape)
+    log.info("Training engines : %d", len(set(train_engine_ids)))
 
-    (
-        X_train,
-        y_rul_train,
-        y_hi_train,
-        train_engine_ids,
-    ) = win_gen.create_windows(
-        train_df
-    )
-
-    log.info(
-        "X_train shape      : %s",
-        X_train.shape,
-    )
-
-    log.info(
-        "y_rul shape        : %s",
-        y_rul_train.shape,
-    )
-
-    log.info(
-        "y_hi shape         : %s",
-        y_hi_train.shape,
-    )
-
-    log.info(
-        "Engine IDs shape   : %s",
-        train_engine_ids.shape,
-    )
-
-    log.info(
-        "Training engines   : %d",
-        len(
-            set(
-                train_engine_ids
-            )
-        ),
-    )
-
-    # ── Test Windows ──────────────────────────────────────────────
-
-    (
-        X_test,
-        y_rul_test,
-        y_hi_test,
-        test_engine_ids,
-    ) = win_gen.create_test_windows(
-        test_df
-    )
-
-    log.info(
-        "X_test shape       : %s",
-        X_test.shape,
-    )
-
-    log.info(
-        "y_rul_test shape   : %s",
-        y_rul_test.shape,
-    )
-
-    log.info(
-        "y_hi_test shape    : %s",
-        y_hi_test.shape,
-    )
-
-    log.info(
-        "Test engines       : %d",
-        len(
-            set(
-                test_engine_ids
-            )
-        ),
-    )
+    X_test, y_rul_test, y_hi_test, test_engine_ids = win_gen.create_test_windows(test_df)
+    log.info("X_test shape     : %s", X_test.shape)
+    log.info("Test engines     : %d", len(set(test_engine_ids)))
 
     # ── Save Processed Dataset ────────────────────────────────────
     _step("Save Processed Dataset")
-
-    # Training dataset
     win_gen.save_dataset(
-        X_train,
-        y_rul_train,
-        y_hi_train,
-        PROCESSED_DIR,
-        f"{subset}_train",
-        engine_ids=train_engine_ids,
+        X_train, y_rul_train, y_hi_train,
+        PROCESSED_DIR, f"{subset}_train", engine_ids=train_engine_ids,
     )
-
-    # Test dataset
     win_gen.save_dataset(
-        X_test,
-        y_rul_test,
-        y_hi_test,
-        PROCESSED_DIR,
-        f"{subset}_test",
-        engine_ids=test_engine_ids,
+        X_test, y_rul_test, y_hi_test,
+        PROCESSED_DIR, f"{subset}_test", engine_ids=test_engine_ids,
     )
 
     # ── Done ──────────────────────────────────────────────────────
@@ -286,7 +185,7 @@ def main() -> None:
     args = parse_args()
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
     for subset in subsets:
-        run(subset)
+        run(subset, window_size=args.window_size)
 
 
 if __name__ == "__main__":

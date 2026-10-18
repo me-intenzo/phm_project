@@ -25,6 +25,8 @@ from torch.utils.data import (
     TensorDataset,
 )
 
+from .checkpoint import load_state_dict_compat
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +65,8 @@ class ModelTrainer:
         self.best_loss = float("inf")
 
         self.input_size: int | None = None
+        self.window_size: int | None = None
+        self.subset: str | None = None
 
         logger.info(
             "Using device: %s",
@@ -137,39 +141,26 @@ class ModelTrainer:
         ):
 
         checkpoint = {
-
             "epoch": epoch,
-
-            "model_state_dict":
-                self.model.state_dict(),
-
-            "optimizer_state_dict":
-                self.optimizer.state_dict(),
-
-            "scheduler_state_dict":
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": (
                 self.scheduler.state_dict()
                 if self.scheduler is not None
-                else None,
-
+                else None
+            ),
             "loss": loss,
-
         }
 
         if input_size is not None:
             checkpoint["input_size"] = input_size
+        if self.window_size is not None:
+            checkpoint["window_size"] = self.window_size
+        if self.subset is not None:
+            checkpoint["subset"] = self.subset
 
-        torch.save(
-
-            checkpoint,
-
-            self.checkpoint_dir /
-            "best_model.pt",
-
-        )
-
-        logger.info(
-            "Checkpoint saved."
-        )
+        torch.save(checkpoint, self.checkpoint_dir / "best_model.pt")
+        logger.info("Checkpoint saved.")
 
     # ----------------------------------------------------
     # Load Model
@@ -193,10 +184,10 @@ class ModelTrainer:
                 checkpoint["scheduler_state_dict"]
         )
 
-        self.model.load_state_dict(
-
-            checkpoint["model_state_dict"]
-
+        load_state_dict_compat(
+            self.model,
+            checkpoint["model_state_dict"],
+            logger=logger,
         )
 
 
@@ -238,15 +229,12 @@ class ModelTrainer:
 
             self.optimizer.zero_grad()
 
-<<<<<<< HEAD
             pred = self.model(x)
-            if isinstance(pred, tuple) and len(pred) == 3:
-                pred_rul, pred_hi, _ = pred
+            if isinstance(pred, tuple) and len(pred) >= 3:
+                pred_rul, pred_hi, pred_scale = pred[0], pred[1], pred[2]
             else:
-                pred_rul, pred_hi = pred
-=======
-            pred_rul, pred_hi, pred_scale = self.model(x)
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
+                pred_rul, pred_hi = pred[0], pred[1]
+                pred_scale = None
 
             losses = self.criterion(
                 pred_rul,
@@ -310,15 +298,12 @@ class ModelTrainer:
 
             hi = hi.to(self.device)
 
-<<<<<<< HEAD
             pred = self.model(x)
-            if isinstance(pred, tuple) and len(pred) == 3:
-                pred_rul, pred_hi, _ = pred
+            if isinstance(pred, tuple) and len(pred) >= 3:
+                pred_rul, pred_hi, pred_scale = pred[0], pred[1], pred[2]
             else:
-                pred_rul, pred_hi = pred
-=======
-            pred_rul, pred_hi, pred_scale = self.model(x)
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
+                pred_rul, pred_hi = pred[0], pred[1]
+                pred_scale = None
 
             losses = self.criterion(
                 pred_rul,

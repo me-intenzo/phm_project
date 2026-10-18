@@ -10,12 +10,17 @@ import numpy as np
 
 from .conformal import absolute_nonconformity, conformal_quantile
 
+# Shared scale floor. The same constant is added to predicted scales when a
+# residual is normalised for calibration and when the quantile is expanded
+# back into an interval radius, so the two paths stay consistent.
+SCALE_FLOOR: float = 1e-6
+
 
 def normalized_nonconformity(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     scales: np.ndarray,
-    eps: float = 1e-6,
+    eps: float = SCALE_FLOOR,
 ) -> np.ndarray:
     """Return absolute residuals normalized by positive predicted scales."""
     scales = np.asarray(scales, dtype=np.float64).reshape(-1)
@@ -45,7 +50,12 @@ def prediction_interval(
     q_hat: float,
     scales: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Construct ``prediction ± q_hat * scale`` intervals."""
+    """Construct ``prediction ± q_hat * (scale + SCALE_FLOOR)`` intervals.
+
+    The floored scale mirrors :func:`normalized_nonconformity` so the
+    calibrated quantile and the prediction radius use the same scale
+    convention.
+    """
     y_pred = np.asarray(y_pred, dtype=np.float64)
     scales = np.asarray(scales, dtype=np.float64)
     q_hat = float(q_hat)
@@ -55,4 +65,5 @@ def prediction_interval(
         raise ValueError("predictions and scales must be finite.")
     if np.any(scales <= 0.0) or not np.isfinite(q_hat) or q_hat < 0.0:
         raise ValueError("scales must be positive and q_hat non-negative.")
-    return y_pred - q_hat * scales, y_pred + q_hat * scales
+    radius = q_hat * (scales + SCALE_FLOOR)
+    return y_pred - radius, y_pred + radius

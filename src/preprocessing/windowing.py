@@ -30,7 +30,7 @@ class WindowGenerator:
 
     def __init__(
         self,
-        window_size: int = 30,
+        window_size: int = 40,
         stride: int = 1,
     ):
 

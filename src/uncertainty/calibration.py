@@ -1,27 +1,9 @@
-<<<<<<< HEAD
 """
 Calibration utilities for conformal RUL uncertainty estimation.
 
-This module handles calibration-set predictions and residual
-statistics. Model loading and dataset handling belong in the
-uncertainty pipeline script.
-
-author: me-intenzo 
-"""
-
-from __future__ import annotations
-
-import numpy as np
-
-from .conformal import (
-    absolute_nonconformity,
-    conformal_quantile,
-)
-
-
-=======
-"""
-Calibration utilities for EARA-Conformal uncertainty estimation.
+This module handles calibration-set predictions and residual statistics
+for both the global split-conformal baseline and EARA-Conformal. Model
+loading and dataset handling belong in the uncertainty pipeline script.
 
 author: me-intenzo
 """
@@ -84,12 +66,10 @@ def calibrate_eara_levels(
 # Legacy baseline calibration (kept for backward compatibility)
 # ------------------------------------------------------------------
 
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 def calculate_calibration_scores(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> np.ndarray:
-<<<<<<< HEAD
     """Calculate absolute residual nonconformity scores."""
     return absolute_nonconformity(
         y_true=y_true,
@@ -135,6 +115,7 @@ def calibrate_quantile(
         scores=scores,
         alpha=alpha,
     )
+
 
 def calibrate_multiple_levels(
     y_true: np.ndarray,
@@ -194,31 +175,4 @@ def calibrate_multiple_levels(
             "q_hat": float(q_hat),
         }
 
-=======
-    return absolute_nonconformity(y_true=y_true, y_pred=y_pred)
-
-
-def calibrate_quantile(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    alpha: float,
-) -> float:
-    scores = calculate_calibration_scores(y_true, y_pred)
-    return conformal_quantile(scores=scores, alpha=alpha)
-
-
-def calibrate_multiple_levels(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    coverage_levels: tuple[float, ...] = (0.80, 0.90, 0.95),
-) -> dict[float, dict[str, float]]:
-    scores = calculate_calibration_scores(y_true, y_pred)
-    results: dict[float, dict[str, float]] = {}
-    for coverage in coverage_levels:
-        alpha = 1.0 - coverage
-        results[float(coverage)] = {
-            "alpha": float(alpha),
-            "q_hat": conformal_quantile(scores=scores, alpha=alpha),
-        }
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
     return results

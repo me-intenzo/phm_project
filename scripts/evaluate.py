@@ -44,6 +44,7 @@ from src.models.lstm import LSTMPrognosticsModel
 from src.models.transformer import TransformerPrognosticsModel
 from src.models.hybrid import HybridPrognosticsModel
 from src.models.gru_att_deg import GruAttDeg
+from src.models.checkpoint import load_state_dict_compat
 
 
 # ------------------------------------------------------------------
@@ -162,13 +163,9 @@ def build_model(
         return HybridPrognosticsModel(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
-<<<<<<< HEAD
             num_gru_layers=NUM_LAYERS,
             num_transformer_layers=NUM_LAYERS,
             num_heads=4,
-=======
-            num_layers=NUM_LAYERS,
-            kernel_size=3,
             dropout=DROPOUT,
         )
 
@@ -178,7 +175,6 @@ def build_model(
             input_size=input_size,
             hidden_size=HIDDEN_SIZE,
             num_layers=NUM_LAYERS,
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
             dropout=DROPOUT,
         )
 
@@ -195,11 +191,7 @@ def load_model(
     model_name: str,
     input_size: int,
     device: torch.device,
-<<<<<<< HEAD
-    subset: str,
-=======
     subset: str = "FD001",
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 ):
 
     checkpoint_path = (
@@ -228,8 +220,9 @@ def load_model(
         ckpt_input_size,
     )
 
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
+    load_state_dict_compat(
+        model,
+        checkpoint["model_state_dict"],
     )
 
     model.to(device)
@@ -292,17 +285,11 @@ def predict(
                 ]
             ).float().to(device)
 
-<<<<<<< HEAD
             pred = model(batch)
-            if isinstance(pred, tuple) and len(pred) == 3:
-                pred_rul, pred_hi, _ = pred
+            if isinstance(pred, tuple) and len(pred) >= 3:
+                pred_rul, pred_hi = pred[0], pred[1]
             else:
                 pred_rul, pred_hi = pred
-=======
-            pred_rul, pred_hi, *_ = model(
-                batch
-            )
->>>>>>> 232c8a9acfc44f8cf76034ecb550fec335210471
 
             predictions_rul.append(
                 pred_rul.cpu().numpy()
