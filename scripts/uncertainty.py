@@ -31,12 +31,16 @@ python scripts/uncertainty.py --model lstm --subset FD001 --method split
 python scripts/uncertainty.py --model lstm --subset FD001 --method cqr
 python scripts/uncertainty.py --model lstm --subset FD001 --method adaptive
 python scripts/uncertainty.py --model lstm --subset FD001 --method engine_joint
+python scripts/uncertainty.py --model gru --subset FD001 --method split --seeds 42 43 44 45 46
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import logging
+import statistics
 import sys
 from pathlib import Path
 
@@ -103,6 +107,9 @@ RESULTS_DIR = (
     / "outputs"
     / "results"
 )
+
+RUN_RESULTS_DIR = RESULTS_DIR
+MULTISEED_RESULTS_DIR = RESULTS_DIR / "multiseed_conformal_benchmark"
 
 LOG_DIR = (
     PROJECT_ROOT
@@ -180,6 +187,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Run an opt-in multi-seed evaluation (at least five distinct seeds). "
+            "Each seed trains a fresh checkpoint with separate train, validation, "
+            "and calibration engines."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -191,6 +210,7 @@ def configure_logging(
     model_name: str,
     subset: str,
     method: str,
+    seed: int | None = None,
 ) -> logging.Logger:
 
     log_dir = LOG_DIR / "uncertainty"
@@ -212,7 +232,10 @@ def configure_logging(
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
                 log_dir
-                / f"uncertainty_{model_name}_{subset}_{method}.log",
+            / (
+                f"uncertainty_{model_name}_{subset}_{method}"
+                f"{f'_seed{seed}' if seed is not None else ''}.log"
+            ),
                 mode="w",
             ),
         ],
@@ -324,18 +347,20 @@ def create_calibration_split(
     X: np.ndarray,
     y_rul: np.ndarray,
     engine_ids: np.ndarray,
+    seed: int = SEED,
 ):
     """
     Reproduce the engine-wise validation split used
     by scripts/train.py.
 
-    random_state=42 must remain identical to training.
+    Calibration engines are selected with the requested seed. In the
+    multi-seed path, model training excludes these engines entirely.
     """
 
     splitter = GroupShuffleSplit(
         n_splits=1,
         test_size=VALIDATION_SIZE,
-        random_state=SEED,
+        random_state=seed,
     )
 
     train_indices, calibration_indices = next(
@@ -875,9 +900,9 @@ def run_engine_joint_conformal(
             float(np.mean(test_scales)),
         )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    RUN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = (
-        RESULTS_DIR
+        RUN_RESULTS_DIR
         / f"{subset}_{model_name}_engine_joint_conformal.npz"
     )
     np.savez(output_path, **save_data)
@@ -1097,8 +1122,8 @@ def run_adaptive_conformal(
             metrics["mean_interval_width"],
         )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_adaptive_conformal.npz"
+    RUN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RUN_RESULTS_DIR / f"{subset}_{model_name}_adaptive_conformal.npz"
     np.savez(output_path, **save_data)
     log.info("Adaptive results saved to: %s", output_path)
 
@@ -1160,8 +1185,8 @@ def run_cqr(
             metrics["mean_interval_width"],
         )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_cqr.npz"
+    RUN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RUN_RESULTS_DIR / f"{subset}_{model_name}_cqr.npz"
     np.savez(output_path, **save_data)
     log.info("CQR results saved to: %s", output_path)
 
@@ -1170,17 +1195,255 @@ def run_cqr(
 # Main
 # ------------------------------------------------------------------
 
-def main():
+def _winkler_score(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    nominal_coverage: float,
+) -> float:
+    alpha = 1.0 - nominal_coverage
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    lower = np.asarray(lower, dtype=np.float64).reshape(-1)
+    upper = np.asarray(upper, dtype=np.float64).reshape(-1)
+    penalty = (2.0 / alpha) * (
+        np.maximum(lower - y_true, 0.0)
+        + np.maximum(y_true - upper, 0.0)
+    )
+    return float(np.mean(upper - lower + penalty))
 
-    args = parse_args()
+
+def _result_filename(method: str, model_name: str, subset: str) -> str:
+    suffix = {
+        "split": "conformal",
+        "cqr": "cqr",
+        "adaptive": "adaptive_conformal",
+        "engine_joint": "engine_joint_conformal",
+    }[method]
+    return f"{subset}_{model_name}_{suffix}.npz"
+
+
+def run_multiseed(args: argparse.Namespace) -> None:
+    """Train/evaluate each seed with engine-disjoint train/val/calibration sets."""
+    global CHECKPOINT_DIR, RUN_RESULTS_DIR, SEED
+
+    seeds = list(args.seeds)
+    if len(seeds) < 5 or len(set(seeds)) != len(seeds):
+        raise SystemExit("--seeds requires at least five distinct integers")
+
+    try:
+        from scripts import train as train_script
+    except ImportError as exc:
+        raise RuntimeError("Could not import scripts/train.py for seeded training") from exc
+
+    base_checkpoint_dir = CHECKPOINT_DIR
+    base_results_dir = RESULTS_DIR
+    previous_seed = SEED
+    original_train_loader = train_script.load_training_data
+    original_train_seed = train_script.SEED
+    original_train_checkpoints = train_script.CHECKPOINT_DIR
+    original_train_results = train_script.RESULTS_DIR
+    training_settings = {
+        "epochs": train_script.EPOCHS,
+        "batch_size": train_script.BATCH_SIZE,
+        "validation_fraction_of_non_calibration_engines": train_script.VALIDATION_SIZE,
+    }
+
+    output_dir = (
+        MULTISEED_RESULTS_DIR
+        / args.model
+        / args.subset
+        / args.method
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    per_seed_rows: list[dict[str, object]] = []
+    split_records: list[dict[str, object]] = []
+
+    try:
+        X, y_rul, _y_hi, engine_ids = load_training_data(args.subset)
+
+        for seed in seeds:
+            SEED = seed
+            train_indices, calibration_indices = create_calibration_split(
+                X, y_rul, engine_ids, seed=seed
+            )
+            calibration_engine_ids = np.unique(engine_ids[calibration_indices])
+            non_calibration_mask = ~np.isin(engine_ids, calibration_engine_ids)
+            remaining_indices = np.flatnonzero(non_calibration_mask)
+
+            inner_splitter = GroupShuffleSplit(
+                n_splits=1,
+                test_size=train_script.VALIDATION_SIZE,
+                random_state=seed,
+            )
+            inner_train, validation = next(
+                inner_splitter.split(
+                    X[remaining_indices],
+                    y_rul[remaining_indices],
+                    groups=engine_ids[remaining_indices],
+                )
+            )
+            model_train_indices = remaining_indices[inner_train]
+            validation_indices = remaining_indices[validation]
+            model_train_engines = np.unique(engine_ids[model_train_indices])
+            validation_engines = np.unique(engine_ids[validation_indices])
+            calibration_engines = np.unique(engine_ids[calibration_indices])
+            if (
+                set(model_train_engines) & set(validation_engines)
+                or set(model_train_engines) & set(calibration_engines)
+                or set(validation_engines) & set(calibration_engines)
+            ):
+                raise RuntimeError(f"Engine leakage detected for seed {seed}")
+
+            seed_root = output_dir / f"seed_{seed}"
+            seed_checkpoint_root = seed_root / "checkpoints"
+            seed_result_dir = seed_root / "results"
+            seed_checkpoint_root.mkdir(parents=True, exist_ok=True)
+            seed_result_dir.mkdir(parents=True, exist_ok=True)
+
+            def load_training_data_without_calibration(requested_subset: str):
+                loaded = original_train_loader(requested_subset)
+                if requested_subset != args.subset:
+                    return loaded
+                train_X, train_rul, train_hi, train_ids, metadata = loaded
+                keep = ~np.isin(train_ids, calibration_engine_ids)
+                return (
+                    train_X[keep], train_rul[keep], train_hi[keep],
+                    train_ids[keep], metadata,
+                )
+
+            train_script.SEED = seed
+            train_script.CHECKPOINT_DIR = seed_checkpoint_root
+            train_script.RESULTS_DIR = seed_root / "training_results"
+            train_script.load_training_data = load_training_data_without_calibration
+
+            CHECKPOINT_DIR = seed_checkpoint_root
+            RUN_RESULTS_DIR = seed_result_dir
+            train_script.run(args.model, args.subset)
+
+            single_seed_args = argparse.Namespace(
+                model=args.model,
+                subset=args.subset,
+                method=args.method,
+                seeds=None,
+            )
+            main(single_seed_args, seed=seed)
+
+            result_path = seed_result_dir / _result_filename(
+                args.method, args.model, args.subset
+            )
+            with np.load(result_path) as result:
+                y_test = np.asarray(result["y_rul_test"], dtype=np.float64).reshape(-1)
+                for coverage in COVERAGE_LEVELS:
+                    suffix = int(coverage * 100)
+                    lower = np.asarray(result[f"lower_{suffix}"], dtype=np.float64).reshape(-1)
+                    upper = np.asarray(result[f"upper_{suffix}"], dtype=np.float64).reshape(-1)
+                    empirical = float(np.mean((y_test >= lower) & (y_test <= upper)))
+                    width = float(np.mean(upper - lower))
+                    per_seed_rows.append({
+                        "subset": args.subset,
+                        "model": args.model,
+                        "method": args.method,
+                        "seed": seed,
+                        "nominal_coverage": coverage,
+                        "empirical_coverage": empirical,
+                        "coverage_gap": empirical - coverage,
+                        "mean_interval_width": width,
+                        "winkler_score": _winkler_score(
+                            y_test, lower, upper, coverage
+                        ),
+                    })
+
+            split_records.append({
+                "subset": args.subset,
+                "seed": seed,
+                "model_train_engine_ids": model_train_engines.tolist(),
+                "early_stopping_engine_ids": validation_engines.tolist(),
+                "calibration_engine_ids": calibration_engines.tolist(),
+            })
+            logging.getLogger(__name__).info(
+                "Finished seed %d; artifacts: %s", seed, seed_root
+            )
+
+    finally:
+        train_script.load_training_data = original_train_loader
+        train_script.SEED = original_train_seed
+        train_script.CHECKPOINT_DIR = original_train_checkpoints
+        train_script.RESULTS_DIR = original_train_results
+        CHECKPOINT_DIR = base_checkpoint_dir
+        RUN_RESULTS_DIR = base_results_dir
+        SEED = previous_seed
+
+    per_seed_path = output_dir / "per_seed_metrics.csv"
+    with per_seed_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(per_seed_rows[0]))
+        writer.writeheader()
+        writer.writerows(per_seed_rows)
+
+    summary_rows = []
+    for coverage in COVERAGE_LEVELS:
+        rows = [row for row in per_seed_rows if row["nominal_coverage"] == coverage]
+        summary = {
+            "subset": args.subset,
+            "model": args.model,
+            "method": args.method,
+            "nominal_coverage": coverage,
+            "n_seeds": len(rows),
+        }
+        for metric in (
+            "empirical_coverage",
+            "coverage_gap",
+            "mean_interval_width",
+            "winkler_score",
+        ):
+            values = [float(row[metric]) for row in rows]
+            summary[f"{metric}_mean"] = statistics.mean(values)
+            summary[f"{metric}_std"] = statistics.stdev(values)
+        summary_rows.append(summary)
+
+    summary_path = output_dir / "summary_mean_std.csv"
+    with summary_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summary_rows[0]))
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    (output_dir / "split_manifest.json").write_text(
+        json.dumps(split_records, indent=2), encoding="utf-8"
+    )
+    (output_dir / "run_config.json").write_text(
+        json.dumps({
+            "subset": args.subset,
+            "model": args.model,
+            "method": args.method,
+            "seeds": seeds,
+            "coverage_levels": COVERAGE_LEVELS,
+            "calibration_fraction": VALIDATION_SIZE,
+            "training_settings": training_settings,
+            "training_seeded_per_run": True,
+            "calibration_engines_excluded_from_training": True,
+        }, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Multi-seed summary: {summary_path}")
+
+
+def main(args: argparse.Namespace | None = None, seed: int | None = None):
+
+    global SEED
+    args = parse_args() if args is None else args
+    if args.seeds is not None:
+        run_multiseed(args)
+        return
+    if seed is not None:
+        SEED = seed
 
     subset = args.subset
     model_name = args.model
 
     log = configure_logging(
         model_name,
-        subset
-        , args.method
+        subset,
+        args.method,
+        seed=seed,
     )
 
     device = get_device()
@@ -1463,8 +1726,8 @@ def main():
             metrics["mean_interval_width"],
         )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_conformal.npz"
+    RUN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RUN_RESULTS_DIR / f"{subset}_{model_name}_conformal.npz"
     np.savez(output_path, **save_data)
     log.info("Results saved to: %s", output_path)
 
