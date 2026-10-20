@@ -5,12 +5,11 @@ Runs every stage of the prognostics + uncertainty + XAI + decision chain:
 
     1. EDA          (optional, FD001 only)   python main.py
     2. Preprocess                            scripts/preprocess.py   --subset <subset>
-    3. Train                                 scripts/train.py        --model <model> --subset <subset>
-    4. Evaluate                              scripts/evaluate.py     --model <model> --subset <subset>
-    5. Uncertainty (EARA-Conformal)          scripts/uncertainty.py  --model <model> --subset <s> --method engine_joint
-    6. Explain (IG + SHAP + temporal + ERI)  scripts/explain.py      --model <model> --subset <subset> --target all
-    7. Decision engine (O4)                  scripts/decision.py     --subset <subset> --model <model> --uncertainty-variant engine_joint_conformal
-    8. HITL review + policy refinement (O5)  scripts/hitl.py         --subset <subset> --model <model>
+    3. Uncertainty + seeded training         scripts/uncertainty.py  --model <model> --subset <s> --method eara --seeds ...
+    4. Evaluate each seed                   scripts/evaluate.py     --model <model> --subset <subset> --seeds ...
+    5. Explain each seed                    scripts/explain.py      --model <model> --subset <subset> --target all --seeds ...
+    6. Decision engine (O4)                 scripts/decision.py     --subset <subset> --model <model> --uncertainty-variant eara_conformal --seeds ...
+    7. HITL review + policy refinement (O5) scripts/hitl.py         --subset <subset> --model <model>
 
 Each stage shells out to the same CLI entry points documented in the
 README, so the demo behaves exactly like running the stages by hand, with
@@ -22,6 +21,7 @@ Usage
     python scripts/demo.py --subset all                 # all four C-MAPSS subsets
     python scripts/demo.py --subset FD002 --model lstm
     python scripts/demo.py --eda                        # also run the EDA entry point (FD001)
+    python scripts/demo.py --seeds 42 43 44 45 46
     python scripts/demo.py --minimum-safe-rul 10 --maintenance-lead-time 10
 
 The demo aborts with a non-zero exit code on the first failed stage and
@@ -31,10 +31,14 @@ finishes by verifying that every expected artifact was produced.
 from __future__ import annotations
 
 import argparse
+import csv
 import os
+import statistics
 import subprocess
 import sys
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -44,9 +48,8 @@ ALL_MODELS = ("lstm", "gru", "transformer", "hybrid")
 DEFAULT_SUBSET = "FD001"
 DEFAULT_MODEL = "gru"
 
-# Uncertainty variant produced by scripts/uncertainty.py --method engine_joint
-# and consumed by scripts/decision.py (see decision.py::UNCERTAINTY_VARIANTS).
-UNCERTAINTY_VARIANT = "engine_joint_conformal"
+UNCERTAINTY_VARIANT = "eara_conformal"
+DEFAULT_SEEDS = (42, 43, 44, 45, 46)
 
 SEPARATOR = "=" * 72
 
@@ -102,11 +105,60 @@ def subset_list(spec: str) -> list[str]:
     return list(ALL_SUBSETS) if spec.lower() == "all" else [spec.upper()]
 
 
+def _seeded_evaluation_summary(
+    results_dir: Path,
+    subsets: list[str],
+    model: str,
+    seeds: list[int],
+) -> dict:
+    from src.evaluation.metrics import predictive_accuracy
+
+    report = {}
+    for subset in subsets:
+        per_seed = []
+        for seed in seeds:
+            path = (
+                results_dir / "uncertainty" / model / subset / "eara"
+                / f"seed_{seed}" / "results" / f"{subset}_{model}_predictions.npz"
+            )
+            if not path.exists():
+                raise FileNotFoundError(f"Missing seed prediction artifact: {path}")
+            with np.load(path) as pred:
+                per_seed.append(predictive_accuracy(
+                    pred["y_rul_true"], pred["y_rul_pred"],
+                    pred["y_hi_true"], pred["y_hi_pred"],
+                ))
+
+        metrics = {}
+        for target in ("rul", "hi"):
+            metrics[target] = {}
+            for metric in per_seed[0][target]:
+                values = [float(row[target][metric]) for row in per_seed]
+                metrics[target][metric] = {
+                    "mean": statistics.mean(values),
+                    "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+                }
+
+        interval_path = (
+            results_dir / "uncertainty" / model / subset / "eara" / "summary_mean_std.csv"
+        )
+        if not interval_path.exists():
+            raise FileNotFoundError(f"Missing EARA summary: {interval_path}")
+        with interval_path.open(newline="", encoding="utf-8") as handle:
+            interval_metrics = list(csv.DictReader(handle))
+        report[subset] = {
+            "n_seeds": len(seeds),
+            "prediction_metrics_mean_std": metrics,
+            "eara_interval_metrics_mean_std": interval_metrics,
+        }
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "End-to-end PHM-XAI pipeline: EDA (optional) -> preprocess -> "
-            "train -> evaluate -> EARA-Conformal uncertainty -> explain -> "
+            "multi-seed EARA-Conformal training/calibration -> evaluation -> explain -> "
             "decision -> HITL review."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -122,6 +174,10 @@ def main() -> None:
              "(gru_att_deg is not wired into the decision engine).",
     )
     parser.add_argument(
+        "--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS),
+        help="At least five distinct seeds (default: 42 43 44 45 46).",
+    )
+    parser.add_argument(
         "--eda", action="store_true",
         help="Run the exploratory data analysis entry point (main.py) first. "
              "FD001 only; note that main.py also appends a demo expert-"
@@ -129,7 +185,7 @@ def main() -> None:
     )
 
     # Per-stage skip switches (handy when re-running only later stages).
-    for stage in ("preprocess", "train", "evaluate", "uncertainty",
+    for stage in ("preprocess", "evaluate", "uncertainty",
                   "explain", "decision", "hitl"):
         parser.add_argument(
             f"--skip-{stage}", action="store_true",
@@ -152,6 +208,8 @@ def main() -> None:
                         help="Whether crew and parts are available.")
 
     args = parser.parse_args()
+    if len(args.seeds) < 5 or len(set(args.seeds)) != len(args.seeds):
+        parser.error("--seeds requires at least five distinct integers")
 
     model = args.model.lower()
     subsets = subset_list(args.subset)
@@ -191,64 +249,65 @@ def main() -> None:
                 sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Stage 3 - Train
-    # ------------------------------------------------------------------
-    for subset in subsets:
-        if not args.skip_train:
-            ok = run_stage(
-                f"Train {model} on {subset}",
-                py("train.py") + ["--model", model, "--subset", subset],
-                [ROOT / "outputs" / "checkpoints" / model / subset / "best_model.pt",
-                 ROOT / "outputs" / "results" / f"{subset}_{model}_history.npz"],
-            )
-            if not ok:
-                sys.exit(1)
-
-    # ------------------------------------------------------------------
-    # Stage 4 - Evaluate
-    # ------------------------------------------------------------------
-    for subset in subsets:
-        if not args.skip_evaluate:
-            ok = run_stage(
-                f"Evaluate {model} on {subset}",
-                py("evaluate.py") + ["--model", model, "--subset", subset],
-                [ROOT / "outputs" / "results" / f"{subset}_{model}_predictions.npz"],
-            )
-            if not ok:
-                sys.exit(1)
-
-    # ------------------------------------------------------------------
-    # Stage 5 - Uncertainty (EARA-Conformal / engine_joint)
+    # Stage 3 - EARA-Conformal (trains each seed and calibrates its intervals)
     # ------------------------------------------------------------------
     for subset in subsets:
         if not args.skip_uncertainty:
             ok = run_stage(
                 f"Uncertainty (EARA-Conformal) {model} on {subset}",
                 py("uncertainty.py")
-                + ["--model", model, "--subset", subset, "--method", "engine_joint"],
-                [ROOT / "outputs" / "results"
-                 / f"{subset}_{model}_{UNCERTAINTY_VARIANT}.npz"],
+                + ["--model", model, "--subset", subset, "--method", "eara",
+                   "--seeds", *[str(seed) for seed in args.seeds]],
+                [ROOT / "outputs" / "results" / "uncertainty" / model / subset
+                 / "eara" / "run_config.json",
+                 ROOT / "outputs" / "results" / "uncertainty" / model / subset
+                 / "eara" / "summary_mean_std.csv"],
             )
             if not ok:
                 sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Stage 6 - Explainability (IG, SHAP, temporal relevance, ERI)
+    # Stage 4 - Evaluate each seed's checkpoint
+    # ------------------------------------------------------------------
+    for subset in subsets:
+        if not args.skip_evaluate:
+            prediction_artifacts = [
+                ROOT / "outputs" / "results" / "uncertainty" / model / subset
+                / "eara" / f"seed_{seed}" / "results"
+                / f"{subset}_{model}_predictions.npz"
+                for seed in args.seeds
+            ]
+            ok = run_stage(
+                f"Evaluate {model} on {subset} across seeds",
+                py("evaluate.py") + ["--model", model, "--subset", subset,
+                                      "--seeds", *[str(seed) for seed in args.seeds]],
+                prediction_artifacts,
+            )
+            if not ok:
+                sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # Stage 5 - Explainability (IG, SHAP, temporal relevance, ERI)
     # ------------------------------------------------------------------
     for subset in subsets:
         if not args.skip_explain:
+            eri_artifacts = [
+                ROOT / "outputs" / "results" / "uncertainty" / model / subset
+                / "eara" / f"seed_{seed}" / "xai" / subset / model / f"eri_{target}.json"
+                for seed in args.seeds for target in ("rul", "hi")
+            ]
             ok = run_stage(
-                f"Explain {model} on {subset} (RUL + HI)",
+                f"Explain {model} on {subset} across seeds (RUL + HI)",
                 py("explain.py") + ["--model", model, "--subset", subset,
-                                    "--target", "all"],
-                [ROOT / "outputs" / "xai" / subset / model / "eri_rul.json",
-                 ROOT / "outputs" / "xai" / subset / model / "eri_hi.json"],
+                                    "--target", "all", "--seeds",
+                                    *[str(seed) for seed in args.seeds]],
+                eri_artifacts,
             )
             if not ok:
                 sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Stage 7 - Decision engine (O4)
+    # Stage 6 - Decision engine (O4)
     # ------------------------------------------------------------------
     decision_extra: list[str] = []
     if args.maintenance_window:
@@ -271,7 +330,8 @@ def main() -> None:
                 f"Decision engine {subset} / {model}",
                 py("decision.py")
                 + ["--subset", subset, "--model", model,
-                   "--uncertainty-variant", UNCERTAINTY_VARIANT]
+                   "--uncertainty-variant", UNCERTAINTY_VARIANT, "--seeds",
+                   *[str(seed) for seed in args.seeds]]
                 + decision_extra,
                 [ROOT / "outputs" / "results" / f"decision_{subset}_{model}.json",
                  ROOT / "outputs" / "reports" / f"decision_{subset}_{model}.html"],
@@ -280,7 +340,7 @@ def main() -> None:
                 sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Stage 8 - HITL review + policy refinement (O5)
+    # Stage 7 - HITL review + policy refinement (O5)
     # ------------------------------------------------------------------
     for subset in subsets:
         if not args.skip_hitl:
@@ -302,18 +362,13 @@ def main() -> None:
 
     import json as _json
     sys.path.insert(0, str(ROOT))
-    from src.evaluation import comparative_benchmark, run_ablation, cross_subset_consistency
+    from src.evaluation import run_ablation
 
     results_dir = ROOT / "outputs" / "results"
 
-    # 9a — comparative benchmark across all completed (subset, model) pairs
-    print("  [benchmark] comparative performance across subsets/models...")
-    bench = comparative_benchmark(
-        results_dir,
-        subsets=subsets,
-        models=[model],
-        uncertainty_variant=UNCERTAINTY_VARIANT,
-    )
+    # 9a — aggregate prediction and interval metrics across the requested seeds
+    print("  [benchmark] multi-seed prediction and EARA interval summaries...")
+    bench = _seeded_evaluation_summary(results_dir, subsets, model, args.seeds)
     bench_path = results_dir / f"benchmark_{model}.json"
     bench_path.parent.mkdir(parents=True, exist_ok=True)
     with open(bench_path, "w") as _f:
@@ -324,14 +379,35 @@ def main() -> None:
     for subset in subsets:
         print(f"  [ablation] {subset} / {model}...")
         ablation = run_ablation(results_dir, subset, model)
+        ablation["point_only_seed_aggregate"] = bench[subset][
+            "prediction_metrics_mean_std"
+        ]
         abl_path = results_dir / f"ablation_{subset}_{model}.json"
         with open(abl_path, "w") as _f:
             _json.dump(ablation, _f, indent=2, default=str)
         print(f"  [OK]   ablation saved -> {abl_path.relative_to(ROOT)}")
 
-    # 9c — cross-subset consistency
+    # 9c — cross-subset consistency from multi-seed RUL MAE summaries
     print(f"  [robustness] cross-subset consistency for {model}...")
-    consistency = cross_subset_consistency(results_dir, model, subsets=subsets)
+    subset_maes = {
+        subset: bench[subset]["prediction_metrics_mean_std"]["rul"]["MAE"]["mean"]
+        for subset in subsets
+    }
+    subset_values = list(subset_maes.values())
+    mean_mae = float(np.mean(subset_values)) if subset_values else float("nan")
+    std_mae = float(np.std(subset_values)) if subset_values else float("nan")
+    cv = std_mae / mean_mae if len(subset_values) > 1 and mean_mae > 0 else float("nan")
+    consistency = {
+        "per_subset_rul_mae": subset_maes,
+        "mean_rul_mae": mean_mae,
+        "std_rul_mae": std_mae,
+        "cv_rul_mae": cv,
+        "consistency_band": (
+            "NOT_APPLICABLE" if len(subset_values) < 2 else
+            "HIGH" if cv < 0.20 else "MODERATE" if cv < 0.40 else "LOW"
+        ),
+        "aggregation": "mean of per-seed RUL MAE for each subset",
+    }
     con_path = results_dir / f"consistency_{model}.json"
     with open(con_path, "w") as _f:
         _json.dump(consistency, _f, indent=2, default=str)
@@ -350,16 +426,39 @@ def main() -> None:
     for subset in subsets:
         artifacts = [
             ROOT / "data" / "processed" / f"{subset}_train_X.npy",
-            ROOT / "outputs" / "checkpoints" / model / subset / "best_model.pt",
-            ROOT / "outputs" / "results" / f"{subset}_{model}_predictions.npz",
-            ROOT / "outputs" / "results" / f"{subset}_{model}_{UNCERTAINTY_VARIANT}.npz",
-            ROOT / "outputs" / "xai" / subset / model / "eri_rul.json",
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / "run_config.json",
             ROOT / "outputs" / "results" / f"decision_{subset}_{model}.json",
             ROOT / "outputs" / "reports" / f"decision_{subset}_{model}.html",
             ROOT / "outputs" / "results" / f"hitl_{subset}_{model}.json",
             ROOT / "outputs" / "reports" / f"hitl_{subset}_{model}.html",
             ROOT / "outputs" / "results" / f"ablation_{subset}_{model}.json",
         ]
+        artifacts.extend(
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / f"seed_{seed}" / "results" / f"{subset}_{model}_eara_conformal.npz"
+            for seed in args.seeds
+        )
+        artifacts.extend(
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / f"seed_{seed}" / "checkpoints" / model / subset / "best_model.pt"
+            for seed in args.seeds
+        )
+        artifacts.extend(
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / f"seed_{seed}" / "results" / f"{subset}_{model}_predictions.npz"
+            for seed in args.seeds
+        )
+        artifacts.extend(
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / f"seed_{seed}" / "xai" / subset / model / "eri_rul.json"
+            for seed in args.seeds
+        )
+        artifacts.extend(
+            ROOT / "outputs" / "results" / "uncertainty" / model / subset
+            / "eara" / f"seed_{seed}" / "xai" / subset / model / "eri_hi.json"
+            for seed in args.seeds
+        )
         print(f"  {subset} / {model}")
         for path in artifacts:
             status = "OK" if path.exists() else "MISSING"

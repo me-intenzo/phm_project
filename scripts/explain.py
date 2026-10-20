@@ -29,6 +29,12 @@ The pipeline follows a simple three-layer design:
 
 Usage
 -----
+  # Multi-seed explanation defaults to seeds 42-46; pass at least five distinct seeds.
+  # Activate the project environment, then explain each seed-specific model
+  ./.venv/Scripts/Activate.ps1
+  python scripts/explain.py --subset FD001 --model gru --target rul
+  python scripts/explain.py --subset FD001 --model gru --target rul --seeds 42 43 44 45 46
+
   # Single model (default: gru_att_deg, FD001, rul)
   python scripts/explain.py
 
@@ -164,6 +170,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     parser.add_argument("--ig-steps", type=int, default=IG_STEPS)
     parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=[42, 43, 44, 45, 46],
+        help="At least five distinct checkpoint seeds (default: 42 43 44 45 46).",
+    )
+    parser.add_argument(
         "--engine-id",
         type=int,
         default=1,
@@ -225,8 +238,15 @@ def load_visualization_data(subset: str):
 # Model loading
 # ─────────────────────────────────────────────────────────────────────
 
-def load_model(model_name: str, input_size: int, subset: str, device: torch.device):
-    ckpt_path = CHECKPOINT_DIR / model_name / subset / "best_model.pt"
+def load_model(
+    model_name: str,
+    input_size: int,
+    subset: str,
+    device: torch.device,
+    checkpoint_dir: Path | None = None,
+):
+    checkpoint_dir = CHECKPOINT_DIR if checkpoint_dir is None else checkpoint_dir
+    ckpt_path = checkpoint_dir / model_name / subset / "best_model.pt"
     if not ckpt_path.exists():
         raise FileNotFoundError(
             f"Checkpoint not found: {ckpt_path}\n"
@@ -404,6 +424,7 @@ def run_model_xai(
     ig_steps: int,
     shap_nsamples: int,
     log: logging.Logger,
+    seed: int | None = None,
 ) -> dict:
     """Run full XAI pipeline for one model and return results dict."""
     input_size = X_explain.shape[-1]
@@ -412,11 +433,25 @@ def run_model_xai(
         else [f"S{i+1}" for i in range(input_size)]
     )
 
-    model_out_dir = XAI_DIR / subset / model_name
+    seed_root = (
+        PROJECT_ROOT / "outputs" / "results" / "uncertainty"
+        / model_name / subset / "eara" / f"seed_{seed}"
+        if seed is not None else None
+    )
+    model_out_dir = (
+        seed_root / "xai" / subset / model_name
+        if seed_root is not None else XAI_DIR / subset / model_name
+    )
     model_out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Loading model checkpoint...")
-    model, ckpt = load_model(model_name, input_size, subset, device)
+    model, ckpt = load_model(
+        model_name,
+        input_size,
+        subset,
+        device,
+        checkpoint_dir=(seed_root / "checkpoints") if seed_root else None,
+    )
     log.info("Loaded epoch %d", ckpt.get("epoch", "?"))
 
     x_tensor = torch.from_numpy(X_explain).float().to(device)
@@ -540,10 +575,9 @@ def run_model_xai(
 # Main
 # ─────────────────────────────────────────────────────────────────────
 
-def main():
-    args = parse_args()
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
+def run_for_seed(args: argparse.Namespace, seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -593,6 +627,7 @@ def main():
                         ig_steps=args.ig_steps,
                         shap_nsamples=args.shap_nsamples,
                         log=log,
+                        seed=seed,
                     )
                     model_results[model_name] = result
                     if result["hi_pred"] is not None:
@@ -610,7 +645,12 @@ def main():
             if not model_results:
                 continue
 
-            subset_out = XAI_DIR / subset
+            subset_out = (
+                PROJECT_ROOT / "outputs" / "results" / "uncertainty"
+                / models[0] / subset / "eara" / f"seed_{seed}" / "xai" / subset
+                if len(models) == 1
+                else XAI_DIR / subset
+            )
             subset_out.mkdir(parents=True, exist_ok=True)
 
             # Multi-model degradation overlay
@@ -644,6 +684,14 @@ def main():
             print(f"\n[REPORT] {report_path}")
 
     print("\n[XAI PIPELINE COMPLETE]")
+
+
+def main():
+    args = parse_args()
+    if len(args.seeds) < 5 or len(set(args.seeds)) != len(args.seeds):
+        raise SystemExit("--seeds requires at least five distinct integers")
+    for seed in args.seeds:
+        run_for_seed(args, seed)
 
 
 if __name__ == "__main__":

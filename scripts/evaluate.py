@@ -12,6 +12,12 @@ Supported models
 
 Usage
 -----
+# Multi-seed evaluation defaults to seeds 42-46; pass at least five distinct seeds.
+# Activate the project environment first in PowerShell:
+./.venv/Scripts/Activate.ps1
+python scripts/evaluate.py --model gru --subset FD001
+python scripts/evaluate.py --model gru --subset FD001 --seeds 42 43 44 45 46
+
 python scripts/evaluate.py --model lstm
 python scripts/evaluate.py --model gru
 python scripts/evaluate.py --model transformer
@@ -104,6 +110,13 @@ def parse_args() -> argparse.Namespace:
         default="FD001",
         help="C-MAPSS subset to evaluate, or 'all'.",
     )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=[42, 43, 44, 45, 46],
+        help="At least five distinct checkpoint seeds (default: 42 43 44 45 46).",
+    )
 
     return parser.parse_args()
 
@@ -192,10 +205,11 @@ def load_model(
     input_size: int,
     device: torch.device,
     subset: str = "FD001",
+    checkpoint_dir: Path | None = None,
 ):
-
+    checkpoint_dir = CHECKPOINT_DIR if checkpoint_dir is None else checkpoint_dir
     checkpoint_path = (
-        CHECKPOINT_DIR
+        checkpoint_dir
         / model_name
         / subset
         / "best_model.pt"
@@ -309,7 +323,7 @@ def predict(
 # Main
 # ------------------------------------------------------------------
 
-def run(model_name: str, subset: str) -> None:
+def run(model_name: str, subset: str, seed: int | None = None) -> None:
     """Run the full evaluation pipeline for a single model/subset combination."""
     log = get_script_logger("evaluation", f"evaluate_{subset}_{model_name}")
 
@@ -341,11 +355,16 @@ def run(model_name: str, subset: str) -> None:
     # Model
     # --------------------------------------------------------------
 
+    seed_root = (
+        RESULTS_DIR / "uncertainty" / model_name / subset / "eara" / f"seed_{seed}"
+        if seed is not None else None
+    )
     model, checkpoint = load_model(
         model_name=model_name,
         input_size=X_test.shape[-1],
         device=device,
         subset=subset,
+        checkpoint_dir=(seed_root / "checkpoints") if seed_root else None,
     )
 
     log.info(
@@ -418,12 +437,9 @@ def run(model_name: str, subset: str) -> None:
     # Save predictions
     # --------------------------------------------------------------
 
-    prediction_path = (
-        RESULTS_DIR
-        / f"{subset}_{model_name}_predictions.npz"
-    )
-
-    RESULTS_DIR.mkdir(
+    output_dir = seed_root / "results" if seed_root else RESULTS_DIR
+    prediction_path = output_dir / f"{subset}_{model_name}_predictions.npz"
+    output_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -434,6 +450,8 @@ def run(model_name: str, subset: str) -> None:
         y_rul_pred=pred_rul,
         y_hi_true=y_hi_test,
         y_hi_pred=pred_hi,
+        engine_ids=np.load(DATA_DIR / f"{subset}_test_engine_ids.npy"),
+        **({"seed": np.asarray([seed])} if seed is not None else {}),
     )
 
     log.info(
@@ -444,11 +462,14 @@ def run(model_name: str, subset: str) -> None:
 
 def main():
     args = parse_args()
+    if len(args.seeds) < 5 or len(set(args.seeds)) != len(args.seeds):
+        raise SystemExit("--seeds requires at least five distinct integers")
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
     models  = ALL_MODELS  if args.model  == "all" else [args.model]
     for subset in subsets:
         for model_name in models:
-            run(model_name, subset)
+            for seed in args.seeds:
+                run(model_name, subset, seed=seed)
 
 
 if __name__ == "__main__":

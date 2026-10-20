@@ -28,7 +28,7 @@ def comparative_benchmark(
     results_dir: str | Path,
     subsets: list[str],
     models: list[str],
-    uncertainty_variant: str = "engine_joint_conformal",
+    uncertainty_variant: str = "eara_conformal",
 ) -> dict[str, Any]:
     """
     Load pipeline artifacts and compute predictive + uncertainty metrics

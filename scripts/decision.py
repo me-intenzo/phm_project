@@ -26,12 +26,26 @@ Expected decision state:
         "eri":       float,
         "top_k_sensors": [int, ...]   # optional, from O3 XAI output
     }
+
+Usage (PowerShell)
+------------------
+Activate the environment, then merge the seed list from each EARA run_config.json:
+    ./.venv/Scripts/Activate.ps1
+    python scripts/decision.py --subset all --model gru
+
+To explicitly provide five or more distinct seeds:
+    python scripts/decision.py --subset all --model gru --seeds 42 43 44 45 46
+
+This writes one merged decision output per subset/model, not one output per seed.
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,7 +58,8 @@ from src.decision_engine.recommender import recommend_action
 from src.utils.logger import get_script_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
+PROJECT_RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
+RESULTS_DIR  = PROJECT_RESULTS_DIR / "uncertainty"
 REPORTS_DIR  = PROJECT_ROOT / "outputs" / "reports"
 ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
 ALL_MODELS   = ("hybrid", "lstm", "gru", "transformer")
@@ -57,7 +72,6 @@ UNCERTAINTY_VARIANTS = (
     "conformal",
     "adaptive_conformal",
     "cqr",
-    "engine_joint_conformal",
 )
 
 
@@ -170,6 +184,16 @@ def process_records(
         for key in ("id", "engine_id", "unit_id", "timestamp"):
             if key in record:
                 result[key] = record[key]
+        for key in (
+            "seed_count", "seed_action_counts", "seed_action_agreement", "seed_actions"
+        ):
+            if key in record:
+                result[key] = record[key]
+        if record.get("human_review"):
+            result["human_review"] = True
+            result.setdefault("reasons", []).append(
+                "Seed-specific recommendations disagree; review the merged recommendation."
+            )
         decisions.append(result)
     return decisions
 
@@ -272,6 +296,7 @@ def load_upstream_records(
     subset: str,
     model_name: str = DEFAULT_MODEL,
     uncertainty_variant: str = "eara_conformal",
+    seed: int = 42,
 ) -> list[dict[str, Any]]:
     """Build decision records from uncertainty and explainability outputs."""
     subset = subset.upper()
@@ -279,13 +304,38 @@ def load_upstream_records(
     if model_name not in ALL_MODELS:
         raise ValueError(f"Unsupported decision model: {model_name}")
 
-    prediction_path = RESULTS_DIR / f"{subset}_{model_name}_predictions.npz"
     if uncertainty_variant not in UNCERTAINTY_VARIANTS:
         raise ValueError(f"Unsupported uncertainty variant: {uncertainty_variant}")
-    structured_path = RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{model_name}.npz"
-    legacy_path = RESULTS_DIR / f"{subset}_{model_name}_{uncertainty_variant}.npz"
-    uncertainty_path = structured_path if structured_path.exists() else legacy_path
-    eri_path = XAI_DIR / subset / model_name / "eri_rul.json"
+    method_dir, artifact_suffix = {
+        "eara_conformal": ("eara", "eara_conformal"),
+        "conformal": ("split", "conformal"),
+        "adaptive_conformal": ("adaptive", "adaptive_conformal"),
+        "cqr": ("cqr", "cqr"),
+    }[uncertainty_variant]
+    seed_root = (
+        RESULTS_DIR
+        / model_name
+        / subset
+        / "eara"
+        / f"seed_{seed}"
+    )
+    prediction_path = seed_root / "results" / f"{subset}_{model_name}_predictions.npz"
+    multiseed_path = (
+        RESULTS_DIR
+        / model_name
+        / subset
+        / method_dir
+        / f"seed_{seed}"
+        / "results"
+        / f"{subset}_{model_name}_{artifact_suffix}.npz"
+    )
+    structured_path = RESULTS_DIR / uncertainty_variant / subset / f"{model_name}.npz"
+    legacy_path = PROJECT_RESULTS_DIR / f"{subset}_{model_name}_{artifact_suffix}.npz"
+    uncertainty_path = next(
+        (path for path in (multiseed_path, structured_path, legacy_path) if path.exists()),
+        multiseed_path,
+    )
+    eri_path = seed_root / "xai" / subset / model_name / "eri_rul.json"
 
     missing = [
         path for path in (prediction_path, uncertainty_path, eri_path)
@@ -296,7 +346,7 @@ def load_upstream_records(
         raise FileNotFoundError(
             f"Missing upstream decision artifact(s) for {subset}: {missing_text}. "
             f"Run uncertainty.py and explain.py with --subset {subset} "
-            f"--model {model_name}."
+            f"--model {model_name}; uncertainty seed {seed} was not found."
         )
 
     with np.load(prediction_path) as predictions, np.load(uncertainty_path) as uncertainty:
@@ -304,17 +354,32 @@ def load_upstream_records(
         hi = np.clip(np.asarray(predictions["y_hi_pred"]).reshape(-1), 0.0, 1.0)
         lower = np.asarray(uncertainty[f"lower_{INTERVAL_LEVEL}"]).reshape(-1)
         upper = np.asarray(uncertainty[f"upper_{INTERVAL_LEVEL}"]).reshape(-1)
-
-        count = min(len(rul), len(hi), len(lower), len(upper))
+        engine_ids = np.asarray(predictions["engine_ids"]).reshape(-1)
+        if not np.allclose(
+            np.asarray(uncertainty["y_rul_test"]).reshape(-1),
+            np.asarray(predictions["y_rul_true"]).reshape(-1),
+            rtol=0.0,
+            atol=1e-7,
+        ):
+            raise ValueError(
+                f"Seed {seed} prediction and conformal artifacts have different "
+                "test-target order/content. Recreate them from the same subset data."
+            )
+        lengths = {len(rul), len(hi), len(lower), len(upper), len(engine_ids)}
+        if len(lengths) != 1:
+            raise ValueError(
+                f"Seed {seed} has misaligned predictions/intervals/engine IDs: "
+                f"{sorted(lengths)} lengths. No records were dropped."
+            )
         records = [
             {
-                "engine_id": index + 1,
+                "engine_id": int(engine_ids[index]),
                 "rul": rul[index],
                 "hi": hi[index],
                 "rul_lower": lower[index],
                 "rul_upper": upper[index],
             }
-            for index in range(count)
+            for index in range(len(engine_ids))
         ]
 
     eri_data = load_json(eri_path)
@@ -329,7 +394,147 @@ def load_upstream_records(
     for record in records:
         record["eri"] = eri
         record["top_k_sensors"] = top_k_sensors
+        record["seed"] = seed
     return records
+
+
+def resolve_seeds(subset: str, model_name: str, requested: list[int] | None) -> list[int]:
+    if requested:
+        seeds = requested
+    else:
+        config_path = (
+            RESULTS_DIR / model_name / subset / "eara" / "run_config.json"
+        )
+        if config_path.exists():
+            configured = load_json(config_path).get("seeds", [])
+            seeds = [int(seed) for seed in configured]
+        else:
+            seed_root = RESULTS_DIR / model_name / subset / "eara"
+            seeds = sorted(
+                int(match.group(1))
+                for path in seed_root.glob("seed_*")
+                if (match := re.fullmatch(r"seed_(\d+)", path.name))
+            )
+    if len(seeds) < 5 or len(set(seeds)) != len(seeds):
+        raise ValueError(
+            f"Expected at least five distinct seed artifacts for {subset}/{model_name}; "
+            f"found {seeds}. Complete the multi-seed uncertainty run first."
+        )
+    return list(seeds)
+
+
+def ensure_seed_evaluation(subset: str, model_name: str, seeds: list[int]) -> None:
+    """Create missing prediction/XAI artifacts for the complete seed list."""
+    seed_roots = [
+        RESULTS_DIR / model_name / subset / "eara" / f"seed_{seed}"
+        for seed in seeds
+    ]
+    predictions = [
+        root / "results" / f"{subset}_{model_name}_predictions.npz"
+        for root in seed_roots
+    ]
+    eri_files = [
+        root / "xai" / subset / model_name / "eri_rul.json"
+        for root in seed_roots
+    ]
+    if any(not path.exists() for path in predictions):
+        subprocess.run(
+            [
+                sys.executable, str(PROJECT_ROOT / "scripts" / "evaluate.py"),
+                "--model", model_name, "--subset", subset, "--seeds",
+                *[str(seed) for seed in seeds],
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    if any(not path.exists() for path in eri_files):
+        subprocess.run(
+            [
+                sys.executable, str(PROJECT_ROOT / "scripts" / "explain.py"),
+                "--model", model_name, "--subset", subset, "--target", "rul",
+                "--seeds", *[str(seed) for seed in seeds],
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    missing = [path for path in (*predictions, *eri_files) if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Seed preparation did not produce required artifacts: "
+            + ", ".join(str(path) for path in missing)
+        )
+
+
+def merge_seed_records(
+    seed_records: dict[int, list[dict[str, Any]]],
+    constraints: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Merge aligned per-seed estimates into one auditable record per engine."""
+    seeds = sorted(seed_records)
+    engine_sets = {
+        seed: {int(record["engine_id"]) for record in records}
+        for seed, records in seed_records.items()
+    }
+    duplicate_ids = {
+        seed: len(records) - len(engine_sets[seed])
+        for seed, records in seed_records.items()
+        if len(records) != len(engine_sets[seed])
+    }
+    if duplicate_ids:
+        raise ValueError(f"Duplicate engine records found by seed: {duplicate_ids}")
+    reference = engine_sets[seeds[0]]
+    mismatched = {
+        seed: sorted(reference.symmetric_difference(engine_ids))
+        for seed, engine_ids in engine_sets.items()
+        if engine_ids != reference
+    }
+    if mismatched:
+        raise ValueError(f"Engine IDs differ across seeds; refusing lossy merge: {mismatched}")
+
+    by_seed = {
+        seed: {int(record["engine_id"]): record for record in records}
+        for seed, records in seed_records.items()
+    }
+    merged = []
+    for engine_id in sorted(reference):
+        rows = [by_seed[seed][engine_id] for seed in seeds]
+        for key in ("rul", "hi", "rul_lower", "rul_upper", "eri"):
+            if any(not np.isfinite(float(row[key])) for row in rows):
+                raise ValueError(f"Non-finite {key} for engine {engine_id} across seeds.")
+        if any(row["rul_lower"] > row["rul_upper"] for row in rows):
+            raise ValueError(f"Invalid seed interval for engine {engine_id}.")
+        sensor_votes = collections.Counter(
+            sensor for row in rows for sensor in row.get("top_k_sensors", [])
+        )
+        aggregate = {
+            "engine_id": engine_id,
+            "rul": float(np.median([row["rul"] for row in rows])),
+            "hi": float(np.median([row["hi"] for row in rows])),
+            "rul_lower": float(min(row["rul_lower"] for row in rows)),
+            "rul_upper": float(max(row["rul_upper"] for row in rows)),
+            "eri": float(np.median([row["eri"] for row in rows])),
+            "top_k_sensors": [
+                int(sensor) for sensor, _ in sensor_votes.most_common(5)
+            ],
+        }
+        seed_decisions = {
+            seed: make_decision(
+                rows[index]["rul"], rows[index]["hi"],
+                rows[index]["rul_lower"], rows[index]["rul_upper"],
+                rows[index]["eri"], rows[index].get("top_k_sensors"),
+                constraints=constraints,
+            )
+            for index, seed in enumerate(seeds)
+        }
+        actions = [d.get("recommended_action", "UNKNOWN") for d in seed_decisions.values()]
+        counts = collections.Counter(actions)
+        aggregate["seed_count"] = len(seeds)
+        aggregate["seed_action_counts"] = dict(counts)
+        aggregate["seed_action_agreement"] = max(counts.values()) / len(seeds)
+        aggregate["seed_actions"] = {str(seed): action for seed, action in zip(seeds, actions)}
+        aggregate["human_review"] = len(counts) > 1
+        merged.append(aggregate)
+    return merged
 
 
 # ---------------------------------------------------------------------
@@ -363,6 +568,12 @@ def _decision_card(d: dict[str, Any]) -> str:
     icon, ac = _ACTION_BADGE.get(action, ("⚪", "#555"))
     hc       = _HEALTH_BADGE.get(health, "#555")
     eng_id   = d.get("engine_id", d.get("index", "—"))
+    seed_count = d.get("seed_count")
+    agreement = d.get("seed_action_agreement")
+    seed_line = (
+        f"<small>{seed_count} seeds · action agreement {agreement:.0%}</small>"
+        if seed_count and agreement is not None else ""
+    )
     sensors  = ", ".join(f"S{s}" for s in d.get("top_k_sensors", []))
     reasons  = "".join(f"<li>{r}</li>" for r in d.get("reasons", []))
     violations = d.get("constraint_violations", [])
@@ -376,7 +587,7 @@ def _decision_card(d: dict[str, Any]) -> str:
     <div style="border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;
                 background:#fafafa;box-shadow:0 1px 3px rgba(0,0,0,.08)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <h3 style="margin:0">Engine {eng_id}</h3>
+        <div><h3 style="margin:0">Engine {eng_id}</h3>{seed_line}</div>
         <div>{_badge(f"{icon} {action}", ac)}&nbsp;{_badge(health, hc)}</div>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:0.9em">
@@ -515,6 +726,16 @@ def parse_args() -> argparse.Namespace:
         default="eara_conformal",
         help="Calibrated uncertainty artifact to use.",
     )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "At least five distinct seeds to merge; by default read the EARA "
+            "run_config.json seed list."
+        ),
+    )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
     parser.add_argument("--maintenance-window",    action="store_true", default=False)
@@ -573,7 +794,7 @@ def run_subset(
 ) -> None:
     stem = f"{subset}_{model_name}"
     log = get_script_logger("decision", f"decision_{stem}")
-    result_path = RESULTS_DIR / f"decision_{stem}.json"
+    result_path = PROJECT_RESULTS_DIR / f"decision_{stem}.json"
     report_path = REPORTS_DIR / f"decision_{stem}.html"
 
     log.info("=" * 60)
@@ -588,7 +809,15 @@ def run_subset(
     log.info("Result : %s", result_path)
     log.info("Report : %s", report_path)
 
-    records = load_upstream_records(subset, model_name, args.uncertainty_variant)
+    seeds = resolve_seeds(subset, model_name, args.seeds)
+    ensure_seed_evaluation(subset, model_name, seeds)
+    seed_records = {
+        seed: load_upstream_records(
+            subset, model_name, args.uncertainty_variant, seed=seed
+        )
+        for seed in seeds
+    }
+    records = merge_seed_records(seed_records, constraints=constraints)
     log.info(
         "Loaded %d decision record(s) from %s uncertainty and %s XAI outputs.",
         len(records), model_name, model_name,
@@ -618,6 +847,16 @@ def run_subset(
         ),
         "subset": subset,
         "model": model_name,
+        "seed_aggregation": {
+            "seeds": seeds,
+            "seed_count": len(seeds),
+            "point_estimate": "median across seed predictions",
+            "interval": "envelope across seed-specific conformal intervals",
+            "conformal_guarantee": (
+                "No additional formal coverage guarantee is claimed for the "
+                "merged envelope; evaluate its empirical coverage separately."
+            ),
+        },
         "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
                    "top_k_sensors", "operational constraints"],
         "summary": summary,

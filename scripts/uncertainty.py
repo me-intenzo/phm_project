@@ -27,10 +27,16 @@ Important
 ---------
 The final test targets are NEVER used during calibration.
 
+# PowerShell: activate the environment, then run EARA with the default seeds
+# (42 43 44 45 46). --seeds accepts five or more distinct seed values.
+./.venv/Scripts/Activate.ps1
+python scripts/uncertainty.py --model gru --subset all --method eara
+python scripts/uncertainty.py --model gru --subset all --method eara --seeds 42 43 44 45 46
+
 python scripts/uncertainty.py --model lstm --subset FD001 --method split
 python scripts/uncertainty.py --model lstm --subset FD001 --method cqr
 python scripts/uncertainty.py --model lstm --subset FD001 --method adaptive
-python scripts/uncertainty.py --model lstm --subset FD001 --method engine_joint
+python scripts/uncertainty.py --model gru --subset all --method eara
 python scripts/uncertainty.py --model gru --subset FD001 --method split --seeds 42 43 44 45 46
 """
 
@@ -47,6 +53,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.cluster import KMeans
 from sklearn.model_selection import GroupShuffleSplit
 
 
@@ -109,7 +116,7 @@ RESULTS_DIR = (
 )
 
 RUN_RESULTS_DIR = RESULTS_DIR
-MULTISEED_RESULTS_DIR = RESULTS_DIR / "multiseed_conformal_benchmark"
+MULTISEED_RESULTS_DIR = RESULTS_DIR / "uncertainty"
 
 LOG_DIR = (
     PROJECT_ROOT
@@ -135,11 +142,15 @@ COVERAGE_LEVELS = (
     0.95,
 )
 
+SUBSETS = ("FD001", "FD002", "FD003", "FD004")
+
 # Shared scale floor. The uncertainty pipeline must use the SAME constant
 # when a predicted scale is normalised into a calibration score and when it
 # is multiplied into an interval radius. Otherwise calibration quantiles and
 # prediction intervals silently disagree for near-zero scales.
 SCALE_FLOOR = 1e-3
+
+N_REGIMES = 7
 
 
 # ------------------------------------------------------------------
@@ -170,6 +181,7 @@ def parse_args() -> argparse.Namespace:
             "FD002",
             "FD003",
             "FD004",
+            "all",
         ],
         default="FD001",
         help="C-MAPSS subset.",
@@ -177,13 +189,13 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--method",
-        choices=["split", "cqr", "adaptive", "engine_joint"],
+        choices=["split", "cqr", "adaptive", "eara"],
         default="split",
         help=(
             "Uncertainty method: global split conformal ('split'), "
             "conformalized quantile regression ('cqr'), or normalized "
-            "adaptive conformal ('adaptive'), or engine-block joint "
-            "conformal ('engine_joint')."
+            "adaptive conformal ('adaptive'), or Engine-Aware Regime-Adaptive "
+            "Conformal Prediction ('eara')."
         ),
     )
 
@@ -191,12 +203,20 @@ def parse_args() -> argparse.Namespace:
         "--seeds",
         type=int,
         nargs="+",
-        default=None,
+        default=[42, 43, 44, 45, 46],
         help=(
-            "Run an opt-in multi-seed evaluation (at least five distinct seeds). "
+            "Seeds for multi-seed evaluation (at least five distinct seeds; "
+            "default: 42 43 44 45 46). "
             "Each seed trains a fresh checkpoint with separate train, validation, "
             "and calibration engines."
         ),
+    )
+
+    parser.add_argument(
+        "--n-regimes",
+        type=int,
+        default=N_REGIMES,
+        help=f"Number of K-means operating regimes for EARA (default: {N_REGIMES}).",
     )
 
     return parser.parse_args()
@@ -717,7 +737,7 @@ def _nearest_engine_regime_scale(
     return max(scale, 1e-6), [profiles[i]["engine_id"] for i in indices], weights, regime
 
 
-def run_engine_joint_conformal(
+def run_eara_conformal(
     model: torch.nn.Module,
     model_name: str,
     subset: str,
@@ -731,20 +751,15 @@ def run_engine_joint_conformal(
     device: torch.device,
     log: logging.Logger,
     training_engine_ids: np.ndarray | None = None,
+    n_regimes: int = N_REGIMES,
 ) -> None:
     """
     Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal).
 
-    ``engine_joint`` is retained as the CLI compatibility endpoint.
-
-    Novel mechanism:
-      1. Learn engine profiles from training engines only.
-      2. Extract a frozen prognostic representation from the backbone.
-      3. Retrieve the nearest training-engine profiles at each query.
-      4. Condition the residual scale on a learned RUL degradation regime.
-      5. Normalize calibration residuals by that query-specific scale.
-      6. Apply split-conformal calibration to the normalized scores.
-      7. Produce query-specific RUL intervals using the calibrated q-hat.
+    Uses the same regime calibration recipe as
+    ``multiseed_conformal_benchmark.py``: K-means regimes fitted on training
+    window features, one seeded calibration window per engine, normalized
+    residuals, and per-regime conformal quantiles.
 
     No calibration or test target is used to learn the scale function.
     """
@@ -759,53 +774,33 @@ def run_engine_joint_conformal(
     log.info(
         "ENGINE-AWARE REGIME-ADAPTIVE CONFORMAL PREDICTION (EARA)"
     )
-    log.info(
-        "Building engine/regime profiles from training engines only..."
+    if n_regimes < 2:
+        raise ValueError("EARA requires at least two regimes.")
+
+    log.info("Fitting %d EARA regimes on training windows...", n_regimes)
+    clusterer = KMeans(n_clusters=n_regimes, random_state=SEED, n_init=10)
+    clusterer.fit(X_train[:, -1, :])
+
+    rng = np.random.default_rng(SEED)
+    calibration_sample_indices = np.asarray([
+        rng.choice(np.flatnonzero(calibration_engine_ids == engine))
+        for engine in np.unique(calibration_engine_ids)
+    ], dtype=np.int64)
+    X_calibration_sample = X_calibration[calibration_sample_indices]
+    y_calibration_sample = y_rul_calibration[calibration_sample_indices]
+    calibration_engines_sample = calibration_engine_ids[calibration_sample_indices]
+
+    calibration_predictions, calibration_scales = predict(
+        model, X_calibration_sample, device
     )
-
-    train_features = extract_model_features(model, X_train, device)
-    calibration_features = extract_model_features(model, X_calibration, device)
-
-    train_rul = predict_rul(model, X_train, device)
-    calibration_predictions = predict_rul(model, X_calibration, device)
-
-    train_residuals = np.abs(y_rul_train - train_rul)
-    calibration_residuals = np.abs(
-        y_rul_calibration - calibration_predictions
-    )
-
-    profile_data = _build_training_engine_profiles(
-        train_features,
-        train_residuals,
-        training_engine_ids,
-        train_rul,
-    )
-
-    # --------------------------------------------------------------
-    # Engine/regime-adaptive calibration scores
-    # --------------------------------------------------------------
-    calibration_scales = np.empty(len(X_calibration), dtype=np.float64)
-    calibration_regimes = np.empty(len(X_calibration), dtype=np.int64)
-
-    for i, (feature, pred) in enumerate(
-        zip(
-            calibration_features.detach().cpu().numpy(),
-            calibration_predictions,
-        )
-    ):
-        scale, _, _, regime = _nearest_engine_regime_scale(
-            feature,
-            float(pred),
-            profile_data,
-            top_k=5,
-        )
-        calibration_scales[i] = scale
-        calibration_regimes[i] = regime
-
-    normalized_scores = calibration_residuals / np.maximum(
-        calibration_scales,
-        SCALE_FLOOR,
-    )
+    calibration_regimes = clusterer.predict(X_calibration_sample[:, -1, :])
+    normalized_scores = np.abs(
+        y_calibration_sample - calibration_predictions
+    ) / np.maximum(calibration_scales, SCALE_FLOOR)
+    regimes_cal_scores = {
+        regime: normalized_scores[calibration_regimes == regime]
+        for regime in range(n_regimes)
+    }
 
     log.info(
         "EARA calibration: %d training engines -> %d calibration engines",
@@ -813,8 +808,9 @@ def run_engine_joint_conformal(
         len(np.unique(calibration_engine_ids)),
     )
     log.info(
-        "EARA retrieval: top-k=5; degradation regimes=3; "
-        "normalized-score calibration enabled"
+        "EARA calibration: one seeded window per calibration engine; "
+        "%d K-means regimes; normalized per-regime scores",
+        n_regimes,
     )
     log.info(
         "Normalized calibration score median=%.6f, 90th percentile=%.6f",
@@ -826,26 +822,8 @@ def run_engine_joint_conformal(
     # Final test predictions
     # --------------------------------------------------------------
     X_test, y_rul_test, y_hi_test = load_test_data(subset)
-    test_features = extract_model_features(model, X_test, device)
-    test_predictions = predict_rul(model, X_test, device)
-
-    test_scales = np.empty(len(X_test), dtype=np.float64)
-    test_regimes = np.empty(len(X_test), dtype=np.int64)
-    test_neighbors = []
-
-    for feature, pred in zip(
-        test_features.detach().cpu().numpy(),
-        test_predictions,
-    ):
-        scale, neighbors, _, regime = _nearest_engine_regime_scale(
-            feature,
-            float(pred),
-            profile_data,
-            top_k=5,
-        )
-        test_scales[len(test_neighbors)] = scale
-        test_regimes[len(test_neighbors)] = regime
-        test_neighbors.append(neighbors)
+    test_predictions, test_scales = predict(model, X_test, device)
+    test_regimes = clusterer.predict(X_test[:, -1, :])
 
     save_data: dict[str, np.ndarray] = {
         "y_rul_test": y_rul_test,
@@ -856,6 +834,7 @@ def run_engine_joint_conformal(
         "calibration_scales": calibration_scales,
         "calibration_regimes": calibration_regimes,
         "normalized_calibration_scores": normalized_scores,
+        "calibration_engine_ids": calibration_engines_sample,
     }
 
     # --------------------------------------------------------------
@@ -864,36 +843,38 @@ def run_engine_joint_conformal(
     for coverage in COVERAGE_LEVELS:
         alpha = 1.0 - coverage
 
-        # This is the only learned conformal quantile. It is calibrated on
-        # held-out engines after the EARA scale function has been fixed using
-        # training engines only.
-        q_hat = conformal_quantile(
-            normalized_scores,
-            alpha,
-        )
-
-        radius = q_hat * np.maximum(test_scales, SCALE_FLOOR)
-        lower = test_predictions - radius
-        upper = test_predictions + radius
+        global_q = conformal_quantile(normalized_scores, alpha)
+        q_hats = np.asarray([
+            conformal_quantile(regimes_cal_scores[regime], alpha)
+            if len(regimes_cal_scores[regime]) >= 5 else global_q
+            for regime in range(n_regimes)
+        ], dtype=np.float64)
+        q_test = q_hats[test_regimes]
+        radius = q_test * np.maximum(test_scales, SCALE_FLOOR)
+        lower = np.clip(test_predictions - radius, 0.0, 125.0)
+        upper = np.clip(test_predictions + radius, 0.0, 125.0)
 
         metrics = evaluate_interval(
             y_true=y_rul_test,
             lower=lower,
             upper=upper,
             nominal_coverage=coverage,
+            regimes=test_regimes,
+            n_regimes=n_regimes,
         )
 
         suffix = int(coverage * 100)
         save_data[f"lower_{suffix}"] = lower
         save_data[f"upper_{suffix}"] = upper
-        save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
+        save_data[f"q_hat_{suffix}"] = q_hats
+        save_data[f"global_q_hat_{suffix}"] = np.asarray([global_q])
 
         log.info(
             "EARA-Conformal %.0f%% | q_hat %.6f | "
             "Empirical %.4f | Error %.4f | MPIW %.4f | "
             "MeanScale %.4f",
             coverage * 100.0,
-            q_hat,
+            float(np.mean(q_hats)),
             metrics["empirical_coverage"],
             metrics["coverage_error"],
             metrics["mean_interval_width"],
@@ -903,12 +884,12 @@ def run_engine_joint_conformal(
     RUN_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = (
         RUN_RESULTS_DIR
-        / f"{subset}_{model_name}_engine_joint_conformal.npz"
+        / f"{subset}_{model_name}_eara_conformal.npz"
     )
     np.savez(output_path, **save_data)
     log.info("EARA-Conformal results saved to: %s", output_path)
     log.info(
-        "EARA complete: intervals are regime- and engine-neighbor adaptive."
+        "EARA complete: regime-specific normalized conformal intervals."
     )
 
 
@@ -1217,7 +1198,7 @@ def _result_filename(method: str, model_name: str, subset: str) -> str:
         "split": "conformal",
         "cqr": "cqr",
         "adaptive": "adaptive_conformal",
-        "engine_joint": "engine_joint_conformal",
+        "eara": "eara_conformal",
     }[method]
     return f"{subset}_{model_name}_{suffix}.npz"
 
@@ -1225,6 +1206,13 @@ def _result_filename(method: str, model_name: str, subset: str) -> str:
 def run_multiseed(args: argparse.Namespace) -> None:
     """Train/evaluate each seed with engine-disjoint train/val/calibration sets."""
     global CHECKPOINT_DIR, RUN_RESULTS_DIR, SEED
+
+    if args.subset == "all":
+        for subset in SUBSETS:
+            subset_args = argparse.Namespace(**vars(args))
+            subset_args.subset = subset
+            run_multiseed(subset_args)
+        return
 
     seeds = list(args.seeds)
     if len(seeds) < 5 or len(set(seeds)) != len(seeds):
@@ -1300,9 +1288,9 @@ def run_multiseed(args: argparse.Namespace) -> None:
             seed_checkpoint_root.mkdir(parents=True, exist_ok=True)
             seed_result_dir.mkdir(parents=True, exist_ok=True)
 
-            def load_training_data_without_calibration(requested_subset: str):
-                loaded = original_train_loader(requested_subset)
-                if requested_subset != args.subset:
+            def load_training_data_without_calibration(subset: str):
+                loaded = original_train_loader(subset=subset)
+                if subset != args.subset:
                     return loaded
                 train_X, train_rul, train_hi, train_ids, metadata = loaded
                 keep = ~np.isin(train_ids, calibration_engine_ids)
@@ -1325,6 +1313,7 @@ def run_multiseed(args: argparse.Namespace) -> None:
                 subset=args.subset,
                 method=args.method,
                 seeds=None,
+                n_regimes=args.n_regimes,
             )
             main(single_seed_args, seed=seed)
 
@@ -1416,6 +1405,7 @@ def run_multiseed(args: argparse.Namespace) -> None:
             "method": args.method,
             "seeds": seeds,
             "coverage_levels": COVERAGE_LEVELS,
+            "n_regimes": args.n_regimes,
             "calibration_fraction": VALIDATION_SIZE,
             "training_settings": training_settings,
             "training_seeded_per_run": True,
@@ -1624,8 +1614,8 @@ def main(args: argparse.Namespace | None = None, seed: int | None = None):
         )
         return
 
-    if args.method == "engine_joint":
-        run_engine_joint_conformal(
+    if args.method == "eara":
+        run_eara_conformal(
             model=model,
             model_name=model_name,
             subset=subset,
@@ -1639,6 +1629,7 @@ def main(args: argparse.Namespace | None = None, seed: int | None = None):
             training_engine_ids=training_engine_ids,
             device=device,
             log=log,
+            n_regimes=args.n_regimes,
         )
         return
 

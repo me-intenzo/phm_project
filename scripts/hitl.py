@@ -23,6 +23,21 @@ Workflow:
 
 The prognostic GRU/model is never retrained by Human-in-the-Loop.
 
+Usage (PowerShell)
+------------------
+Activate the environment, then consume the single merged decision output:
+    ./.venv/Scripts/Activate.ps1
+    python scripts/hitl.py --subset FD001 --model gru
+
+Process each subset's merged decision output:
+    python scripts/hitl.py --subset all --model gru
+
+Resolve one queued review by approving the recommendation:
+    python scripts/hitl.py --input outputs/results/decision_FD001_gru.json --review-id decision-1-0 --reviewer "Reviewer Name" --action APPROVE --confidence 0.95 --reason "Recommendation approved."
+
+Resolve one queued review by overriding the recommendation:
+    python scripts/hitl.py --input outputs/results/decision_FD001_gru.json --review-id decision-1-0 --reviewer "Reviewer Name" --action OVERRIDE --override-action INSPECT --confidence 0.90 --reason "Inspection requested."
+
 """
 
 from __future__ import annotations
@@ -96,8 +111,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--subset",
+        type=str.upper,
         default="FD001",
-        help="FD001-FD004 or all.",
+        choices=[*ALL_SUBSETS, "ALL"],
+        help="C-MAPSS subset to process, or ALL.",
     )
 
     parser.add_argument(
@@ -478,6 +495,10 @@ def build_output(
         "subset": subset,
 
         "model": model,
+
+        "seed_aggregation": decision_output.get(
+            "seed_aggregation"
+        ),
 
         "model_role": (
             "controlled_baseline"
@@ -1122,8 +1143,8 @@ def main() -> None:
 
     subsets = (
         ALL_SUBSETS
-        if args.subset.lower() == "all"
-        else [args.subset.upper()]
+        if args.subset == "ALL"
+        else [args.subset]
     )
 
     models = (
