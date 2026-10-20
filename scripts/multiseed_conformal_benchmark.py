@@ -4,12 +4,11 @@ Example:
     # Run all four subsets with the default five seeds:
     python scripts/multiseed_conformal_benchmark.py --subsets all
 
-    # Explicitly set five or more seeds:
+    # Explicitly set at least five distinct seeds:
     python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
 
-NEX-SCP is implemented as prequential adaptive conformal inference: the
-miscoverage level is updated from each test engine's realised outcome in
-stored order, so later engines see a recalibrated alpha.
+The comparison includes split conformal, CQR, adaptive conformal, and
+EARA-Conformal.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import csv
 import hashlib
 import json
 import random
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -34,11 +34,17 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from src.uncertainty.coverage import evaluate_interval
+
 DATA = ROOT / "data" / "processed"
-OUT = ROOT / "results" / "conformal_benchmark"
+OUT = ROOT / "outputs" / "results" / "multiseed_conformal_benchmark"
 SUBSETS = ("FD001", "FD002", "FD003", "FD004")
 COVERAGES = (0.80, 0.90, 0.95)
-METHODS = ("split_conformal", "cqr", "adaptive", "nex_scp", "eara_conformal")
+METHODS = ("split_conformal", "cqr", "adaptive", "eara_conformal")
+EARA_METHODS = ("eara_conformal",)
+COMPARISON_BASELINES = ("split_conformal", "cqr", "adaptive")
 QUANTILE_LEVELS = (0.025, 0.05, 0.10, 0.20, 0.80, 0.90, 0.95, 0.975)
 # Shared scale floor. The same constant is applied whenever a predicted scale
 # is normalised into a calibration score and whenever it multiplies a quantile
@@ -165,61 +171,27 @@ def sample_calibration_indices(engine_ids: np.ndarray, seed: int) -> np.ndarray:
     ], dtype=np.int64)
 
 
-def prequential_aci_intervals(
-    scores: np.ndarray,
-    y_pred: np.ndarray,
-    scales: np.ndarray,
-    y_true: np.ndarray,
-    alpha: float,
-    gamma: float,
-) -> tuple[np.ndarray, np.ndarray, list[float]]:
-    """Prequential adaptive conformal inference (Gibbs & Candes, 2021).
-
-    The miscoverage level adapts online from realised coverage:
-
-        alpha_{t+1} = clip(alpha_t + gamma * (alpha - err_t), 0, 1)
-
-    ``err_t`` is 1 when the realised label falls outside the interval produced
-    for unit ``t``. Test units are consumed in stored order, so each engine's
-    outcome updates the level used for the next engine.
-    """
-    scores = np.sort(np.asarray(scores, dtype=np.float64).reshape(-1))
-    if scores.size == 0:
-        raise ValueError("Cannot calibrate with no calibration scores")
-    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
-    scales = np.asarray(scales, dtype=np.float64).reshape(-1)
-    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
-    if not (y_pred.shape == scales.shape == y_true.shape):
-        raise ValueError("Predictions, scales, and targets must align")
-
-    lower = np.empty_like(y_pred)
-    upper = np.empty_like(y_pred)
-    alpha_stream: list[float] = []
-    alpha_t = float(alpha)
-    for index in range(len(y_pred)):
-        quantile = finite_sample_quantile(scores, alpha_t)
-        radius = quantile * max(float(scales[index]), SCALE_FLOOR)
-        lo = float(np.clip(y_pred[index] - radius, 0.0, 125.0))
-        hi = float(np.clip(y_pred[index] + radius, 0.0, 125.0))
-        lower[index] = lo
-        upper[index] = hi
-        alpha_stream.append(alpha_t)
-        error = 0.0 if lo <= y_true[index] <= hi else 1.0
-        alpha_t = float(np.clip(alpha_t + gamma * (alpha - error), 0.0, 1.0))
-    return lower, upper, alpha_stream
-
-
-def interval_metrics(y: np.ndarray, lower: np.ndarray, upper: np.ndarray, coverage: float) -> dict[str, float]:
+def interval_metrics(
+    y: np.ndarray, lower: np.ndarray, upper: np.ndarray, coverage: float,
+    engine_ids: np.ndarray, regimes: np.ndarray, n_regimes: int,
+) -> dict[str, float]:
     alpha = 1.0 - coverage
     below = np.maximum(lower - y, 0.0)
     above = np.maximum(y - upper, 0.0)
     winkler = (upper - lower) + (2.0 / alpha) * (below + above)
-    empirical = float(np.mean((y >= lower) & (y <= upper)))
+    coverage_result = evaluate_interval(
+        y_true=y, lower=lower, upper=upper, nominal_coverage=coverage,
+        regimes=regimes, n_regimes=n_regimes, engine_ids=engine_ids,
+    )
+    empirical = float(coverage_result["empirical_coverage"])
     return {
         "nominal_coverage": coverage,
         "empirical_coverage": empirical,
         "coverage_gap": empirical - coverage,
-        "mean_interval_width": float(np.mean(upper - lower)),
+        "absolute_coverage_error": float(coverage_result["coverage_error"]),
+        "mean_interval_width": float(coverage_result["mean_interval_width"]),
+        "normalized_interval_width": float(coverage_result["pinaw"]),
+        "engine_level_coverage": float(coverage_result["engine_level_coverage"]),
         "winkler_score": float(np.mean(winkler)),
     }
 
@@ -241,7 +213,9 @@ def eara_scores(
     return by_regime, global_scores
 
 
-def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.device) -> tuple[list[dict], dict]:
+def run_seed(
+    subset: str, seed: int, args: argparse.Namespace, device: torch.device,
+) -> tuple[list[dict], list[dict], dict]:
     x_all, y_all, engine_all = load_arrays(subset, "train")
     x_test, y_test, test_engines = load_arrays(subset, "test")
     train_idx, cal_idx = grouped_split(engine_all, seed)
@@ -253,8 +227,7 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
     point_cal, quantiles_cal, scale_cal = predict(model, x_cal_sample, device, args.batch_size)
     point_test, quantiles_test, scale_test = predict(model, x_test, device, args.batch_size)
     _, split_scores = engine_max(np.abs(y_cal_sample - point_cal), cal_engines)
-    # Scale-normalised calibration scores shared by the global adaptive and the
-    # prequential ACI methods. Engine-level maxima match the other methods.
+    # Scale-normalised scores shared by adaptive and learned EARA methods.
     adaptive_raw = np.abs(y_cal_sample - point_cal) / np.maximum(scale_cal, SCALE_FLOOR)
     _, adaptive_scores = engine_max(adaptive_raw, cal_engines)
     regimes = None
@@ -269,6 +242,7 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
         )
 
     records = []
+    calibration_records = []
     train_engine_ids = np.sort(np.unique(engine_all[train_idx]))
     calibration_engine_ids = np.sort(np.unique(engine_all[cal_idx]))
     split_hash = hashlib.sha256(
@@ -281,10 +255,7 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
         "split_hash": split_hash,
         "train_engine_ids": train_engine_ids.tolist(),
         "calibration_engine_ids": calibration_engine_ids.tolist(),
-        "calibration_scoring": (
-            "One seeded random window per calibration engine for every method; "
-            "NEX-SCP then adapts its miscoverage level from test outcomes in stored order"
-        ),
+        "calibration_scoring": "One seeded random window per calibration engine",
     }
     for coverage in COVERAGES:
         alpha = 1.0 - coverage
@@ -302,17 +273,39 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
         eara_global = finite_sample_quantile(adaptive_raw, alpha)
         # Global scale-adaptive split conformal.
         adaptive_q = finite_sample_quantile(adaptive_scores, alpha)
-        # Prequential nex-SCP: adapt the miscoverage level from test outcomes.
-        nex_lower, nex_upper, _ = prequential_aci_intervals(
-            adaptive_scores, point_test, scale_test, y_test, alpha, args.aci_gamma,
-        )
+        for method, scores, q_hat in (
+            ("split_conformal", split_scores, radius),
+            ("cqr", cqr_scores, cqr_delta),
+            ("adaptive", adaptive_scores, adaptive_q),
+        ):
+            calibration_records.append({
+                "subset": subset, "seed": seed, "method": method,
+                "nominal_coverage": coverage, "regime_id": -1,
+                "calibration_score_count": int(len(scores)),
+                "calibration_score_mean": float(np.mean(scores)),
+                "calibration_score_std": float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0,
+                "calibrated_quantile": float(q_hat),
+                "used_global_fallback": False,
+            })
+        for regime_id in range(args.n_regimes):
+            scores = eara_cal_scores.get(regime_id, np.empty(0))
+            fallback = scores.size < 5
+            q_hat = eara_global if fallback else finite_sample_quantile(scores, alpha)
+            calibration_records.append({
+                "subset": subset, "seed": seed, "method": "eara_conformal",
+                "nominal_coverage": coverage, "regime_id": regime_id,
+                "calibration_score_count": int(len(scores)),
+                "calibration_score_mean": float(np.mean(scores)) if len(scores) else float("nan"),
+                "calibration_score_std": float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0,
+                "calibrated_quantile": float(q_hat),
+                "used_global_fallback": fallback,
+            })
         for i in range(len(y_test)):
             adaptive_radius = adaptive_q * max(float(scale_test[i]), SCALE_FLOOR)
             candidates: dict[str, tuple[float, float]] = {
                 "split_conformal": (point_test[i] - radius, point_test[i] + radius),
                 "cqr": (qlo_test[i] - cqr_delta, qhi_test[i] + cqr_delta),
                 "adaptive": (point_test[i] - adaptive_radius, point_test[i] + adaptive_radius),
-                "nex_scp": (nex_lower[i], nex_upper[i]),
             }
             regime = int(regimes[i]) if regimes is not None else -1
             regime_scores = eara_cal_scores.get(regime, np.empty(0)) if eara_cal_scores is not None else np.empty(0)
@@ -323,17 +316,17 @@ def run_seed(subset: str, seed: int, args: argparse.Namespace, device: torch.dev
                 point_test[i] - q_regime * scaled,
                 point_test[i] + q_regime * scaled,
             )
-
             for method, (lo, hi) in candidates.items():
                 lo, hi = float(np.clip(lo, 0.0, 125.0)), float(np.clip(hi, 0.0, 125.0))
                 row = {
                     "subset": subset, "seed": seed, "method": method,
                     "coverage_level": coverage, "engine_id": str(test_engines[i]),
                     "y_true": float(y_test[i]), "lower": float(lo), "upper": float(hi),
+                    "regime_id": regime, "n_regimes": args.n_regimes,
                     "split_hash": split_hash,
                 }
                 records.append(row)
-    return records, split_manifest
+    return records, calibration_records, split_manifest
 
 
 def summarize(rows: list[dict]) -> list[dict]:
@@ -345,13 +338,20 @@ def summarize(rows: list[dict]) -> list[dict]:
         y = np.asarray([r["y_true"] for r in group])
         lower = np.asarray([r["lower"] for r in group])
         upper = np.asarray([r["upper"] for r in group])
+        engines = np.asarray([r["engine_id"] for r in group])
+        regimes = np.asarray([r["regime_id"] for r in group], dtype=np.int32)
+        n_regimes = int(group[0]["n_regimes"])
         seed_metrics.append({"subset": subset, "seed": seed, "method": method,
-                             **interval_metrics(y, lower, upper, coverage)})
+                             **interval_metrics(y, lower, upper, coverage, engines, regimes, n_regimes)})
     return seed_metrics
 
 
 def aggregate(seed_metrics: list[dict]) -> list[dict]:
-    keys = ("empirical_coverage", "coverage_gap", "mean_interval_width", "winkler_score")
+    keys = (
+        "empirical_coverage", "coverage_gap", "absolute_coverage_error",
+        "mean_interval_width", "normalized_interval_width",
+        "engine_level_coverage", "winkler_score",
+    )
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for row in seed_metrics:
         grouped[(row["subset"], row["method"], row["nominal_coverage"])].append(row)
@@ -367,20 +367,79 @@ def aggregate(seed_metrics: list[dict]) -> list[dict]:
     return summary
 
 
-def exact_sign_flip_pvalue(differences: np.ndarray) -> float:
-    """Two-sided paired randomization p-value over seed-level differences."""
+def regime_coverage(rows: list[dict]) -> list[dict]:
+    grouped: dict[tuple, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[(row["subset"], row["seed"], row["method"], row["coverage_level"], row["regime_id"])].append(row)
+    result = []
+    for (subset, seed, method, coverage, regime), group in sorted(grouped.items()):
+        if regime < 0:
+            continue
+        result.append({
+            "subset": subset, "seed": seed, "method": method,
+            "nominal_coverage": coverage, "regime_id": regime,
+            "n_test_engines": len(group),
+            "empirical_coverage": float(np.mean([
+                r["lower"] <= r["y_true"] <= r["upper"] for r in group
+            ])),
+        })
+    return result
+
+
+def aggregate_calibration(rows: list[dict]) -> list[dict]:
+    grouped: dict[tuple, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[(row["subset"], row["method"], row["nominal_coverage"], row["regime_id"])].append(row)
+    result = []
+    for (subset, method, coverage, regime), group in sorted(grouped.items()):
+        item = {
+            "subset": subset, "method": method, "nominal_coverage": coverage,
+            "regime_id": regime, "n_seeds": len(group),
+            "fallback_seed_count": sum(bool(r["used_global_fallback"]) for r in group),
+        }
+        for key in ("calibration_score_count", "calibration_score_mean", "calibration_score_std", "calibrated_quantile"):
+            values = np.asarray([r[key] for r in group], dtype=float)
+            values = values[np.isfinite(values)]
+            item[f"{key}_mean"] = float(values.mean()) if len(values) else float("nan")
+            item[f"{key}_std"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        result.append(item)
+    return result
+
+
+SIGN_FLIP_RESAMPLES = 100_000
+_SIGN_FLIP_CACHE: dict[int, np.ndarray] = {}
+
+
+def sign_flip_pvalue(differences: np.ndarray) -> tuple[float, str]:
+    """Two-sided paired sign-flip p-value, exact for small n and sampled otherwise."""
     differences = np.asarray(differences, dtype=float)
     observed = abs(float(differences.mean()))
-    signs = np.asarray([
-        [1.0 if (mask >> bit) & 1 else -1.0 for bit in range(len(differences))]
-        for mask in range(1 << len(differences))
-    ])
-    null_means = np.abs((signs * differences).mean(axis=1))
-    return float(np.mean(null_means >= observed - 1e-12))
+    n = len(differences)
+    if n <= 16:
+        signs = np.asarray([
+            [1.0 if (mask >> bit) & 1 else -1.0 for bit in range(n)]
+            for mask in range(1 << n)
+        ])
+        null_means = np.abs((signs * differences).mean(axis=1))
+        return float(np.mean(null_means >= observed - 1e-12)), "exact"
+
+    if n not in _SIGN_FLIP_CACHE:
+        rng = np.random.default_rng(20261019 + n)
+        _SIGN_FLIP_CACHE[n] = (
+            2 * rng.integers(0, 2, size=(SIGN_FLIP_RESAMPLES, n), dtype=np.int8) - 1
+        )
+    null_means = np.abs(_SIGN_FLIP_CACHE[n] @ differences / n)
+    exceedances = np.count_nonzero(null_means >= observed - 1e-12)
+    return float((1 + exceedances) / (SIGN_FLIP_RESAMPLES + 1)), "monte_carlo"
 
 
 def paired_comparisons(seed_metrics: list[dict]) -> list[dict]:
     metrics = ("empirical_coverage", "mean_interval_width", "winkler_score")
+    comparison_pairs = [
+        (method, baseline)
+        for method in EARA_METHODS
+        for baseline in COMPARISON_BASELINES
+    ]
     lookup = {(r["subset"], r["seed"], r["method"], r["nominal_coverage"]): r
               for r in seed_metrics}
     comparisons = []
@@ -390,11 +449,9 @@ def paired_comparisons(seed_metrics: list[dict]) -> list[dict]:
                             if r["subset"] == subset and r["nominal_coverage"] == coverage})
             family = []
             for metric in metrics:
-                for baseline in METHODS:
-                    if baseline == "eara_conformal":
-                        continue
+                for method, baseline in comparison_pairs:
                     differences = np.asarray([
-                        lookup[(subset, seed, "eara_conformal", coverage)][metric]
+                        lookup[(subset, seed, method, coverage)][metric]
                         - lookup[(subset, seed, baseline, coverage)][metric]
                         for seed in seeds
                     ])
@@ -406,19 +463,21 @@ def paired_comparisons(seed_metrics: list[dict]) -> list[dict]:
                         ci_low, ci_high = mean_diff - critical * sem, mean_diff + critical * sem
                     else:
                         ci_low = ci_high = float("nan")
+                    p_value, p_value_method = sign_flip_pvalue(differences)
                     family.append({
                         "subset": subset, "nominal_coverage": coverage,
-                        "metric": metric, "comparison": f"eara_conformal - {baseline}",
+                        "metric": metric, "comparison": f"{method} - {baseline}",
                         "n_seeds": n, "mean_paired_difference": mean_diff,
                         "ci95_low": ci_low, "ci95_high": ci_high,
-                        "exact_sign_flip_p": exact_sign_flip_pvalue(differences),
+                        "sign_flip_p": p_value,
+                        "sign_flip_p_method": p_value_method,
                     })
             for metric in metrics:
                 indices = [i for i, row in enumerate(family) if row["metric"] == metric]
-                ordered = sorted(indices, key=lambda i: family[i]["exact_sign_flip_p"])
+                ordered = sorted(indices, key=lambda i: family[i]["sign_flip_p"])
                 running = 0.0
                 for rank, index in enumerate(ordered):
-                    adjusted = min(1.0, (len(ordered) - rank) * family[index]["exact_sign_flip_p"])
+                    adjusted = min(1.0, (len(ordered) - rank) * family[index]["sign_flip_p"])
                     running = max(running, adjusted)
                     family[index]["holm_adjusted_p"] = running
             comparisons.extend(family)
@@ -464,11 +523,13 @@ def plot_summary(summary: list[dict]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--subsets", nargs="+", default=["all"], help="FD001..FD004 or all")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 43, 44, 45, 46])
+    parser.add_argument(
+        "--seeds", nargs="+", type=int, default=list(range(42, 47)),
+        help="Distinct random seeds; defaults to five seeds (42 through 46).",
+    )
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--n-regimes", type=int, default=7)
-    parser.add_argument("--aci-gamma", type=float, default=0.02)
     return parser.parse_args()
 
 
@@ -479,34 +540,48 @@ def main() -> None:
         raise SystemExit(f"Unknown subset(s): {set(subsets) - set(SUBSETS)}")
     if len(set(args.seeds)) < 5:
         raise SystemExit("At least five distinct seeds are required")
-    if not 0.0 < args.aci_gamma <= 1.0:
-        raise SystemExit("--aci-gamma must be in (0, 1]")
     if args.n_regimes < 2:
         raise SystemExit("--n-regimes must be at least 2 for EARA-Conformal")
     OUT.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     all_rows: list[dict] = []
+    calibration_rows: list[dict] = []
     split_manifests = []
     for subset in subsets:
         for seed in args.seeds:
             print(f"Running {subset}, seed={seed} on {device}", flush=True)
-            rows, manifest = run_seed(subset, seed, args, device)
+            rows, calibration, manifest = run_seed(subset, seed, args, device)
             all_rows.extend(rows)
+            calibration_rows.extend(calibration)
             split_manifests.append(manifest)
     seed_metrics = summarize(all_rows)
     summary = aggregate(seed_metrics)
+    regime_metrics = regime_coverage(all_rows)
+    calibration_summary = aggregate_calibration(calibration_rows)
     comparisons = paired_comparisons(seed_metrics)
     write_csv(OUT / "per_engine_intervals.csv", all_rows)
     write_csv(OUT / "per_seed_metrics.csv", seed_metrics)
     write_csv(OUT / "summary_mean_std.csv", summary)
+    write_csv(OUT / "calibration_per_seed.csv", calibration_rows)
+    write_csv(OUT / "calibration_summary_mean_std.csv", calibration_summary)
+    write_csv(OUT / "regime_coverage_per_seed.csv", regime_metrics)
     write_csv(OUT / "paired_comparisons.csv", comparisons)
     (OUT / "split_manifest.json").write_text(json.dumps(split_manifests, indent=2), encoding="utf-8")
     (OUT / "run_config.json").write_text(json.dumps({
         "subsets": list(subsets), "seeds": args.seeds, "epochs": args.epochs,
         "batch_size": args.batch_size, "n_regimes": args.n_regimes,
-        "aci_gamma": args.aci_gamma, "coverage_levels": list(COVERAGES),
+        "coverage_levels": list(COVERAGES),
+        "coverage_metrics": [
+            "empirical_coverage", "signed_coverage_gap", "absolute_coverage_error",
+            "mean_interval_width", "normalized_interval_width", "winkler_score",
+            "engine_level_coverage", "per_regime_coverage",
+        ],
+        "calibration_diagnostics": [
+            "calibration_score_count", "calibration_score_mean",
+            "calibration_score_std", "calibrated_quantile", "global_fallback_count",
+        ],
+        "sign_flip_resamples": SIGN_FLIP_RESAMPLES,
         "methods": list(METHODS), "device": str(device),
-        "nex_scp_protocol": "Prequential adaptive miscoverage; each test engine outcome updates alpha for the next engine.",
         "calibration_unit": "One seeded random window per calibration engine as a censored-endpoint proxy; test unit is one final window per engine.",
     }, indent=2), encoding="utf-8")
     plot_summary(summary)
