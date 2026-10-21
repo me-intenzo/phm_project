@@ -1,11 +1,24 @@
+# PHM-XAI runtime dependencies
+#
+# NOTE ON PYTORCH
+# ---------------
+# PyTorch is deliberately NOT pinned here.
+#
+#   CPU-only:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.1:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   CUDA 12.4:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   Other: https://pytorch.org/get-started/locally/
+#
+# `pyproject.toml` carries the same guidance for `pip install -e .`.
+# -----------------------------------------------------------------------------
+
 numpy<2.5
 pandas
 matplotlib
 scikit-learn
-
---extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.11.0+cu128
-torchvision==0.26.0+cu128
 
 scipy
 

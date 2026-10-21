@@ -22,6 +22,8 @@ End-to-end prognostics pipeline for **remaining useful life (RUL)** and **health
 - [Evaluation Metrics](#evaluation-metrics)
 - [Implementation Status](#implementation-status)
 - [Tests](#tests)
+- [Citation](#citation)
+- [License](#license)
 
 ---
 
@@ -63,6 +65,12 @@ Two invariants hold at every stage:
 ARCHITECTURE.md  internal design, data contracts, known gaps
 README.md        this file
 BENCHMARKING_NOTES.md  protocol and numbers for the conformal benchmark
+RESULTS.md       published results + comparison to C-MAPSS SOTA baselines
+CHANGELOG.md     notable changes per release
+LICENSE          Apache-2.0
+CITATION.cff     machine-readable citation metadata
+pyproject.toml   package metadata + pytest/ruff config
+.github/workflows/ci.yml  CI: pytest on Linux/Windows, Python 3.9/3.12
 configs/         subset configuration files (fd001–fd004.yaml) — see note below
 data/
   external/      example decision input JSON files
@@ -105,10 +113,31 @@ Python 3.9+ required.
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install --upgrade pip
+
+# 1. Install the PyTorch build that matches your hardware (required first —
+#    it is intentionally not pinned in requirements.txt):
+#      CPU-only:
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+#      CUDA 12.4:
+# pip install torch --index-url https://download.pytorch.org/whl/cu124
+#    (Other CUDA/OS combinations: https://pytorch.org/get-started/locally/)
+
+# 2. Then the rest of the dependencies:
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins a CUDA 12.8 PyTorch build. For CPU-only or a different CUDA version, install a compatible PyTorch build first, then run `pip install -r requirements.txt`.
+PyTorch is **not** pinned. The previous pin (`torch==2.11.0+cu128`) was a
+CUDA-12.8-only build, which made the project unrunnable on CPU or any other GPU
+— replace it with the wheel for your platform as shown above. `pyproject.toml`
+carries the same guidance; `pip install -e .` installs everything except
+PyTorch.
+
+### Quick check
+
+```powershell
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -m pytest -q
+```
 
 ### Dataset
 
@@ -321,6 +350,8 @@ ERI is the Explainability Reliability Index — cross-method agreement between I
 
 The multi-seed conformal benchmark (five methods, FD001–FD004, seeds 42–46) is the reference comparison; see [BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md) and `results/conformal_benchmark/`.
 
+**[RESULTS.md](RESULTS.md)** places these numbers next to published C-MAPSS SOTA baselines and gives the full coverage/width tables with reproduction commands.
+
 ---
 
 ## Evaluation Metrics
@@ -376,6 +407,11 @@ Additional gaps that affect how results should be read:
 python -m pytest -q
 ```
 
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs this suite on Linux
+and Windows across Python 3.9 and 3.12 on every push and pull request, using a
+CPU-only PyTorch build. The integration test in `test_preprocessing.py` skips
+automatically when `data/raw/` is absent, so CI is green without the dataset.
+
 The decision and uncertainty suites are the meaningful regression net: they cover the full O4 rule/constraint policy and the O5 HITL workflow, and run without the dataset.
 
 | File | Scope | Needs data |
@@ -411,6 +447,23 @@ If you use PHM-XAI in your research, please cite:
   year   = {2026}
 }
 ```
+
+The same metadata is available in machine-readable form in
+[CITATION.cff](CITATION.cff), which GitHub and reference managers can import
+directly.
+
+---
+
+## License
+
+PHM-XAI is released under the **Apache License 2.0** — see
+[LICENSE](LICENSE). You may use, modify, and redistribute it, including for
+commercial purposes, provided you retain the copyright notice; the license also
+includes an explicit patent grant.
+
+Third-party components keep their own licenses: PyTorch (BSD-3), NumPy (BSD-3),
+pandas (BSD-3), scikit-learn (BSD-3), SciPy (BSD-3), Matplotlib (PSF-based),
+SHAP (MIT), Captum (BSD-3), seaborn (BSD-3), and joblib (BSD-3).
 
 ---
 

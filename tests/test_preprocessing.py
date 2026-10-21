@@ -35,6 +35,8 @@ RECOMMENDATION — patience=20
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -194,10 +196,19 @@ def test_early_stopping_resets_on_improvement(patience: int):
 
 # ------------------------------------------------------------------ #
 # Integration test — real dataset (requires data/raw/)
+#
+# Marked `requires_data` and skipped automatically when the C-MAPSS files are
+# absent, so `pytest` stays green in CI without the (uncommitted) dataset.
 # ------------------------------------------------------------------ #
 
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
+
+
+@pytest.mark.requires_data
 @pytest.mark.parametrize("subset", ["FD001", "FD002", "FD003", "FD004"])
 def test_test_windows_keep_all_engines(subset: str):
+    if not (_DATA_DIR / f"test_{subset}.txt").is_file():
+        pytest.skip(f"data/raw/test_{subset}.txt not found; dataset required")
     """Short test engines must not be dropped when forming final windows."""
     _, test_df, rul_df = CMAPSSLoader().load_dataset(subset)
 

@@ -55,8 +55,13 @@ source .venv/bin/activate
 
 ```bash
 pip install --upgrade pip
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a matching CUDA wheel
 pip install -r requirements.txt
 ```
+
+PyTorch is intentionally not pinned in `requirements.txt`; install the wheel
+that matches your hardware (CPU, or a specific CUDA version) first. See
+[README.md -> Setup](README.md#setup) for the full matrix.
 
 ### Verify Installation
 

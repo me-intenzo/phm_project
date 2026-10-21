@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phm-xai"
+version = "0.1.0"
+description = "Engine-aware trustworthy prognostics: RUL/HI estimation on NASA C-MAPSS with calibrated uncertainty, explanations, and constraint-aware maintenance decisions."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Nagesh Tiwari" },
+  { name = "Suraj Vishwakarma" },
+  { name = "Shani Vishwakarma" },
+  { name = "Vishwa Save" },
+]
+keywords = [
+  "prognostics",
+  "remaining-useful-life",
+  "predictive-maintenance",
+  "explainable-ai",
+  "conformal-prediction",
+  "c-mapss",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy>=1.23,<2.5",
+  "pandas",
+  "matplotlib",
+  "scikit-learn",
+  "scipy",
+  "pyyaml",
+  "tqdm",
+  "shap",
+  "captum",
+  "joblib",
+  "seaborn",
+  # PyTorch is intentionally NOT pinned here. A hard pin to a specific CUDA
+  # build makes the project unrunnable on CPU or a different GPU. Install the
+  # build that matches your hardware first, then `pip install -e .`:
+  #   CPU:    pip install torch --index-url https://download.pytorch.org/whl/cpu
+  #   CUDA:   pip install torch                 (or a matching cuXXX wheel)
+  # See README.md -> Setup for the supported matrix.
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "ruff",
+]
+
+[project.urls]
+Homepage = "https://github.com/me-intenzo/phm_project"
+Repository = "https://github.com/me-intenzo/phm_project"
+
+[tool.setuptools]
+# Source lives under src/ but is imported as top-level packages (src.models,
+# src.uncertainty, ...). Package discovery is therefore driven by the src
+# directory itself; see the note in README.md -> Repository Layout.
+packages = [
+  "src",
+  "src.preprocessing",
+  "src.models",
+  "src.uncertainty",
+  "src.explainability",
+  "src.decision_engine",
+  "src.hitl",
+  "src.evaluation",
+  "src.utils",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# test_preprocessing requires data/raw/ and is skipped automatically when the
+# dataset is absent, so the default run stays green without the dataset.
+markers = [
+  "requires_data: test needs NASA C-MAPSS files under data/raw/",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

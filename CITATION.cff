@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use PHM-XAI in your research, please cite it using the metadata below."
+title: "PHM-XAI: Engine-Aware Trustworthy Prognostics"
+abstract: >-
+  An end-to-end prognostics pipeline for remaining useful life (RUL) and health
+  index (HI) estimation on the NASA C-MAPSS turbofan dataset. Point predictions
+  are extended with engine-disjoint calibrated conformal uncertainty intervals
+  (including EARA-Conformal), post-hoc explanations (Integrated Gradients, SHAP,
+  temporal relevance, ERI), and constraint-aware maintenance recommendations.
+type: software
+version: "0.1.0"
+date-released: "2026-01-01"
+license: Apache-2.0
+repository-code: "https://github.com/me-intenzo/phm_project"
+keywords:
+  - prognostics
+  - remaining useful life
+  - RUL
+  - predictive maintenance
+  - explainable AI
+  - conformal prediction
+  - uncertainty quantification
+  - C-MAPSS
+  - turbofan
+authors:
+  - family-names: Tiwari
+    given-names: Nagesh
+  - family-names: Vishwakarma
+    given-names: Suraj
+  - family-names: Vishwakarma
+    given-names: Shani
+  - family-names: Save
+    given-names: Vishwa

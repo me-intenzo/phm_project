@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # CPU-only runners: we install the CPU PyTorch wheel explicitly so the
+        # suite runs identically on a laptop with no GPU and on GitHub Actions.
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install dev tooling
+        run: python -m pip install pytest pytest-cov ruff
+
+      - name: Lint (ruff)
+        run: ruff check src scripts tests
+        continue-on-error: true
+
+      - name: Run test suite
+        # test_preprocessing's integration cases skip automatically when
+        # data/raw/ is absent (the dataset is not committed), so the suite is
+        # expected to pass with no dataset present.
+        run: python -m pytest -q --cov=src --cov-report=term-missing
