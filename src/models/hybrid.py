@@ -114,6 +114,7 @@ class CNNGRUTransformerPrognostics(nn.Module):
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_transformer_layers,
+            enable_nested_tensor=False,
         )
 
         # Attention weight for fusion: 1 scalar per branch

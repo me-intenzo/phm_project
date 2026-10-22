@@ -9,11 +9,23 @@ author: me-intenzo
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
-import shap
 import torch
 
 from src.models.outputs import select_task_output
+
+# SHAP currently emits PendingDeprecationWarning while configuring its
+# colormap at import time. Keep this narrowly scoped to that third-party
+# module; warnings from the project remain visible.
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        category=PendingDeprecationWarning,
+        module=r"shap\.plots\.colors\._colors",
+    )
+    import shap
 
 
 def _select_output(

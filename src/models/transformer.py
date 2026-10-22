@@ -103,6 +103,7 @@ class TransformerPrognosticsModel(nn.Module):
             nn.TransformerEncoder(
                 encoder_layer,
                 num_layers=num_layers,
+                enable_nested_tensor=False
             )
         )
 
