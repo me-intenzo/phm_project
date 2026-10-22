@@ -1,7 +1,7 @@
 """
 uncertainty_heads.py
 
-Auxiliary heads for uncertainty estimation and 
+Auxiliary heads for uncertainty estimation and
 adaptive scaling.
 """
 
@@ -13,10 +13,10 @@ import torch.nn as nn
 
 class ScaleHead(nn.Module):
     """
-    Adaptive scale head for regime-conditional 
+    Adaptive scale head for regime-conditional
     conformal prediction.
 
-    Learns a positive scaling factor s(x) from 
+    Learns a positive scaling factor s(x) from
     latent features.
     """
 
@@ -34,7 +34,7 @@ class ScaleHead(nn.Module):
         )
 
     def forward(
-        self, 
+        self,
         features: torch.Tensor
     ) -> torch.Tensor:
         """
@@ -52,7 +52,17 @@ class ScaleHead(nn.Module):
 
 
 class QuantileHead(nn.Module):
-    """Predict non-crossing lower and upper response quantiles."""
+    """Predict non-crossing lower and upper response quantiles.
+
+    The head is trained on frozen features of a model that already predicts
+    the response well, so it can be anchored to that point prediction: the
+    centre becomes ``base_pred + delta(features)`` and the linear ``delta``
+    only has to learn a correction.  Without the anchor the head has to
+    re-learn the whole response from the frozen features with a single linear
+    layer, which underfits and collapses to (very wide) marginal quantiles.
+
+    ``base_pred`` is optional so the head can still be used standalone.
+    """
 
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
@@ -65,7 +75,10 @@ class QuantileHead(nn.Module):
     def forward(
         self,
         features: torch.Tensor,
+        base_pred: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         center = self.center(features).squeeze(-1)
+        if base_pred is not None:
+            center = center + base_pred.reshape(-1)
         half_width = self.half_width(features).squeeze(-1)
         return center - half_width, center + half_width

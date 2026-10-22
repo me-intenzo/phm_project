@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def _to_numpy(v) -> np.ndarray:

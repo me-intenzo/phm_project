@@ -57,7 +57,7 @@ from src.hitl.workflow import (
     summarize_review_queue,
 )
 from src.utils.logger import get_script_logger
-
+from src.utils.paths import run_dir_name
 
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 
@@ -76,6 +76,7 @@ ALL_MODELS = [
     "transformer",
     "hybrid",
     "gru_att_deg",
+    "gru_att_deg_v2",
 ]
 
 CONTROLLED_BASELINE_MODEL = "gru"
@@ -104,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         "--model",
         default="gru",
         help="Model name or all.",
+    )
+
+    parser.add_argument(
+        "--tag",
+        default="",
+        help=(
+            "Checkpoint tag (e.g. 'ms42'). Reviews the decision output of "
+            "that specific multi-seed run."
+        ),
     )
 
     parser.add_argument(
@@ -185,11 +195,12 @@ def _validate_choice(
 def _decision_input_path(
     subset: str,
     model: str,
+    tag: str = "",
 ) -> Path:
 
     candidates = [
         RESULTS_DIR
-        / f"decision_{subset}_{model}.json",
+        / f"decision_{subset}_{run_dir_name(model, tag)}.json",
 
         RESULTS_DIR
         / f"decision_{subset}.json",
@@ -850,19 +861,30 @@ def run(
         )
     ).lower()
 
+    # The tag travels with the decision output, so the HITL artifacts of
+    # different seeds of the same model never overwrite each other.
+    tag = str(
+        decision_output.get(
+            "tag",
+            "",
+        )
+    )
+
+    stem = f"{subset}_{run_dir_name(model, tag)}"
+
     output_path = (
         RESULTS_DIR
-        / f"hitl_{subset}_{model}.json"
+        / f"hitl_{stem}.json"
     )
 
     report_path = (
         REPORTS_DIR
-        / f"hitl_{subset}_{model}.html"
+        / f"hitl_{stem}.html"
     )
 
     logger = get_script_logger(
         "hitl",
-        f"hitl_{subset}_{model}",
+        f"hitl_{stem}",
     )
 
     # ---------------------------------------------------------------
@@ -1144,6 +1166,7 @@ def main() -> None:
                     _decision_input_path(
                         subset,
                         model,
+                        args.tag,
                     ),
                     reviewer=args.reviewer,
                     review_id=args.review_id,

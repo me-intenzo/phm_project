@@ -1,16 +1,55 @@
+# PHM-XAI experiment configuration — FD001
+#
+# Every key is optional: src/utils/config.py merges this file over
+# DEFAULT_CONFIG, so only the subset-specific deviations need to be listed.
+# See docs/RMSE_TARGET_PLAN.md for the rationale behind each group.
+
 dataset: FD001
 
+# ------------------------------------------------------------------ data
 window_size: 40
+max_rul: 125              # must match the value used by preprocess.py
 
+# ------------------------------------------------------------------ model
+model: gru_att_deg_v2
+hidden_size: 128
+num_layers: 2
+dropout: 0.30
+num_heads: 4
+use_layer_norm: true
+
+# ------------------------------------------------------------------ optimisation
 batch_size: 256
+epochs: 150
+learning_rate: 0.0003
+optimizer: AdamW
+weight_decay: 0.0001
+scheduler: cosine
+warmup_epochs: 5
+min_lr: 0.000001
+patience: 30
+grad_clip: 1.0
+ema_decay: 0.995
 
-epochs: 300
+# ------------------------------------------------------------------ loss
+rul_loss_type: mse        # matched to the RMSE objective
+rul_loss_weight: 1.0
+hi_loss_weight: 0.4
+scale_loss_weight: 0.1
 
-learning_rate: 0.001
+# ------------------------------------------------------------------ augmentation
+# FD001 has only 100 training engines.  Ablation: full augmentation raised
+# RUL RMSE from 11.96 to 12.56, so augmentation is disabled for this subset.
+# The magnitudes stay documented for reference and for the ablation tag.
+augment: false
+aug_noise_std: 0.02
+aug_bias_std: 0.05
+aug_gain_std: 0.02
+aug_sensor_dropout: 0.05
+aug_time_mask_prob: 0.15
+aug_time_mask_len: 8
+aug_history_crop: 8
 
-optimizer: Adam
-
+# ------------------------------------------------------------------ runtime
 random_seed: 42
-
-#device: cpu //use only if u wanna run on cpu or lack gpu, otherwise use cuda
 device: cuda

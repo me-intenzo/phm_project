@@ -49,7 +49,6 @@ import sys
 import time
 from pathlib import Path
 
-
 import numpy as np
 import torch
 
@@ -57,33 +56,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.logger import get_script_logger
-from src.models.gru import GRUPrognosticsModel
-from src.models.gru_att_deg import GruAttDeg
-from src.models.lstm import LSTMPrognosticsModel
-from src.models.transformer import TransformerPrognosticsModel
-from src.models.hybrid import HybridPrognosticsModel
+from src.explainability.degradation_viz import (
+    plot_engine_degradation,
+    plot_eri_radar,
+    plot_multi_model_degradation,
+)
+from src.explainability.eri import compute_eri
+from src.explainability.integrated_gradients import (
+    explain_attention,
+    explain_with_integrated_gradients,
+)
+from src.explainability.shap_explainer import explain_with_shap
+from src.explainability.visualization import (
+    plot_ig_heatmap,
+    plot_sensor_importance,
+    plot_temporal_importance,
+)
 from src.models.checkpoint import load_state_dict_compat
+from src.models.registry import ALL_MODELS as MODEL_REGISTRY
+from src.models.registry import build_model
 from src.preprocessing.feature_selection import FeatureSelector
 from src.preprocessing.labeling import LabelGenerator
 from src.preprocessing.loader import CMAPSSLoader
 from src.preprocessing.scaling import FeatureScaler
 from src.preprocessing.windowing import WindowGenerator
-
-from src.explainability.integrated_gradients import explain_with_integrated_gradients
-from src.explainability.shap_explainer import explain_with_shap
-from src.explainability.attention import explain_attention
-from src.explainability.eri import compute_eri
-from src.explainability.visualization import (
-    plot_sensor_importance,
-    plot_temporal_importance,
-    plot_ig_heatmap,
-)
-from src.explainability.degradation_viz import (
-    plot_engine_degradation,
-    plot_multi_model_degradation,
-    plot_eri_radar,
-)
+from src.utils.logger import get_script_logger
 
 # ─────────────────────────────────────────────────────────────────────
 # Constants
@@ -93,42 +90,14 @@ DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 XAI_DIR        = PROJECT_ROOT / "outputs" / "xai"
 
+from src.utils.paths import run_dir_name
+
 SEED            = 42
 DEFAULT_SAMPLES = 32
 IG_STEPS        = 50
 
 ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 ALL_TARGETS = ["rul", "hi"]
-
-# Model registry: name → (class, constructor kwargs)
-MODEL_REGISTRY: dict[str, tuple] = {
-    "gru": (
-        GRUPrognosticsModel,
-        {"hidden_size": 128, "num_layers": 2, "dropout": 0.3},
-    ),
-    "gru_att_deg": (
-        GruAttDeg,
-        {"hidden_size": 128, "num_layers": 2, "dropout": 0.3},
-    ),
-    "lstm": (
-        LSTMPrognosticsModel,
-        {"hidden_size": 128, "num_layers": 2, "dropout": 0.3},
-    ),
-    "transformer": (
-        TransformerPrognosticsModel,
-        {"hidden_size": 128, "num_layers": 2, "num_heads": 4, "dropout": 0.3},
-    ),
-    "hybrid": (
-        HybridPrognosticsModel,
-        {
-            "hidden_size": 128,
-            "num_gru_layers": 2,
-            "num_transformer_layers": 2,
-            "num_heads": 4,
-            "dropout": 0.3,
-        },
-    ),
-}
 
 SENSOR_NAMES_14 = [
     "T2", "T24", "T30", "T50",
@@ -175,6 +144,15 @@ def parse_args() -> argparse.Namespace:
         default=256,
         help="SHAP kernel samples (lower = faster, less accurate).",
     )
+    parser.add_argument(
+        "--tag",
+        default="",
+        help=(
+            "Checkpoint tag (e.g. 'ms42'). Explains a specific multi-seed "
+            "run so the XAI output belongs to the same weights as the "
+            "point predictions and the uncertainty intervals."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -198,8 +176,33 @@ def load_data(subset: str):
     return X, y_rul, y_hi, ids
 
 
+def load_metadata(subset: str) -> dict:
+    """Load the preprocessing metadata for *subset*.
+
+    The metadata records what preprocessing actually did (``window_size``,
+    ``max_rul``, feature count).  Reading it back is the only reliable way
+    to stay consistent with the processed arrays — hard-coding those values
+    silently mis-windows the data whenever the YAML config changes.
+    """
+
+    meta_path = DATA_DIR / f"{subset}_test_metadata.json"
+
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"Metadata not found: {meta_path}\n"
+            f"Run: python scripts/preprocess.py --subset {subset}"
+        )
+
+    with open(meta_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load_visualization_data(subset: str):
     """Build sliding test windows so engine plots contain full trajectories."""
+    metadata = load_metadata(subset)
+    window_size = int(metadata.get("window_size", 40))
+    max_rul = int(metadata.get("max_rul", 125))
+
     loader = CMAPSSLoader()
     train_df, test_df, rul_df = loader.load_dataset(subset)
     max_cycles = test_df.groupby("unit_number")["time_in_cycles"].transform("max")
@@ -207,35 +210,56 @@ def load_visualization_data(subset: str):
         max_cycles
         - test_df["time_in_cycles"]
         + rul_df["RUL"].reindex(test_df["unit_number"] - 1).values
-    ).clip(upper=125)
+    ).clip(upper=max_rul)
     test_df["HI"] = test_df.groupby("unit_number")["RUL"].transform(
         lambda values: values / values.max()
     ).fillna(0)
 
     selector = FeatureSelector(method="variance", threshold=1e-4)
-    train_df = selector.fit_transform(train_df.assign(**LabelGenerator(125).generate_labels(train_df)[["RUL", "HI"]]))
+    train_df = selector.fit_transform(train_df.assign(**LabelGenerator(max_rul).generate_labels(train_df)[["RUL", "HI"]]))
     test_df = selector.transform(test_df)
     scaler = FeatureScaler()
     train_df = scaler.fit_transform(train_df)
     test_df = scaler.transform(test_df)
-    return WindowGenerator(window_size=40, stride=1).create_windows(test_df)
+    return WindowGenerator(window_size=window_size, stride=1).create_windows(test_df)
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Model loading
 # ─────────────────────────────────────────────────────────────────────
 
-def load_model(model_name: str, input_size: int, subset: str, device: torch.device):
-    ckpt_path = CHECKPOINT_DIR / model_name / subset / "best_model.pt"
+def load_model(
+    model_name: str,
+    input_size: int,
+    subset: str,
+    device: torch.device,
+    tag: str = "",
+):
+    ckpt_path = CHECKPOINT_DIR / run_dir_name(model_name, tag) / subset / "best_model.pt"
     if not ckpt_path.exists():
         raise FileNotFoundError(
             f"Checkpoint not found: {ckpt_path}\n"
-            f"Train {model_name} on {subset} first."
+            f"Train {model_name} on {subset} first"
+            + (f" (tag '{tag}')" if tag else "")
+            + "."
         )
-    cls, kwargs = MODEL_REGISTRY[model_name]
-    model = cls(input_size=input_size, **kwargs)
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # Rebuild the architecture from the config the checkpoint was trained with.
+    # Hard-coding the hyper-parameters here would silently produce a
+    # mismatched state dict for any subset whose YAML config overrides them
+    # (FD002/FD004 train with hidden_size=160, not 128).
+    ckpt_input_size = ckpt.get("input_size", input_size)
+    saved_config = dict(ckpt.get("model_config") or {})
+    arch = saved_config.pop("arch", model_name)
+
+    if saved_config:
+        model = build_model(arch, input_size=ckpt_input_size, **saved_config)
+    else:
+        # Legacy checkpoint: no architecture metadata was stored.
+        model = build_model(arch, input_size=ckpt_input_size)
+
     load_state_dict_compat(model, ckpt["model_state_dict"])
     model.to(device).eval()
     return model, ckpt
@@ -404,6 +428,7 @@ def run_model_xai(
     ig_steps: int,
     shap_nsamples: int,
     log: logging.Logger,
+    tag: str = "",
 ) -> dict:
     """Run full XAI pipeline for one model and return results dict."""
     input_size = X_explain.shape[-1]
@@ -412,11 +437,13 @@ def run_model_xai(
         else [f"S{i+1}" for i in range(input_size)]
     )
 
-    model_out_dir = XAI_DIR / subset / model_name
+    # The output directory carries the tag, so the XAI artifacts of
+    # different seeds of the same model never overwrite each other.
+    model_out_dir = XAI_DIR / subset / run_dir_name(model_name, tag)
     model_out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Loading model checkpoint...")
-    model, ckpt = load_model(model_name, input_size, subset, device)
+    model, ckpt = load_model(model_name, input_size, subset, device, tag=tag)
     log.info("Loaded epoch %d", ckpt.get("epoch", "?"))
 
     x_tensor = torch.from_numpy(X_explain).float().to(device)
@@ -547,8 +574,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    tag = args.tag
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
-    models  = list(MODEL_REGISTRY.keys()) if args.model == "all" else [args.model]
+    models  = list(MODEL_REGISTRY) if args.model == "all" else [args.model]
     targets = ALL_TARGETS if args.target == "all" else [args.target]
 
     for subset in subsets:
@@ -593,6 +621,7 @@ def main():
                         ig_steps=args.ig_steps,
                         shap_nsamples=args.shap_nsamples,
                         log=log,
+                        tag=tag,
                     )
                     model_results[model_name] = result
                     if result["hi_pred"] is not None:

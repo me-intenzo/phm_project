@@ -41,13 +41,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.decision_engine.recommender import recommend_action
+from src.models.registry import ALL_MODELS as REGISTERED_MODELS
 from src.utils.logger import get_script_logger
+from src.utils.paths import run_dir_name
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
 REPORTS_DIR  = PROJECT_ROOT / "outputs" / "reports"
 ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
-ALL_MODELS   = ("hybrid", "lstm", "gru", "transformer")
+ALL_MODELS   = tuple(REGISTERED_MODELS)
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
 XAI_DIR      = PROJECT_ROOT / "outputs" / "xai"
 DEFAULT_MODEL  = "gru"
@@ -272,20 +274,29 @@ def load_upstream_records(
     subset: str,
     model_name: str = DEFAULT_MODEL,
     uncertainty_variant: str = "eara_conformal",
+    tag: str = "",
 ) -> list[dict[str, Any]]:
-    """Build decision records from uncertainty and explainability outputs."""
+    """Build decision records from uncertainty and explainability outputs.
+
+    ``tag`` selects a specific run of the model (e.g. ``ms42``).  When it is
+    given, the predictions, the calibrated intervals and the XAI report are
+    all read from that run, so a maintenance decision is never made from a
+    mixture of two different sets of weights.
+    """
     subset = subset.upper()
     model_name = model_name.lower()
     if model_name not in ALL_MODELS:
         raise ValueError(f"Unsupported decision model: {model_name}")
 
-    prediction_path = RESULTS_DIR / f"{subset}_{model_name}_predictions.npz"
+    run_name = run_dir_name(model_name, tag)
+
+    prediction_path = RESULTS_DIR / f"{subset}_{run_name}_predictions.npz"
     if uncertainty_variant not in UNCERTAINTY_VARIANTS:
         raise ValueError(f"Unsupported uncertainty variant: {uncertainty_variant}")
-    structured_path = RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{model_name}.npz"
-    legacy_path = RESULTS_DIR / f"{subset}_{model_name}_{uncertainty_variant}.npz"
+    structured_path = RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{run_name}.npz"
+    legacy_path = RESULTS_DIR / f"{subset}_{run_name}_{uncertainty_variant}.npz"
     uncertainty_path = structured_path if structured_path.exists() else legacy_path
-    eri_path = XAI_DIR / subset / model_name / "eri_rul.json"
+    eri_path = XAI_DIR / subset / run_name / "eri_rul.json"
 
     missing = [
         path for path in (prediction_path, uncertainty_path, eri_path)
@@ -296,7 +307,9 @@ def load_upstream_records(
         raise FileNotFoundError(
             f"Missing upstream decision artifact(s) for {subset}: {missing_text}. "
             f"Run uncertainty.py and explain.py with --subset {subset} "
-            f"--model {model_name}."
+            f"--model {model_name}"
+            + (f" --tag {tag}" if tag else "")
+            + "."
         )
 
     with np.load(prediction_path) as predictions, np.load(uncertainty_path) as uncertainty:
@@ -515,6 +528,16 @@ def parse_args() -> argparse.Namespace:
         default="eara_conformal",
         help="Calibrated uncertainty artifact to use.",
     )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        help=(
+            "Checkpoint tag (e.g. 'ms42'). Decides using the predictions, "
+            "intervals and XAI report of that specific run, so all upstream "
+            "evidence comes from the same set of weights."
+        ),
+    )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
     parser.add_argument("--maintenance-window",    action="store_true", default=False)
@@ -571,7 +594,7 @@ def run_subset(
     args: argparse.Namespace,
     constraints: dict[str, Any],
 ) -> None:
-    stem = f"{subset}_{model_name}"
+    stem = f"{subset}_{run_dir_name(model_name, args.tag)}"
     log = get_script_logger("decision", f"decision_{stem}")
     result_path = RESULTS_DIR / f"decision_{stem}.json"
     report_path = REPORTS_DIR / f"decision_{stem}.html"
@@ -581,14 +604,22 @@ def run_subset(
     log.info("=" * 60)
     log.info("Subset : %s", subset)
     log.info("Model  : %s", model_name)
+    if args.tag:
+        log.info("Tag    : %s", args.tag)
     log.info(
         "Input  : outputs/results/%s_%s_* + outputs/xai/%s/%s",
-        subset, model_name, subset, model_name,
+        subset, run_dir_name(model_name, args.tag), subset,
+        run_dir_name(model_name, args.tag),
     )
     log.info("Result : %s", result_path)
     log.info("Report : %s", report_path)
 
-    records = load_upstream_records(subset, model_name, args.uncertainty_variant)
+    records = load_upstream_records(
+        subset,
+        model_name,
+        args.uncertainty_variant,
+        tag=args.tag,
+    )
     log.info(
         "Loaded %d decision record(s) from %s uncertainty and %s XAI outputs.",
         len(records), model_name, model_name,
@@ -618,6 +649,7 @@ def run_subset(
         ),
         "subset": subset,
         "model": model_name,
+        "tag": args.tag,
         "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
                    "top_k_sensors", "operational constraints"],
         "summary": summary,

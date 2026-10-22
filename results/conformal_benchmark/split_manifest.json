@@ -2,6 +2,10 @@
   {
     "subset": "FD001",
     "seed": 42,
+    "tag": "ms42",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD001\\best_model.pt",
+    "checkpoint_epoch": 25,
     "split_hash": "3e1dba98498f97a5",
     "train_engine_ids": [
       2,
@@ -107,11 +111,17 @@
       84,
       91
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD001",
     "seed": 43,
+    "tag": "ms43",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD001\\best_model.pt",
+    "checkpoint_epoch": 26,
     "split_hash": "bc2c7f0685581c1d",
     "train_engine_ids": [
       4,
@@ -217,11 +227,17 @@
       92,
       96
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD001",
     "seed": 44,
+    "tag": "ms44",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD001\\best_model.pt",
+    "checkpoint_epoch": 27,
     "split_hash": "fb37d48a2896c0b3",
     "train_engine_ids": [
       1,
@@ -327,11 +343,17 @@
       97,
       100
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD001",
     "seed": 45,
+    "tag": "ms45",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD001\\best_model.pt",
+    "checkpoint_epoch": 26,
     "split_hash": "9b93e8fd8d8f8664",
     "train_engine_ids": [
       4,
@@ -437,11 +459,17 @@
       93,
       100
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD001",
     "seed": 46,
+    "tag": "ms46",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD001\\best_model.pt",
+    "checkpoint_epoch": 23,
     "split_hash": "f306b2d9375dc14b",
     "train_engine_ids": [
       1,
@@ -547,11 +575,17 @@
       96,
       99
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD002",
     "seed": 42,
+    "tag": "ms42",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD002\\best_model.pt",
+    "checkpoint_epoch": 31,
     "split_hash": "dae50a279649114c",
     "train_engine_ids": [
       1,
@@ -817,11 +851,17 @@
       243,
       259
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD002",
     "seed": 43,
+    "tag": "ms43",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD002\\best_model.pt",
+    "checkpoint_epoch": 39,
     "split_hash": "c71b18c36d29e893",
     "train_engine_ids": [
       2,
@@ -1087,11 +1127,17 @@
       252,
       259
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD002",
     "seed": 44,
+    "tag": "ms44",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD002\\best_model.pt",
+    "checkpoint_epoch": 34,
     "split_hash": "6e4a791c94db7042",
     "train_engine_ids": [
       1,
@@ -1357,11 +1403,17 @@
       247,
       260
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD002",
     "seed": 45,
+    "tag": "ms45",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD002\\best_model.pt",
+    "checkpoint_epoch": 36,
     "split_hash": "15c745cc9ef265ff",
     "train_engine_ids": [
       3,
@@ -1627,11 +1679,17 @@
       253,
       257
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD002",
     "seed": 46,
+    "tag": "ms46",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD002\\best_model.pt",
+    "checkpoint_epoch": 33,
     "split_hash": "9d60f898fc2da087",
     "train_engine_ids": [
       1,
@@ -1897,11 +1955,17 @@
       254,
       256
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD003",
     "seed": 42,
+    "tag": "ms42",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD003\\best_model.pt",
+    "checkpoint_epoch": 37,
     "split_hash": "c969a42250ef6add",
     "train_engine_ids": [
       2,
@@ -2007,11 +2071,17 @@
       84,
       91
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD003",
     "seed": 43,
+    "tag": "ms43",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD003\\best_model.pt",
+    "checkpoint_epoch": 25,
     "split_hash": "f24cef27876c801a",
     "train_engine_ids": [
       4,
@@ -2117,11 +2187,17 @@
       92,
       96
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD003",
     "seed": 44,
+    "tag": "ms44",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD003\\best_model.pt",
+    "checkpoint_epoch": 38,
     "split_hash": "d01cf8904ed69591",
     "train_engine_ids": [
       1,
@@ -2227,11 +2303,17 @@
       97,
       100
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD003",
     "seed": 45,
+    "tag": "ms45",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD003\\best_model.pt",
+    "checkpoint_epoch": 30,
     "split_hash": "00921aa3360ebdea",
     "train_engine_ids": [
       4,
@@ -2337,11 +2419,17 @@
       93,
       100
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD003",
     "seed": 46,
+    "tag": "ms46",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD003\\best_model.pt",
+    "checkpoint_epoch": 25,
     "split_hash": "0d1a70b47893dfd6",
     "train_engine_ids": [
       1,
@@ -2447,11 +2535,17 @@
       96,
       99
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD004",
     "seed": 42,
+    "tag": "ms42",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD004\\best_model.pt",
+    "checkpoint_epoch": 25,
     "split_hash": "5c923a314fc2eebc",
     "train_engine_ids": [
       1,
@@ -2706,11 +2800,17 @@
       240,
       247
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD004",
     "seed": 43,
+    "tag": "ms43",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD004\\best_model.pt",
+    "checkpoint_epoch": 27,
     "split_hash": "4b47a33b07a52143",
     "train_engine_ids": [
       2,
@@ -2965,11 +3065,17 @@
       245,
       249
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD004",
     "seed": 44,
+    "tag": "ms44",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD004\\best_model.pt",
+    "checkpoint_epoch": 24,
     "split_hash": "a90e4b0969813358",
     "train_engine_ids": [
       1,
@@ -3224,11 +3330,17 @@
       233,
       237
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD004",
     "seed": 45,
+    "tag": "ms45",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD004\\best_model.pt",
+    "checkpoint_epoch": 26,
     "split_hash": "f5491f07f6773cf7",
     "train_engine_ids": [
       2,
@@ -3483,11 +3595,17 @@
       234,
       238
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   },
   {
     "subset": "FD004",
     "seed": 46,
+    "tag": "ms46",
+    "model": "gru_att_deg_v2",
+    "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD004\\best_model.pt",
+    "checkpoint_epoch": 22,
     "split_hash": "406236fcd70b2ecd",
     "train_engine_ids": [
       1,
@@ -3742,6 +3860,8 @@
       244,
       246
     ],
-    "calibration_scoring": "one seeded random window per calibration engine as a censored-endpoint proxy"
+    "calibration_scoring": "Scores are reduced to the requested calibration unit(s): 'window' keeps one score per calibration window, 'engine' keeps the per-engine maximum (conservative). Calibration split reproduced from the checkpoint seed.",
+    "proxy_model_removed": true,
+    "real_model": true
   }
 ]

@@ -10,8 +10,8 @@ author: me-intenzo
 from __future__ import annotations
 
 import numpy as np
-import torch
 import shap
+import torch
 
 
 def _select_output(

@@ -10,13 +10,13 @@ Load → Validate → Summary → Visualize → Generate RUL/HI
 → Save → Logging → Done
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from src.utils.logger import get_script_logger
 
 from src.preprocessing.feature_selection import FeatureSelector
 from src.preprocessing.labeling import LabelGenerator
@@ -25,12 +25,21 @@ from src.preprocessing.scaling import FeatureScaler
 from src.preprocessing.validator import DatasetValidator
 from src.preprocessing.visualization import DatasetVisualizer
 from src.preprocessing.windowing import WindowGenerator
+from src.utils.config import ALL_SUBSETS, load_config
+from src.utils.logger import get_script_logger
 
 DEFAULT_SUBSET = "FD001"
-ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
-PROCESSED_DIR = Path("data/processed")
-MODELS_DIR = Path("outputs/models")
-WINDOW_SIZE = 40
+
+# ------------------------------------------------------------------ #
+# Paths (anchored to the project root, not the current directory, so
+# the script behaves the same however it is invoked)
+# ------------------------------------------------------------------ #
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+MODELS_DIR = PROJECT_ROOT / "outputs" / "models"
+FIGURES_DIR = PROJECT_ROOT / "outputs" / "figures"
+REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,10 +53,32 @@ def parse_args() -> argparse.Namespace:
         help="C-MAPSS subset to preprocess, or 'all'.",
     )
     parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=(
+            "Explicit YAML config path (default: configs/<subset>.yaml). "
+            "Supplies window_size and max_rul."
+        ),
+    )
+    parser.add_argument(
         "--window-size",
         type=int,
-        default=WINDOW_SIZE,
-        help="Sliding window length in cycles (default: 40).",
+        default=None,
+        help=(
+            "Sliding window length in cycles. "
+            "Defaults to the value in the subset's YAML config."
+        ),
+    )
+    parser.add_argument(
+        "--max-rul",
+        type=int,
+        default=None,
+        help=(
+            "RUL cap used for the piecewise-linear RUL label.  Also applied "
+            "to the test labels so the train/test targets stay consistent. "
+            "Defaults to the value in the subset's YAML config."
+        ),
     )
     return parser.parse_args()
 
@@ -60,8 +91,27 @@ def setup_logging(subset: str):
 # Pipeline
 # ------------------------------------------------------------------ #
 
-def run(subset: str, window_size: int) -> None:
-    """Run the full preprocessing pipeline for a single subset."""
+def run(
+    subset: str,
+    window_size: int | None = None,
+    max_rul: int | None = None,
+    config_path: str | None = None,
+) -> None:
+    """Run the full preprocessing pipeline for a single subset.
+
+    ``window_size`` and ``max_rul`` fall back to the subset's YAML config
+    (``configs/<subset>.yaml``) when they are not supplied explicitly.  This
+    keeps preprocessing and training on the same label cap — ``train.py``
+    refuses to run when the stored ``max_rul`` differs from its config.
+    """
+
+    config = load_config(path=config_path, subset=subset)
+
+    if window_size is None:
+        window_size = int(config["window_size"])
+    if max_rul is None:
+        max_rul = int(config["max_rul"])
+
     log = setup_logging(subset)
 
     def _step(name: str) -> None:
@@ -69,16 +119,16 @@ def run(subset: str, window_size: int) -> None:
         log.info("  %s", name)
         log.info("=" * 50)
 
-    figures_dir = Path("outputs") / "figures" / subset
+    figures_dir = FIGURES_DIR / subset
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    reports_dir = Path("outputs") / "reports" / subset
+    reports_dir = REPORTS_DIR / subset
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     # subset-scoped scaler path — prevents subsets overwriting each other
     scaler_path = MODELS_DIR / f"scaler_{subset}.pkl"
 
-    log.info("Subset: %s  |  window_size: %d", subset, window_size)
+    log.info("Subset: %s  |  window_size: %d  |  max_rul: %d", subset, window_size, max_rul)
 
     # ── Load Dataset ──────────────────────────────────────────────
     _step("Load Dataset")
@@ -114,7 +164,7 @@ def run(subset: str, window_size: int) -> None:
 
     # ── Generate Labels ───────────────────────────────────────────
     _step("Generate Labels")
-    label_gen = LabelGenerator(max_rul=125)
+    label_gen = LabelGenerator(max_rul=max_rul)
     train_df = label_gen.generate_labels(train_df)
     viz.plot_label_distributions(train_df)
     log.info(
@@ -127,7 +177,7 @@ def run(subset: str, window_size: int) -> None:
     test_df["RUL"] = (
         max_cycles - test_df["time_in_cycles"]
         + rul_df["RUL"].reindex(test_df["unit_number"] - 1).values
-    ).clip(upper=125)
+    ).clip(upper=max_rul)
     test_df["HI"] = (
         test_df.groupby("unit_number")["RUL"]
         .transform(lambda x: x / x.max())
@@ -166,13 +216,21 @@ def run(subset: str, window_size: int) -> None:
 
     # ── Save Processed Dataset ────────────────────────────────────
     _step("Save Processed Dataset")
+
+    extra_metadata = {
+        "max_rul": max_rul,
+        "subset": subset,
+    }
+
     win_gen.save_dataset(
         X_train, y_rul_train, y_hi_train,
         PROCESSED_DIR, f"{subset}_train", engine_ids=train_engine_ids,
+        extra_metadata=extra_metadata,
     )
     win_gen.save_dataset(
         X_test, y_rul_test, y_hi_test,
         PROCESSED_DIR, f"{subset}_test", engine_ids=test_engine_ids,
+        extra_metadata=extra_metadata,
     )
 
     # ── Done ──────────────────────────────────────────────────────
@@ -185,7 +243,12 @@ def main() -> None:
     args = parse_args()
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
     for subset in subsets:
-        run(subset, window_size=args.window_size)
+        run(
+            subset,
+            window_size=args.window_size,
+            max_rul=args.max_rul,
+            config_path=args.config,
+        )
 
 
 if __name__ == "__main__":

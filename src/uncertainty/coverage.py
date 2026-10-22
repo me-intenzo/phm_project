@@ -92,28 +92,11 @@ def mean_prediction_interval_width(
         dtype=np.float64,
     ).reshape(-1)
 
-    if lower.shape != upper.shape:
-        raise ValueError(
-            "lower and upper must have the same shape."
-        )
-
-    if lower.size == 0:
-        raise ValueError(
-            "At least one interval is required."
-        )
-
-    if not (
-        np.all(np.isfinite(lower))
-        and np.all(np.isfinite(upper))
-    ):
-        raise ValueError(
-            "Interval bounds must be finite."
-        )
-
-    if np.any(upper < lower):
-        raise ValueError(
-            "Upper bounds cannot be below lower bounds."
-        )
+    _validate_interval_inputs(
+        None,
+        lower,
+        upper,
+    )
 
     return float(
         np.mean(upper - lower)
@@ -206,7 +189,14 @@ def engine_level_coverage(
     lower = np.asarray(lower, dtype=np.float64).reshape(-1)
     upper = np.asarray(upper, dtype=np.float64).reshape(-1)
     engine_ids = np.asarray(engine_ids).reshape(-1)
-    if not (y_true.shape == lower.shape == upper.shape == engine_ids.shape):
+
+    _validate_interval_inputs(
+        y_true,
+        lower,
+        upper,
+    )
+
+    if engine_ids.shape != y_true.shape:
         raise ValueError("Interval arrays and engine_ids must have the same length.")
     if engine_ids.size == 0:
         raise ValueError("At least one engine is required.")
@@ -283,32 +273,55 @@ def evaluate_interval(
 
 
 def _validate_interval_inputs(
-    y_true: np.ndarray,
+    y_true: np.ndarray | None,
     lower: np.ndarray,
     upper: np.ndarray,
 ) -> None:
     """
     Validate interval inputs shared by coverage metrics.
+
+    This is the single place where the interval invariants are enforced.
+    Every public metric routes its input through this function so that a
+    change of an invariant cannot silently skip a caller.
+
+    Parameters
+    ----------
+    y_true :
+        Ground-truth values.  ``None`` for width-only metrics that do not
+        take a target (e.g. MPIW); the target-related checks are skipped
+        in that case.
+    lower, upper :
+        Interval bounds.
     """
 
-    if not (
-        y_true.shape
-        == lower.shape
-        == upper.shape
-    ):
+    if y_true is not None:
+        if not (
+            y_true.shape
+            == lower.shape
+            == upper.shape
+        ):
+            raise ValueError(
+                "y_true, lower and upper must have "
+                "the same shape."
+            )
+
+        if not np.all(np.isfinite(y_true)):
+            raise ValueError(
+                "y_true and interval bounds must be finite."
+            )
+
+    if lower.shape != upper.shape:
         raise ValueError(
-            "y_true, lower and upper must have "
-            "the same shape."
+            "lower and upper must have the same shape."
         )
 
-    if y_true.size == 0:
+    if lower.size == 0:
         raise ValueError(
             "At least one prediction interval is required."
         )
 
     if not (
-        np.all(np.isfinite(y_true))
-        and np.all(np.isfinite(lower))
+        np.all(np.isfinite(lower))
         and np.all(np.isfinite(upper))
     ):
         raise ValueError(

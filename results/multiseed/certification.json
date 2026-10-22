@@ -1,0 +1,478 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-10-22T10:20:30.851256+00:00",
+  "model": "gru_att_deg_v2",
+  "tag_prefix": "ms",
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "subsets": [
+    "FD001",
+    "FD002",
+    "FD003",
+    "FD004"
+  ],
+  "n_seeds": 5,
+  "is_multi_seed": true,
+  "per_subset_summary": [
+    {
+      "subset": "FD001",
+      "n_seeds": 5,
+      "RMSE_mean": 12.382530024008364,
+      "RMSE_std": 0.27546906006785377,
+      "RMSE_min": 11.937159293256387,
+      "RMSE_max": 12.623229727995614,
+      "RMSE_ci95_halfwidth": 0.3420400145052842,
+      "MAE_mean": 9.06777032661438,
+      "MAE_std": 0.2384586456168774,
+      "MAE_min": 8.703152694702148,
+      "MAE_max": 9.364770698547364,
+      "MAE_ci95_halfwidth": 0.2960855153229065,
+      "R2_mean": 0.9044829312767633,
+      "R2_std": 0.0042120351765011395,
+      "R2_min": 0.9007726797100307,
+      "R2_max": 0.9112655483764524,
+      "R2_ci95_halfwidth": 0.005229932437829302,
+      "NASA_Score_mean": 237.19225179429583,
+      "NASA_Score_std": 10.385113755765897,
+      "NASA_Score_min": 222.14474805934452,
+      "NASA_Score_max": 250.20882622031291,
+      "NASA_Score_ci95_halfwidth": 12.894821867785192
+    },
+    {
+      "subset": "FD002",
+      "n_seeds": 5,
+      "RMSE_mean": 13.923151793406628,
+      "RMSE_std": 0.43310899106610606,
+      "RMSE_min": 13.253537025815751,
+      "RMSE_max": 14.32271766080214,
+      "RMSE_ci95_halfwidth": 0.5377758415051397,
+      "MAE_mean": 10.12999806882792,
+      "MAE_std": 0.35446848745223414,
+      "MAE_min": 9.591208569331519,
+      "MAE_max": 10.535790038384986,
+      "MAE_ci95_halfwidth": 0.4401307593671818,
+      "R2_mean": 0.8947791422709862,
+      "R2_std": 0.006474385589280233,
+      "R2_min": 0.8887393694543199,
+      "R2_max": 0.9047304209096989,
+      "R2_ci95_halfwidth": 0.008039011496698528,
+      "NASA_Score_mean": 898.5183616663568,
+      "NASA_Score_std": 74.56673312885786,
+      "NASA_Score_min": 786.695949969099,
+      "NASA_Score_max": 983.4357092663048,
+      "NASA_Score_ci95_halfwidth": 92.58682798977073
+    },
+    {
+      "subset": "FD003",
+      "n_seeds": 5,
+      "RMSE_mean": 11.973719589537009,
+      "RMSE_std": 0.26089123383205737,
+      "RMSE_min": 11.549198233926719,
+      "RMSE_max": 12.231087040805496,
+      "RMSE_ci95_halfwidth": 0.32393925249622546,
+      "MAE_mean": 8.193825825691224,
+      "MAE_std": 0.22340552783206735,
+      "MAE_min": 7.88932623386383,
+      "MAE_max": 8.421139879226684,
+      "MAE_ci95_halfwidth": 0.27739460090878704,
+      "R2_mean": 0.9065019180157643,
+      "R2_std": 0.004037704261458442,
+      "R2_min": 0.9024763972521718,
+      "R2_max": 0.9130472554010163,
+      "R2_ci95_halfwidth": 0.0050134720168468665,
+      "NASA_Score_mean": 272.25499265635796,
+      "NASA_Score_std": 24.95879344346565,
+      "NASA_Score_min": 249.14656451999477,
+      "NASA_Score_max": 307.8685990172789,
+      "NASA_Score_ci95_halfwidth": 30.990435257355454
+    },
+    {
+      "subset": "FD004",
+      "n_seeds": 5,
+      "RMSE_mean": 15.166499195566871,
+      "RMSE_std": 0.1682215656018732,
+      "RMSE_min": 14.943800788733972,
+      "RMSE_max": 15.388061920714566,
+      "RMSE_ci95_halfwidth": 0.20887466172931868,
+      "MAE_mean": 11.075456853451268,
+      "MAE_std": 0.29111383942798413,
+      "MAE_min": 10.790247609538417,
+      "MAE_max": 11.559681823176723,
+      "MAE_ci95_halfwidth": 0.3614655737965994,
+      "R2_mean": 0.8754747660018538,
+      "R2_std": 0.0027615566687640377,
+      "R2_min": 0.8718225040556286,
+      "R2_max": 0.8791167656273516,
+      "R2_ci95_halfwidth": 0.003428925494603823,
+      "NASA_Score_mean": 1119.089293043167,
+      "NASA_Score_std": 57.10458483630093,
+      "NASA_Score_min": 1046.6033995935788,
+      "NASA_Score_max": 1190.2929544779658,
+      "NASA_Score_ci95_halfwidth": 70.90470712360745
+    }
+  ],
+  "four_subset_aggregate_by_seed": [
+    {
+      "seed": 42,
+      "tag": "ms42",
+      "n_subsets": 4,
+      "mean_RMSE": 13.213406116323617,
+      "mean_MAE": 9.451192465749582,
+      "mean_NASA_Score": 619.3668919339407,
+      "RMSE_FD001": 11.937159293256387,
+      "RMSE_FD002": 13.74157734249861,
+      "RMSE_FD003": 12.231087040805496,
+      "RMSE_FD004": 14.943800788733972
+    },
+    {
+      "seed": 43,
+      "tag": "ms43",
+      "n_subsets": 4,
+      "mean_RMSE": 13.232810277987735,
+      "mean_MAE": 9.524363991440545,
+      "mean_NASA_Score": 585.374068518337,
+      "RMSE_FD001": 12.36712869493637,
+      "RMSE_FD002": 13.253537025815751,
+      "RMSE_FD003": 12.113419579382102,
+      "RMSE_FD004": 15.197155811816714
+    },
+    {
+      "seed": 44,
+      "tag": "ms44",
+      "n_subsets": 4,
+      "mean_RMSE": 13.373390657470882,
+      "mean_MAE": 9.553913695750238,
+      "mean_NASA_Score": 643.9715092937033,
+      "RMSE_FD001": 12.623229727995614,
+      "RMSE_FD002": 14.088359564989961,
+      "RMSE_FD003": 11.549198233926719,
+      "RMSE_FD004": 15.232775102971237
+    },
+    {
+      "seed": 45,
+      "tag": "ms45",
+      "n_subsets": 4,
+      "mean_RMSE": 13.480343669775952,
+      "mean_MAE": 9.661234759056995,
+      "mean_NASA_Score": 655.626332678365,
+      "RMSE_FD001": 12.599309480566697,
+      "RMSE_FD002": 14.209567372926687,
+      "RMSE_FD003": 12.041795472012554,
+      "RMSE_FD004": 15.070702353597866
+    },
+    {
+      "seed": 46,
+      "tag": "ms46",
+      "n_subsets": 4,
+      "mean_RMSE": 13.507425031590406,
+      "mean_MAE": 9.893108931233627,
+      "mean_NASA_Score": 654.4798215258758,
+      "RMSE_FD001": 12.38582292328675,
+      "RMSE_FD002": 14.32271766080214,
+      "RMSE_FD003": 11.93309762155817,
+      "RMSE_FD004": 15.388061920714566
+    }
+  ],
+  "seed_noise_analysis": {
+    "our_mean_rmse": 13.361475150629719,
+    "our_std_rmse": 0.1360626328865301,
+    "our_ci95_low": 13.1925310778737,
+    "our_ci95_high": 13.530419223385739,
+    "n_seeds": 5,
+    "best_published_mean_rmse": 12.83,
+    "best_published_method": "KESTF",
+    "gap_to_best_published": 0.5314751506297188,
+    "gap_exceeds_seed_std": true,
+    "verdict": "We are behind the best published mean by 0.531 RMSE, which is larger than the seed-to-seed standard deviation (0.136). The gap exceeds the seed band, so it is a real deficit on this measure (descriptive, not a paired test)."
+  },
+  "literature_comparison": [
+    {
+      "method": "KESTF",
+      "venue": "Applied Sciences 2026",
+      "published_mean_rmse": 12.83,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": 0.5314751506297188,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": false,
+      "ci_entirely_above_published": true,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "TTSNet",
+      "venue": "Sensors 2025",
+      "published_mean_rmse": 13.4,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.038524849370281444,
+      "gap_in_our_seed_ci": true,
+      "ci_entirely_below_published": false,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": false
+    },
+    {
+      "method": "Cau-BiMamba-LSTM",
+      "venue": "Sensors 2025",
+      "published_mean_rmse": 13.62,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.2585248493702803,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "MLEAN",
+      "venue": "IEEE TAI 2024",
+      "published_mean_rmse": 13.71,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.34852484937028194,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "DAST",
+      "venue": "IEEE TIM 2022",
+      "published_mean_rmse": 14.09,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.728524849370281,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "ATCN",
+      "venue": "EAAI 2024",
+      "published_mean_rmse": 14.11,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.7485248493702805,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "DBA-DCRN",
+      "venue": "J. Manuf. Syst. 2024",
+      "published_mean_rmse": 14.28,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -0.9185248493702804,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    },
+    {
+      "method": "CNN-LSTM-Att",
+      "venue": "preprint 2025",
+      "published_mean_rmse": 15.25,
+      "ours_mean_rmse": 13.361475150629719,
+      "ours_std_rmse": 0.1360626328865301,
+      "ours_ci95_low": 13.1925310778737,
+      "ours_ci95_high": 13.530419223385739,
+      "gap_ours_minus_published": -1.888524849370281,
+      "gap_in_our_seed_ci": false,
+      "ci_entirely_below_published": true,
+      "ci_entirely_above_published": false,
+      "gap_exceeds_our_seed_std": true
+    }
+  ],
+  "training_manifest": {
+    "path": "results\\multiseed\\training_manifest.json",
+    "git_commit": "0d8869227a1086bd7d4998896f30ee2c663f5c52",
+    "runs": [
+      {
+        "subset": "FD001",
+        "seed": 42,
+        "tag": "ms42",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD001\\best_model.pt",
+        "checkpoint_sha256": "e0bb2aa55643104f9449bece9a1c74805bb3dc42ca2819271ff671dff56399d1",
+        "epoch": null
+      },
+      {
+        "subset": "FD001",
+        "seed": 43,
+        "tag": "ms43",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD001\\best_model.pt",
+        "checkpoint_sha256": "07e05c4ce27171abed8520095915971fd3aa1c3b39f61baddf7507e3e2431a51",
+        "epoch": null
+      },
+      {
+        "subset": "FD001",
+        "seed": 44,
+        "tag": "ms44",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD001\\best_model.pt",
+        "checkpoint_sha256": "5c170e704cee86ae80026a04191a910a8894996fb6fec7ed53dbadcc973a2845",
+        "epoch": null
+      },
+      {
+        "subset": "FD001",
+        "seed": 45,
+        "tag": "ms45",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD001\\best_model.pt",
+        "checkpoint_sha256": "d718a123fe16166e57bb931de940431c3db1a4d21c459aca9db232e97cfd6b0d",
+        "epoch": null
+      },
+      {
+        "subset": "FD001",
+        "seed": 46,
+        "tag": "ms46",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD001\\best_model.pt",
+        "checkpoint_sha256": "f0090c8c50dd8c15ed14c79f1f54ce5132614f340555906ad4b37f5452516676",
+        "epoch": null
+      },
+      {
+        "subset": "FD002",
+        "seed": 42,
+        "tag": "ms42",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD002\\best_model.pt",
+        "checkpoint_sha256": "478a552d1f5fdad7ce5b032ced153204af4e211088fc1784a7984cc0c3183624",
+        "epoch": null
+      },
+      {
+        "subset": "FD002",
+        "seed": 43,
+        "tag": "ms43",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD002\\best_model.pt",
+        "checkpoint_sha256": "937e2639f448c5cef778dc8305445769aeba066d41611ba5e3a290ead7917e7f",
+        "epoch": null
+      },
+      {
+        "subset": "FD002",
+        "seed": 44,
+        "tag": "ms44",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD002\\best_model.pt",
+        "checkpoint_sha256": "c5beee71d784638d934d11c64c67d51fb4d82599b37026c595c758ab6ddfcfad",
+        "epoch": null
+      },
+      {
+        "subset": "FD002",
+        "seed": 45,
+        "tag": "ms45",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD002\\best_model.pt",
+        "checkpoint_sha256": "83a19412de99a0d44bcc6f6ec487e97ff54b1a54f0663107d4114015c913600a",
+        "epoch": null
+      },
+      {
+        "subset": "FD002",
+        "seed": 46,
+        "tag": "ms46",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD002\\best_model.pt",
+        "checkpoint_sha256": "235c97406013e4fdcfef1f51eae3aa91ef0313895ca6c7d2a7f8770243b1b579",
+        "epoch": null
+      },
+      {
+        "subset": "FD003",
+        "seed": 42,
+        "tag": "ms42",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD003\\best_model.pt",
+        "checkpoint_sha256": "bdbb7b4771ab661a8d39c7c5880911590aaa4949ee8e99e5f8c8117a55bc76e6",
+        "epoch": null
+      },
+      {
+        "subset": "FD003",
+        "seed": 43,
+        "tag": "ms43",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD003\\best_model.pt",
+        "checkpoint_sha256": "a089db3b469db1f7c31f11096a6b9a492cd20a0b3fe84716683802f895a26bc2",
+        "epoch": null
+      },
+      {
+        "subset": "FD003",
+        "seed": 44,
+        "tag": "ms44",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD003\\best_model.pt",
+        "checkpoint_sha256": "dd7e9fd7add1d0aede64da2438afff6c48403d7128002c067ee638d5c6864099",
+        "epoch": null
+      },
+      {
+        "subset": "FD003",
+        "seed": 45,
+        "tag": "ms45",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD003\\best_model.pt",
+        "checkpoint_sha256": "8ed514693c80683c1f8efee5f32edbac7bc8c4cdeb80d13b151dfca2e31b605c",
+        "epoch": null
+      },
+      {
+        "subset": "FD003",
+        "seed": 46,
+        "tag": "ms46",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD003\\best_model.pt",
+        "checkpoint_sha256": "75b725c4f7ab4cd8785ffd359260701e3fc46cd1a939191dc78e80bde4d766f6",
+        "epoch": null
+      },
+      {
+        "subset": "FD004",
+        "seed": 42,
+        "tag": "ms42",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD004\\best_model.pt",
+        "checkpoint_sha256": "4ecf8618f0c677258feea8bfc8493333b6c07469b464d86e0fd7e4e272605c29",
+        "epoch": null
+      },
+      {
+        "subset": "FD004",
+        "seed": 43,
+        "tag": "ms43",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD004\\best_model.pt",
+        "checkpoint_sha256": "767e80bcbf7fc1974de470bf8d93d4d5eb790106b057df631f20a26d45f6a727",
+        "epoch": null
+      },
+      {
+        "subset": "FD004",
+        "seed": 44,
+        "tag": "ms44",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD004\\best_model.pt",
+        "checkpoint_sha256": "16530129af8f591d6c11324b89d3a97578c3a7685a1c446bfa4847f80e40ea7c",
+        "epoch": null
+      },
+      {
+        "subset": "FD004",
+        "seed": 45,
+        "tag": "ms45",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD004\\best_model.pt",
+        "checkpoint_sha256": "0263593dca4007a766e74218bb898392036d1874134bec18cf72abd3ce2ee186",
+        "epoch": 26
+      },
+      {
+        "subset": "FD004",
+        "seed": 46,
+        "tag": "ms46",
+        "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD004\\best_model.pt",
+        "checkpoint_sha256": "ace2f094317403e5f4dcf131b5a8ebb69b39f74e94db6d14d6d4f9db18e71243",
+        "epoch": 22
+      }
+    ]
+  },
+  "notes": [
+    "All runs are full checkpoints of the named architecture trained by scripts/train.py via scripts/multiseed_train.py. No proxy model is used.",
+    "Standard deviations are sample standard deviations across seeds (ddof=1).",
+    "The four-subset aggregate is the unweighted mean of the four per-subset RMSEs for a given seed, matching the convention used in docs/SOTA_BENCHMARK.md."
+  ]
+}

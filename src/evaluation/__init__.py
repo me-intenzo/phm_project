@@ -23,23 +23,25 @@ benchmark.comparative_benchmark
 ablation.run_ablation
 """
 
+from src.evaluation.ablation import run_ablation
+from src.evaluation.benchmark import comparative_benchmark
 from src.evaluation.metrics import (
+    decision_effectiveness,
+    decision_effectiveness_from_records,
+    explainability_quality,
+    full_evaluation_report,
     predictive_accuracy,
     uncertainty_reliability,
-    explainability_quality,
-    decision_effectiveness,
     user_trust_proxies,
-    full_evaluation_report,
 )
-from src.evaluation.benchmark import comparative_benchmark
-from src.evaluation.ablation import run_ablation
-from src.evaluation.robustness import evaluate_robustness, cross_subset_consistency
+from src.evaluation.robustness import cross_subset_consistency, evaluate_robustness
 
 __all__ = [
     "predictive_accuracy",
     "uncertainty_reliability",
     "explainability_quality",
     "decision_effectiveness",
+    "decision_effectiveness_from_records",
     "user_trust_proxies",
     "full_evaluation_report",
     "comparative_benchmark",

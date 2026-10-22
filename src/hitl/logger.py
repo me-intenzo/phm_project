@@ -14,7 +14,6 @@ from typing import Any, Optional
 
 from src.hitl.feedback import store_feedback
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_LOG_PATH = (

@@ -4,11 +4,13 @@ Published results for PHM-XAI on the NASA C-MAPSS turbofan dataset, plus a
 comparison against published state-of-the-art (SOTA) RUL baselines.
 
 > **Read this first.** Every number below comes from the scripts in this
-> repository and is reproduced by the command noted in each section. They are
-> *not* a leaderboard claim: the point-prediction numbers use a specific
-> preprocessing config, checkpoint and seed (see [Caveats](#caveats)), and the
-> interval results use the engine-disjoint protocol in
-> [BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md). Re-run before citing.
+> repository and is reproduced by the command noted in each section. The
+> headline point-prediction and interval numbers are **mean ± sample std over
+> five independent seeds (42–46)** of the deliverable model
+> `gru_att_deg_v2`, each trained from scratch and evaluated from its own
+> checkpoint. They are *not* a leaderboard claim: a published number is
+> single-run by construction, so differences smaller than the seed band are
+> not evidence of a ranking (see [Caveats](#6-caveats)). Re-run before citing.
 
 ---
 
@@ -68,20 +70,56 @@ a strict comparison.
 
 ## 2. Point prediction — this repository
 
-Numbers produced by `scripts/train.py` + `scripts/evaluate.py`. See
-[Default training hyperparameters](README.md#pipeline) for the config; the
-`gru_att_deg` and `transformer` runs below are the two most representative.
+**Certified headline.** Five independent seeds (42–46) of the same recipe,
+trained from scratch with deterministic kernels, each evaluated on the full
+test set. Values are mean ± sample std **across seeds** (n = 5); the last column
+is the observed seed range. Source: `results/multiseed/summary_mean_std.csv`,
+reproduced by `scripts/multiseed_train.py` + `scripts/multiseed_report.py`.
+Per-seed rows are in `results/multiseed/per_seed_metrics.csv`.
 
-| Subset | Model | RUL MAE | RUL RMSE | R² | NASA Score |
+| Subset | RUL MAE | RUL RMSE | R² | NASA Score | RMSE range (5 seeds) |
 |---|---|---|---|---|---|
-| FD001 | GRU-Att-Deg | 10.05 | 13.64 | 0.884 | 308.63 |
-| FD004 | Transformer | 13.56 | — | 0.808 | — |
+| FD001 | 9.07 ± 0.24 | **12.38 ± 0.28** | 0.904 | 237 ± 10 | 11.94 – 12.62 |
+| FD002 | 10.13 ± 0.35 | **13.92 ± 0.43** | 0.895 | 899 ± 75 | 13.25 – 14.32 |
+| FD003 | 8.19 ± 0.22 | **11.97 ± 0.26** | 0.907 | 272 ± 25 | 11.55 – 12.23 |
+| FD004 | 11.08 ± 0.29 | **15.17 ± 0.17** | 0.875 | 1119 ± 57 | 14.94 – 15.39 |
+| **FD001–FD004 mean** | **9.62** | **13.361 ± 0.136** | **0.895** | **632** | 13.21 – 13.51 |
 
-**Where PHM-XAI sits.** FD001 RMSE 13.64 is competitive with the classic
-CNN/LSTM baselines (12.6–16.1) but sits behind the 2024 contrastive/attention
-SOTA (`Dual-Mixer` 10.41, `DRLSTM-DA` 11.55, `BTSAM` 10.62). FD004 RMSE 13.56
-*is* in the SOTA band (`Dual-Mixer` 12.15, `DRLSTM-DA` 14.19, `CNN-GRU` 14.86),
-which is a stronger result than the FD001 number.
+The four-subset mean per seed is 13.213 / 13.233 / 13.373 / 13.480 / 13.507 for
+seeds 42–46; 13.361 ± 0.136 is the mean ± sample std of those five aggregate
+values. Bootstrap CIs that treat the *test engines* as the sampling unit are in
+[docs/SOTA_BENCHMARK.md](docs/SOTA_BENCHMARK.md) § 3; they are ~±1 RMSE and
+measure test-sampling noise, not seed noise. The two must not be conflated.
+
+**What this replaces.** Earlier revisions of this file quoted
+12.947 (FD001–FD004 mean) from a single seed-42 run, and 12.871 from a
+three-member ensemble. Both are *one draw* from the distributions above. The
+current trainer consumes its RNG stream differently (seeded DataLoader worker
+and generator), so re-running "seed 42" today does not reproduce the historical
+artifact bit-for-bit: the certified seed-42 run scores 13.213 on the aggregate,
+0.27 above the superseded single-run number. The mean ± std table is the number
+to cite; the single-run and ensemble values are kept in
+[docs/SOTA_BENCHMARK.md](docs/SOTA_BENCHMARK.md) § 3 and labelled as such.
+
+**Where PHM-XAI sits** (mean vs published single runs; a difference inside the
+seed band is *not* a ranking):
+
+- **FD001 12.38** — ahead of the classic CNN (12.61) and LSTM (16.14), behind
+  every 2024 model in the table (`Dual-Mixer` 10.41, `BTSAM` 10.62,
+  `LSTM-F` 10.98, `DRLSTM-DA` 11.55, `CNN-GRU` 11.66).
+- **FD002 13.92** — ahead of `CNN-GRU` (14.93), `BTSAM` (14.18) and
+  `LSTM-F` (14.60); behind `DRLSTM-DA` (13.74) and `Dual-Mixer` (13.90) by
+  less than the seed std (0.43), i.e. not separable.
+- **FD003 11.97** — behind `DRLSTM-DA` (11.25) and the 9.85 / 8.87 band.
+- **FD004 15.17** — behind `DRLSTM-DA` (14.19), `BTSAM` (14.29),
+  `CNN-GRU` (14.86) and `LSTM-F` (15.00); ahead of `DAST` (16.89) and
+  `TTSNet` (18.26) on this subset.
+- **Four-subset mean 13.361** — 0.53 behind the best published aggregate
+  (`KESTF` 12.83), which is larger than the seed std (0.136), so this is a
+  genuine deficit rather than seed noise. It is statistically
+  indistinguishable from `TTSNet` (13.40): the 0.04 gap is inside the seed
+  band. It is ahead of `Cau-BiMamba-LSTM` (13.62), `MLEAN` (13.71), `DAST`
+  (14.09), `ATCN` (14.11), `DBA-DCRN` (14.28) and `CNN-LSTM-Att` (15.25).
 
 This repository's contribution is **not** to beat those RMSE numbers. The
 value-add is that every point prediction is wrapped in *calibrated,
@@ -94,95 +132,173 @@ interface without changing the interval or decision layers.
 ## 3. Conformal interval benchmark (multi-seed)
 
 Five interval methods × four subsets × five seeds (42–46), engine-disjoint
-calibration, nominal 80/90/95%. Source:
-`results/conformal_benchmark/summary_mean_std.csv`. Reproduce with:
+calibration, nominal 80/90/95%. Every number is computed from the **real
+checkpoint** of that (subset, seed) — there is no surrogate model and no
+re-fitted predictor. Source: `results/conformal_benchmark/summary_mean_std.csv`.
+Reproduce with:
 
 ```powershell
 python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
 ```
 
-### 3.1 Coverage at the 90% nominal level
+Two calibration units are reported for every method:
 
-Mean empirical coverage ± std across seeds; lower "gap" is better, and interval
-width is in cycles (narrower is better at a given coverage).
+- **`window` (primary)** — every calibration window contributes one score
+  (hundreds), which is the unit the test coverage is measured on.
+- **`engine` (conservative)** — each calibration engine contributes its maximum
+  score (20–52 scores), the strictest engine-level reading. It over-covers badly
+  and is reported for completeness, not for width comparisons.
+
+### 3.1 Coverage at the 90% nominal level (window unit)
+
+Mean empirical coverage ± std **across seeds**; width is in cycles (narrower is
+better at a given coverage); Winkler is lower-is-better and penalises both width
+and misses.
 
 | Subset | Method | Emp. coverage | Std | Mean width | Winkler |
 |---|---|---|---|---|---|
-| FD001 | split_conformal | 0.922 | 0.119 | 113.9 | 126.6 |
-| FD001 | cqr | 0.922 | 0.119 | 114.1 | 126.8 |
-| FD001 | adaptive | 0.924 | 0.121 | 102.7 | 115.5 |
-| FD001 | nex_scp | 0.914 | 0.087 | 115.1 | 121.7 |
-| FD001 | **eara_conformal** | **0.900** | 0.191 | **98.9** | 138.3 |
-| FD002 | split_conformal | 0.890 | 0.091 | 113.2 | 124.1 |
-| FD002 | cqr | 0.863 | 0.045 | 125.0 | 125.0 |
-| FD002 | adaptive | 0.893 | 0.089 | 113.2 | 124.1 |
-| FD002 | nex_scp | 0.906 | 0.010 | 114.5 | **121.7** |
-| FD002 | **eara_conformal** | **0.900** | 0.053 | 113.4 | 128.5 |
-| FD003 | split_conformal | 0.928 | 0.063 | 111.1 | 113.7 |
-| FD003 | cqr | 0.930 | 0.063 | 114.2 | 116.8 |
-| FD003 | adaptive | 0.922 | 0.066 | 99.0 | 102.0 |
-| FD003 | nex_scp | 0.934 | 0.026 | 111.7 | 113.0 |
-| FD003 | **eara_conformal** | 0.906 | 0.078 | **93.5** | 105.6 |
-| FD004 | split_conformal | 0.886 | 0.077 | 108.8 | 128.6 |
-| FD004 | cqr | 0.956 | 0.020 | 115.9 | **117.4** |
-| FD004 | adaptive | 0.886 | 0.077 | 108.8 | 128.6 |
-| FD004 | nex_scp | 0.907 | 0.011 | 111.1 | 123.7 |
-| FD004 | **eara_conformal** | 0.881 | 0.061 | 106.5 | 140.8 |
+| FD001 | split_conformal | 0.904 | 0.023 | 38.2 | 53.0 |
+| FD001 | cqr | 0.908 | 0.019 | 34.4 | 49.1 |
+| FD001 | adaptive | 0.908 | 0.024 | 34.1 | **47.1** |
+| FD001 | nex_scp | 0.904 | 0.017 | **32.6** | 47.9 |
+| FD001 | eara_conformal | 0.914 | 0.022 | 35.5 | 48.9 |
+| FD002 | split_conformal | 0.910 | 0.007 | 43.8 | 56.1 |
+| FD002 | cqr | 0.930 | 0.007 | 40.0 | **50.7** |
+| FD002 | adaptive | 0.907 | 0.017 | 38.4 | 50.9 |
+| FD002 | nex_scp | 0.897 | 0.003 | **37.3** | 51.4 |
+| FD002 | eara_conformal | 0.917 | 0.010 | 40.2 | 54.7 |
+| FD003 | split_conformal | 0.902 | 0.013 | 35.1 | 53.7 |
+| FD003 | cqr | 0.894 | 0.018 | 31.2 | 50.5 |
+| FD003 | adaptive | 0.884 | 0.029 | 29.2 | **46.8** |
+| FD003 | nex_scp | 0.888 | 0.008 | 30.6 | 46.9 |
+| FD003 | eara_conformal | 0.852 | 0.035 | **29.1** | 52.4 |
+| FD004 | split_conformal | 0.896 | 0.032 | 44.1 | 63.7 |
+| FD004 | cqr | 0.903 | 0.034 | 43.2 | 61.0 |
+| FD004 | adaptive | 0.869 | 0.029 | **36.8** | 58.1 |
+| FD004 | nex_scp | 0.894 | 0.006 | 41.1 | **57.9** |
+| FD004 | eara_conformal | 0.902 | 0.023 | 40.3 | 59.9 |
 
 **What the table shows**
 
-- **`eara_conformal` (this work) hits the 90% target almost exactly on
-  FD001/FD002/FD003 (0.900 / 0.900 / 0.906)** while producing the **narrowest
-  intervals** on FD001 (98.9) and FD003 (93.5). That is the intended trade: it
-  spends its width where the local residual scale is large rather than
-  uniformly.
-- **`nex_scp` is the most stable across seeds** (std 0.010–0.026 on
-  FD002/FD004) but pays for it with wider intervals on FD001/FD002.
-- **`cqr` is conservative on FD004** (0.956 coverage → overshoots by 5.6 pts)
-  and under-covers on FD002 (0.863).
-- **`split_conformal` and `adaptive` are near-identical**, which is expected:
-  on subsets where the predicted scale head has low variance, the global
-  quantile dominates.
+- **Every method lands within ±5 points of the 90 % target.** That is the
+  headline: the intervals are calibrated in practice, not only on paper, and the
+  spread across seeds is 0.003–0.035.
+- **`nex_scp` has the best coverage/width trade-off overall.** Its coverage is
+  the most stable (std 0.003–0.017), it is the narrowest interval on FD001 and
+  FD002, and it has the best (FD004) or second-best (FD001, FD003) Winkler
+  score. Nothing in the set dominates it.
+- **`split_conformal` is the widest on every subset** (35.1–44.1 cycles), which
+  is expected: it spends the same radius on every window instead of scaling with
+  the local difficulty.
+- **`adaptive` is the narrowest on FD004 but under-covers there (0.869,
+  −3.1 pts).** On FD004 its narrow interval is buying width with coverage; on
+  FD003 the same trade shows (0.884).
+- **`eara_conformal` is *not* the best-calibrated method.** On FD003 it lands at
+  0.852 (−4.8 pts) while being the narrowest (29.1); on FD004 it is well
+  calibrated at 0.902. Its scale is a k-NN average over training-engine
+  profiles, which under-states the uncertainty of a last-window test query on
+  some subsets. The earlier single-run claim that EARA "hits the 90 % target
+  almost exactly" does not survive five seeds.
+- **`cqr` over-covers on FD002 (0.930)** and is competitive elsewhere now that
+  its quantile head is anchored to the point prediction. Before that fix its
+  intervals were 3× too wide (104 vs 35 cycles at 90 % on FD003).
 
-### 3.2 Coverage across all nominal levels
+### 3.2 Coverage across all nominal levels (window unit)
 
-Mean empirical coverage over seeds, by nominal level. Source: same CSV.
+Mean empirical coverage over seeds. A well-calibrated method lies on the
+diagonal; the nominal values are 0.80 / 0.90 / 0.95.
 
 | Subset | Method | 80% | 90% | 95% |
 |---|---|---|---|---|
-| FD001 | split_conformal | 0.882 | 0.922 | 0.956 |
-| FD001 | cqr | 0.890 | 0.922 | 0.956 |
-| FD001 | adaptive | 0.884 | 0.924 | 0.956 |
-| FD001 | nex_scp | 0.824 | 0.914 | 0.938 |
-| FD001 | eara_conformal | 0.886 | 0.900 | 0.920 |
-| FD002 | split_conformal | 0.775 | 0.890 | 0.981 |
-| FD002 | cqr | 0.765 | 0.863 | 0.947 |
-| FD002 | adaptive | 0.775 | 0.893 | 0.983 |
-| FD002 | nex_scp | 0.796 | 0.906 | 0.960 |
-| FD002 | eara_conformal | 0.814 | 0.900 | 0.932 |
-| FD003 | split_conformal | 0.876 | 0.928 | 0.964 |
-| FD003 | cqr | 0.876 | 0.930 | 0.966 |
-| FD003 | adaptive | 0.864 | 0.922 | 0.958 |
-| FD003 | nex_scp | 0.852 | 0.934 | 0.958 |
-| FD003 | eara_conformal | 0.864 | 0.906 | 0.934 |
-| FD004 | split_conformal | 0.788 | 0.886 | 0.965 |
-| FD004 | cqr | 0.798 | 0.956 | 0.998 |
-| FD004 | adaptive | 0.788 | 0.886 | 0.969 |
-| FD004 | nex_scp | 0.797 | 0.907 | 0.963 |
-| FD004 | eara_conformal | 0.827 | 0.881 | 0.900 |
+| FD001 | split_conformal | 0.798 | 0.904 | 0.946 |
+| FD001 | cqr | 0.804 | 0.908 | 0.946 |
+| FD001 | adaptive | 0.834 | 0.908 | 0.952 |
+| FD001 | nex_scp | 0.812 | 0.904 | 0.938 |
+| FD001 | eara_conformal | 0.832 | 0.914 | 0.952 |
+| FD002 | split_conformal | 0.829 | 0.910 | 0.966 |
+| FD002 | cqr | 0.842 | 0.930 | 0.961 |
+| FD002 | adaptive | 0.818 | 0.907 | 0.952 |
+| FD002 | nex_scp | 0.798 | 0.897 | 0.950 |
+| FD002 | eara_conformal | 0.828 | 0.917 | 0.956 |
+| FD003 | split_conformal | 0.802 | 0.902 | 0.936 |
+| FD003 | cqr | 0.790 | 0.894 | 0.936 |
+| FD003 | adaptive | 0.802 | 0.884 | 0.924 |
+| FD003 | nex_scp | 0.790 | 0.888 | 0.942 |
+| FD003 | eara_conformal | 0.766 | 0.852 | 0.922 |
+| FD004 | split_conformal | 0.815 | 0.896 | 0.952 |
+| FD004 | cqr | 0.818 | 0.903 | 0.947 |
+| FD004 | adaptive | 0.767 | 0.869 | 0.932 |
+| FD004 | nex_scp | 0.797 | 0.894 | 0.944 |
+| FD004 | eara_conformal | 0.796 | 0.902 | 0.951 |
 
-`eara_conformal` is the only method whose coverage is monotone and close to
-nominal at *every* level on *every* subset; `cqr` overshoots badly on FD004
-(0.998 at 95%) and `split`/`adaptive` under-cover the 80% level on FD002/FD004
-by ~9–11 points.
+- **`split_conformal` and `nex_scp` are the two closest to nominal at every
+  level on every subset** (worst deviation: split +2.9 on FD002@80, nex −1.2 on
+  FD001@95). `nex_scp` buys that with a slightly narrower interval.
+- **`adaptive` and `eara_conformal` systematically under-cover at 95 %**
+  (FD003: 0.924 / 0.922; FD004: 0.932 / 0.951). Their local scale estimates are
+  the weak link, not the conformal quantile.
+- **`cqr` is the only method that is never more than 4.2 points off nominal.**
 
-### 3.3 Pairwise comparison
+### 3.3 The engine unit (conservative reading)
+
+Same checkpoints, same test windows, calibration reduced to one **maximum** score
+per calibration engine.
+
+| Subset | Method | Emp. coverage | Mean width | Winkler |
+|---|---|---|---|---|
+| FD001 | split_conformal | 1.000 | 66.7 | 66.7 |
+| FD001 | cqr | 1.000 | 65.0 | 65.0 |
+| FD001 | adaptive | 0.992 | 74.3 | 75.4 |
+| FD001 | nex_scp | 0.980 | 61.8 | 65.3 |
+| FD001 | eara_conformal | 0.990 | 84.4 | 86.2 |
+| FD002 | split_conformal | 1.000 | 76.1 | 76.1 |
+| FD002 | cqr | 0.998 | 72.4 | 72.4 |
+| FD002 | adaptive | 0.998 | 89.8 | 90.0 |
+| FD002 | nex_scp | 0.985 | 66.4 | 68.2 |
+| FD002 | eara_conformal | 0.999 | 81.2 | 81.2 |
+| FD003 | split_conformal | 0.998 | 70.3 | 70.3 |
+| FD003 | cqr | 0.998 | 67.2 | 67.2 |
+| FD003 | adaptive | 0.984 | 63.6 | 65.1 |
+| FD003 | nex_scp | 0.982 | 60.2 | 62.2 |
+| FD003 | eara_conformal | 0.994 | 86.1 | 86.5 |
+| FD004 | split_conformal | 0.995 | 79.1 | 79.8 |
+| FD004 | cqr | 0.995 | 78.7 | 79.9 |
+| FD004 | adaptive | 0.991 | 87.2 | 89.3 |
+| FD004 | nex_scp | 0.977 | 65.5 | 71.4 |
+| FD004 | eara_conformal | 0.998 | 96.5 | 96.7 |
+
+The engine unit sits **7.6–14.2 points above** the window unit at the same
+nominal level. That is not a bug: a maximum over a whole engine lifetime is much
+larger than the residual of any single test window, so a quantile of those
+maxima is deliberately conservative. It is reported because it is the unit that
+was used in earlier revisions, so a reader can see exactly what changed. **Do not
+compare widths across units**; the engine numbers are not a better interval,
+they are a stricter guarantee.
+
+### 3.4 Pairwise comparison and artifacts
 
 `results/conformal_benchmark/paired_comparisons.csv` holds per-seed paired
-differences between methods; `per_seed_metrics.csv` holds the raw per-seed rows
-and `per_engine_intervals.csv` the per-engine intervals, for anyone who wants to
-run their own paired test. The reference comparison in
-[BENCHMARKING_NOTES.md](BENCHMARKING_NOTES.md) uses these.
+differences between methods with an exact sign-flip test; `per_seed_metrics.csv`
+holds the raw per-seed rows, `per_engine_intervals.csv` the per-engine intervals
+and `split_manifest.json` the calibration/test engine IDs and hashes, so anyone
+can re-run the comparisons independently.
+
+> **No method ranking is statistically established at five seeds.** The exact
+> sign-flip test over five paired seeds has a smallest attainable p-value of
+> 0.0625, and after Holm correction across the method pairs every comparison in
+> `paired_comparisons.csv` has adjusted p ≥ 0.25. The ordering above is a
+> *description of the measured means*, not a significance claim. The sign and
+> magnitude are consistent across subsets for the coverage deficit of
+> `adaptive`/`eara_conformal` (their 95 % CI on coverage-vs-split excludes zero
+> on FD003 but the exact test does not), and a larger seed grid is what it would
+> take to settle it.
+
+> **Which method to ship?** `nex_scp` is the safest default when coverage must be
+> guaranteed: it tracks nominal at all three levels on all four subsets and never
+> has the widest interval. `split_conformal` is the simplest and almost equally
+> well calibrated. `eara_conformal` and `adaptive` produce narrower intervals but
+> under-cover by 3–5 points on FD003/FD004; use them when width matters more than
+> the last few points of coverage, and say so.
 
 ---
 
@@ -209,38 +325,80 @@ validation pending`).
 # 1. Dataset
 #    Place NASA C-MAPSS files in data/raw/ (see README.md -> Dataset).
 
-# 2. Point prediction
+# 2. Legacy single run (the checkpoint behind the untagged explainability /
+#    decision / HITL artifacts; not the certified number in Section 2)
 python scripts/preprocess.py --subset FD001
-python scripts/train.py     --model gru_att_deg --subset FD001
-python scripts/evaluate.py  --model gru_att_deg --subset FD001
+python scripts/train.py     --model gru_att_deg_v2 --subset FD001
+python scripts/evaluate.py  --model gru_att_deg_v2 --subset FD001
 
-# 3. Interval benchmark (the numbers in Section 3)
+# 2b. Recompute the legacy single-run tables from the saved predictions
+python scripts/summarize.py
+python scripts/sota_benchmark.py
+
+# 3. Multi-seed certification (the mean ± std numbers and Section 6 verdict)
+python scripts/multiseed_train.py  --model gru_att_deg_v2 --subsets all --seeds 42 43 44 45 46
+python scripts/multiseed_report.py
+
+# 4. Interval benchmark (the numbers in Section 3) — real checkpoints, 5 seeds
 python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
 
-# 4. Explainability (the ERI numbers in Section 4)
+# 5. Downstream chain on the same checkpoints, per seed
+python scripts/multiseed_pipeline.py --stages all --seeds 42 43 44 45 46
+
+# 6. Explainability (the ERI numbers in Section 4)
 python scripts/explain.py --model all --subset all --target all
 ```
 
-All benchmark outputs land in `results/conformal_benchmark/` (tracked); all
-other generated artifacts land in `outputs/` (not tracked).
+Every multi-seed stage is resumable: re-running a command skips the
+(subset, seed) combinations whose checkpoint and metrics already exist.
+`--force` re-runs them.
+
+All benchmark outputs land in `results/` (tracked); all other generated
+artifacts land in `outputs/` (not tracked).
 
 ---
 
 ## 6. Caveats
 
-- **Point-prediction numbers are single-run and config-dependent.** They were
-  not averaged over seeds, unlike the interval benchmark. Do not compare them
-  to multi-seed SOTA medians without re-running.
-- **`cqr` in `scripts/uncertainty.py` is not conventional CQR** — the pipeline
-  checkpoint has no separately trained quantile heads, so it uses
-  `prediction ± scale` as conditional bounds. The benchmark's `cqr` *does*
-  train quantile heads and is conventional CQR. Do not mix the two.
-- **The benchmark trains its own short-horizon model (15 epochs)** to keep the
-  5×4×5 grid tractable; its point accuracy is therefore lower than the
-  Section 2 checkpoints. The interval *comparison* is still valid because all
-  five methods see the same model.
+- **Point-prediction numbers are certified over five seeds.** Section 2 is the
+  mean ± sample std over seeds 42–46 of the same recipe, not a single run. The
+  superseded single-run values (12.947 for the model, 12.871 for the 3-member
+  ensemble) sit inside the seed range and are no longer quoted as the headline.
+- **The seed band is a real floor on any claimed improvement.** On the
+  four-subset mean the band is ±0.136, on the subsets it is ±0.17–0.43. The
+  0.53 gap to KESTF's published mean is larger than the band, so it is a real
+  deficit; the 0.04 gap to TTSNet is smaller, so it is not a ranking. A
+  single-run comparison to a published number is not evidence of a ranking.
+- **Coverage is reported for two calibration units, and the engine unit
+  over-covers by design.** `engine` keeps one maximum residual per calibration
+  engine, which is far larger than any single test window, so it lands at
+  0.97–0.99 at an 80 % target. `window` keeps one score per calibration window
+  (the unit the test set is scored on) and tracks the nominal level to within a
+  few points; it is the primary unit. Both use the same checkpoint, the same
+  engine-disjoint split and one inference pass.
+- **The finite-sample rank is never clamped.** `conformal_quantile` returns
+  `+inf` when `ceil((n + 1)(1 − α)) > n`, and the interval builder clips an
+  infinite radius to the RUL domain. When that happens it is reported as a
+  full-width interval, not silently squeezed into a narrower one. See
+  [docs/ARCHITECTURE.md § 7.1](docs/ARCHITECTURE.md#71-the-conformal-rank-clamp-survives-in-the-benchmark-fixed).
+- **`eara_conformal` and `adaptive` under-cover slightly at 90/95 % on some
+  subsets** (see § 3). Their scales are estimated from training-engine windows,
+  which under-state the uncertainty of a last-window test query; the price of
+  the narrower interval is a 2–5 point coverage deficit. The split and NEX-SCP
+  intervals track nominal more tightly and are the safer default when coverage
+  must be guaranteed rather than merely measured.
+- **No interval-method ranking is statistically established.** The paired
+  comparison uses five seeds; the exact sign-flip test's smallest attainable
+  p-value at n = 5 is 0.0625, and every Holm-adjusted comparison is ≥ 0.25. The
+  ordering in § 3 is descriptive. The coverage deficits of `adaptive` and
+  `eara_conformal` are consistent in sign across subsets and their bootstrap
+  intervals exclude zero on FD003, but that is not the same as a significant
+  paired test.
+- **Neither interval method has been stress-tested under distribution shift.**
+  All calibration and test engines come from the same C-MAPSS simulation; the
+  coverage numbers do not transfer to a different machine or operating profile.
 - **Score-metric values in Section 1 are not directly comparable** across
   papers; see the warning above.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps) for the full list of known
-gaps.
+See [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-known-gaps) for the full
+list of known gaps.

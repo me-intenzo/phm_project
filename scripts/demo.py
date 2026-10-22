@@ -302,7 +302,7 @@ def main() -> None:
 
     import json as _json
     sys.path.insert(0, str(ROOT))
-    from src.evaluation import comparative_benchmark, run_ablation, cross_subset_consistency
+    from src.evaluation import comparative_benchmark, cross_subset_consistency, run_ablation
 
     results_dir = ROOT / "outputs" / "results"
 

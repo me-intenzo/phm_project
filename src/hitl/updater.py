@@ -26,7 +26,6 @@ from src.decision_engine.constraints import check_constraints
 from src.hitl.feedback import VALID_ACTIONS
 from src.hitl.logger import load_feedback
 
-
 # ---------------------------------------------------------------------
 # Conservative adaptation thresholds
 # ---------------------------------------------------------------------

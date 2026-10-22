@@ -97,3 +97,9 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI entry points insert the repository root into ``sys.path`` before
+# importing ``src.*``, so their project imports are not at the top of the file
+# by design.
+"scripts/*.py" = ["E402"]

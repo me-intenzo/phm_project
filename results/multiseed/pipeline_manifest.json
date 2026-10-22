@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-10-22T08:47:28.694762+00:00",
+  "model": "gru_att_deg_v2",
+  "subsets": [
+    "FD001"
+  ],
+  "seeds": [
+    42
+  ],
+  "stages": [
+    "uncertainty",
+    "xai",
+    "decision",
+    "hitl"
+  ],
+  "total_seconds": 39.83,
+  "n_runs": 1,
+  "n_clean": 1,
+  "runs": [
+    {
+      "subset": "FD001",
+      "seed": 42,
+      "tag": "ms42",
+      "stages": [
+        "uncertainty",
+        "xai",
+        "decision",
+        "hitl"
+      ],
+      "errors": [],
+      "uncertainty_seconds": 28.76,
+      "uncertainty_status": "ok",
+      "xai_seconds": 8.78,
+      "xai_status": "ok",
+      "decision_seconds": 2.05,
+      "decision_status": "ok",
+      "hitl_seconds": 0.23,
+      "hitl_status": "ok",
+      "artifacts": {
+        "predictions": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_predictions.npz",
+        "metrics": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_metrics.json",
+        "uncertainty_split": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_conformal.npz",
+        "uncertainty_cqr": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_cqr.npz",
+        "uncertainty_adaptive": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_adaptive_conformal.npz",
+        "uncertainty_engine_joint": "D:\\phm-xai\\outputs\\results\\FD001_gru_att_deg_v2_ms42_engine_joint_conformal.npz",
+        "xai": "D:\\phm-xai\\outputs\\xai\\FD001\\gru_att_deg_v2_ms42\\eri_rul.json",
+        "decision": "D:\\phm-xai\\outputs\\results\\decision_FD001_gru_att_deg_v2_ms42.json",
+        "hitl": "D:\\phm-xai\\outputs\\results\\hitl_FD001_gru_att_deg_v2_ms42.json"
+      },
+      "problems": []
+    }
+  ]
+}

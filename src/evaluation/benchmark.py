@@ -29,6 +29,7 @@ def comparative_benchmark(
     subsets: list[str],
     models: list[str],
     uncertainty_variant: str = "engine_joint_conformal",
+    tag: str = "",
 ) -> dict[str, Any]:
     """
     Load pipeline artifacts and compute predictive + uncertainty metrics
@@ -40,6 +41,9 @@ def comparative_benchmark(
     subsets             : e.g. ["FD001", "FD002", "FD003", "FD004"]
     models              : e.g. ["lstm", "gru", "transformer", "hybrid"]
     uncertainty_variant : suffix used in the .npz filename
+    tag                 : optional run tag (e.g. ``"ms42"``) selecting one
+                          specific set of weights.  Without a tag the
+                          historical untagged artifacts are read.
 
     Returns
     -------
@@ -51,10 +55,11 @@ def comparative_benchmark(
 
     for subset in subsets:
         for model in models:
-            key = f"{subset}_{model}"
+            run_name = f"{model}_{tag}" if tag else model
+            key = f"{subset}_{run_name}"
 
-            pred_path = results_dir / f"{subset}_{model}_predictions.npz"
-            unc_path  = results_dir / f"{subset}_{model}_{uncertainty_variant}.npz"
+            pred_path = results_dir / f"{subset}_{run_name}_predictions.npz"
+            unc_path  = results_dir / f"{subset}_{run_name}_{uncertainty_variant}.npz"
 
             if not pred_path.exists():
                 report[key] = {"error": f"missing {pred_path.name}"}

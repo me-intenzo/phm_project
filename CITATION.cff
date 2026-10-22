@@ -9,7 +9,7 @@ abstract: >-
   temporal relevance, ERI), and constraint-aware maintenance recommendations.
 type: software
 version: "0.1.0"
-date-released: "2026-01-01"
+date-released: "2026-07-01"
 license: Apache-2.0
 repository-code: "https://github.com/me-intenzo/phm_project"
 keywords:

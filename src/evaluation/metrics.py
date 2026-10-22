@@ -33,7 +33,6 @@ import numpy as np
 from scipy.stats import spearmanr
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-
 # ------------------------------------------------------------------ #
 # 1. Predictive Accuracy
 # ------------------------------------------------------------------ #
@@ -163,7 +162,8 @@ def explainability_quality(eri_json_path: str | Path) -> dict[str, Any]:
 
     Expected keys in the JSON (written by src/explainability/eri.py):
         eri, rho_ig_attn, rho_ig_shap, consensus_k,
-        sensor_importance.ig, sensor_importance.temporal, sensor_importance.shap
+        sensor_importance.ig, sensor_importance.shap,
+        sensor_importance.temporal_relevance
     """
     with open(eri_json_path) as f:
         eri = json.load(f)
@@ -182,9 +182,9 @@ def explainability_quality(eri_json_path: str | Path) -> dict[str, Any]:
 
     # Pairwise Spearman between all three sensor importance vectors if present
     si = eri.get("sensor_importance", {})
-    ig   = np.asarray(si.get("ig",       []), dtype=np.float64)
-    temp = np.asarray(si.get("temporal", []), dtype=np.float64)
-    shap = np.asarray(si.get("shap",     []), dtype=np.float64)
+    ig   = np.asarray(si.get("ig", []), dtype=np.float64)
+    temp = np.asarray(si.get("temporal_relevance", []), dtype=np.float64)
+    shap = np.asarray(si.get("shap", []), dtype=np.float64)
 
     if ig.size and temp.size and ig.size == temp.size:
         result["spearman_ig_temporal"] = float(spearmanr(ig, temp).statistic)
@@ -199,6 +199,57 @@ def explainability_quality(eri_json_path: str | Path) -> dict[str, Any]:
 # ------------------------------------------------------------------ #
 # 4. Decision Effectiveness
 # ------------------------------------------------------------------ #
+
+def decision_effectiveness_from_records(records: list[dict]) -> dict[str, Any]:
+    """
+    Dimension 4 — Decision Effectiveness (from in-memory decision records).
+
+    Parameters
+    ----------
+    records : list[dict]
+        Decision records as produced by ``recommend_action`` — each one
+        carrying ``recommended_action``, ``human_review``,
+        ``constraint_violations``, ``risk_score`` and ``urgency_index``.
+
+    Returns
+    -------
+    dict
+        Action distribution, human-review rate, constraint violation rate,
+        mean risk/urgency and the risk–urgency correlation.
+    """
+    n = len(records)
+    if n == 0:
+        return {"n_decisions": 0}
+
+    actions      = [r.get("recommended_action", "") for r in records]
+    review_flags = [r.get("human_review", False)    for r in records]
+    violations   = [len(r.get("constraint_violations", [])) > 0 for r in records]
+    risks        = np.array([r.get("risk_score",    0.0) for r in records], dtype=np.float64)
+    urgencies    = np.array([r.get("urgency_index", 0.0) for r in records], dtype=np.float64)
+
+    action_counts: dict[str, int] = {}
+    for a in actions:
+        action_counts[a] = action_counts.get(a, 0) + 1
+
+    # Pearson correlation between risk and urgency — should be high (>0.9)
+    # if the urgency amplifier is working correctly.  Undefined (NaN) when
+    # one of the two series is constant.
+    if n > 1 and risks.std() > 0.0 and urgencies.std() > 0.0:
+        risk_urgency_corr = float(np.corrcoef(risks, urgencies)[0, 1])
+    else:
+        risk_urgency_corr = float("nan")
+
+    return {
+        "n_decisions":            n,
+        "action_distribution":    {k: v / n for k, v in action_counts.items()},
+        "action_counts":          action_counts,
+        "human_review_rate":      float(sum(review_flags) / n),
+        "constraint_violation_rate": float(sum(violations) / n),
+        "mean_risk_score":        float(risks.mean()),
+        "mean_urgency_index":     float(urgencies.mean()),
+        "risk_urgency_correlation": risk_urgency_corr,
+    }
+
 
 def decision_effectiveness(decision_json_path: str | Path) -> dict[str, Any]:
     """
@@ -215,34 +266,7 @@ def decision_effectiveness(decision_json_path: str | Path) -> dict[str, Any]:
     if isinstance(records, dict):
         records = records.get("decisions", [records])
 
-    n = len(records)
-    if n == 0:
-        return {"n_decisions": 0}
-
-    actions      = [r.get("recommended_action", "") for r in records]
-    review_flags = [r.get("human_review", False)    for r in records]
-    violations   = [len(r.get("constraint_violations", [])) > 0 for r in records]
-    risks        = np.array([r.get("risk_score",    0.0) for r in records], dtype=np.float64)
-    urgencies    = np.array([r.get("urgency_index", 0.0) for r in records], dtype=np.float64)
-
-    action_counts: dict[str, int] = {}
-    for a in actions:
-        action_counts[a] = action_counts.get(a, 0) + 1
-
-    # Pearson correlation between risk and urgency — should be high (>0.9)
-    # if the urgency amplifier is working correctly
-    risk_urgency_corr = float(np.corrcoef(risks, urgencies)[0, 1]) if n > 1 else float("nan")
-
-    return {
-        "n_decisions":            n,
-        "action_distribution":    {k: v / n for k, v in action_counts.items()},
-        "action_counts":          action_counts,
-        "human_review_rate":      float(sum(review_flags) / n),
-        "constraint_violation_rate": float(sum(violations) / n),
-        "mean_risk_score":        float(risks.mean()),
-        "mean_urgency_index":     float(urgencies.mean()),
-        "risk_urgency_correlation": risk_urgency_corr,
-    }
+    return decision_effectiveness_from_records(records)
 
 
 # ------------------------------------------------------------------ #
@@ -314,6 +338,40 @@ def robustness_under_noise(
     return results
 
 
+def per_window_dropout_mask(
+    shape: tuple[int, int, int],
+    n_drop: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Build a per-window sensor-dropout mask.
+
+    Parameters
+    ----------
+    shape : (n_engines, window, n_features)
+    n_drop : number of sensors killed in every window
+    rng   : numpy random generator
+
+    Returns
+    -------
+    np.ndarray of bool, ``True`` where the sensor is dropped.
+
+    Every window gets its own set of dead sensors, so the fault is local to
+    the window instead of removing a sensor for the whole engine lifetime.
+    At least one sensor stays alive in every window.
+    """
+    n_features = shape[-1]
+    n_drop = max(0, min(int(n_drop), n_features - 1))
+
+    order = rng.random(size=shape).argsort(axis=2)
+    rank  = np.argsort(order, axis=2)
+    mask  = rank < n_drop
+
+    # Keep at least one sensor alive per window.
+    dead_all = mask.all(axis=2, keepdims=True)
+    return mask & ~dead_all
+
+
 def robustness_under_dropout(
     model,
     X_test: np.ndarray,
@@ -326,8 +384,14 @@ def robustness_under_dropout(
     """
     Dimension 5b — Robustness under random sensor dropout.
 
-    Randomly zeros out a fraction of sensor channels per window and
-    measures MAE degradation relative to the clean baseline.
+    For every window a fresh set of sensors is masked out: the mask has
+    shape (n_engines, window, features) and the masked sensors are zeroed
+    across the timesteps of that window only.  The model therefore sees
+    transient, window-local sensor faults instead of a sensor that
+    disappears for the whole engine lifetime.  This mirrors the fault model
+    the training augmentation applies (``src/models/augmentation.py``).
+
+    At least one sensor stays alive in every window.
     """
     import torch
 
@@ -353,15 +417,17 @@ def robustness_under_dropout(
 
     for frac in dropout_fractions:
         n_drop = max(1, int(frac * n_features))
+        # At least one sensor has to stay alive in every window.
+        effective_n_drop = min(n_drop, max(0, n_features - 1))
         trial_maes = []
         for _ in range(n_trials):
-            X_drop = X_test.copy()
-            drop_idx = rng.choice(n_features, size=n_drop, replace=False)
-            X_drop[:, :, drop_idx] = 0.0
+            drop_mask = per_window_dropout_mask(X_test.shape, n_drop, rng)
+            X_drop = X_test * (~drop_mask).astype(np.float32)
             trial_maes.append(float(mean_absolute_error(y_rul_true, _predict(X_drop))))
         mean_mae = float(np.mean(trial_maes))
         results["dropout_fractions"][frac] = {
-            "n_sensors_dropped": n_drop,
+            "n_sensors_dropped": effective_n_drop,
+            "dropout_scope": "per_window",
             "mae":               mean_mae,
             "mae_degradation":   mean_mae - baseline_mae,
             "relative_degradation": (mean_mae - baseline_mae) / max(baseline_mae, 1e-9),

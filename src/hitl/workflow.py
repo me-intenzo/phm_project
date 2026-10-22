@@ -22,7 +22,6 @@ from typing import Any
 
 from src.hitl.feedback import VALID_ACTIONS, create_feedback
 
-
 REVIEW_ACTIONS = {
     "APPROVE",
     "OVERRIDE",

@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-10-22T09:34:17.964937+00:00",
+  "git_commit": "0d8869227a1086bd7d4998896f30ee2c663f5c52",
+  "model": "gru_att_deg_v2",
+  "subsets": [
+    "FD001",
+    "FD002",
+    "FD003",
+    "FD004"
+  ],
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "tag_prefix": "ms",
+  "tag_pattern": "ms<seed>",
+  "overrides": {},
+  "total_seconds": 1897.49,
+  "device": "cuda",
+  "note": "Every run in this manifest is a full checkpoint of the named architecture trained by scripts/train.py. No proxy or surrogate model is involved.",
+  "is_multi_seed_certification": true,
+  "runs": [
+    {
+      "subset": "FD001",
+      "seed": 42,
+      "tag": "ms42",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD001\\best_model.pt",
+      "checkpoint_sha256": "e0bb2aa55643104f9449bece9a1c74805bb3dc42ca2819271ff671dff56399d1",
+      "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms42_metrics.json"
+    },
+    {
+      "subset": "FD001",
+      "seed": 43,
+      "tag": "ms43",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD001\\best_model.pt",
+      "checkpoint_sha256": "07e05c4ce27171abed8520095915971fd3aa1c3b39f61baddf7507e3e2431a51",
+      "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms43_metrics.json"
+    },
+    {
+      "subset": "FD001",
+      "seed": 44,
+      "tag": "ms44",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD001\\best_model.pt",
+      "checkpoint_sha256": "5c170e704cee86ae80026a04191a910a8894996fb6fec7ed53dbadcc973a2845",
+      "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms44_metrics.json"
+    },
+    {
+      "subset": "FD001",
+      "seed": 45,
+      "tag": "ms45",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD001\\best_model.pt",
+      "checkpoint_sha256": "d718a123fe16166e57bb931de940431c3db1a4d21c459aca9db232e97cfd6b0d",
+      "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms45_metrics.json"
+    },
+    {
+      "subset": "FD001",
+      "seed": 46,
+      "tag": "ms46",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD001\\best_model.pt",
+      "checkpoint_sha256": "f0090c8c50dd8c15ed14c79f1f54ce5132614f340555906ad4b37f5452516676",
+      "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms46_metrics.json"
+    },
+    {
+      "subset": "FD002",
+      "seed": 42,
+      "tag": "ms42",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD002\\best_model.pt",
+      "checkpoint_sha256": "478a552d1f5fdad7ce5b032ced153204af4e211088fc1784a7984cc0c3183624",
+      "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms42_metrics.json"
+    },
+    {
+      "subset": "FD002",
+      "seed": 43,
+      "tag": "ms43",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD002\\best_model.pt",
+      "checkpoint_sha256": "937e2639f448c5cef778dc8305445769aeba066d41611ba5e3a290ead7917e7f",
+      "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms43_metrics.json"
+    },
+    {
+      "subset": "FD002",
+      "seed": 44,
+      "tag": "ms44",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD002\\best_model.pt",
+      "checkpoint_sha256": "c5beee71d784638d934d11c64c67d51fb4d82599b37026c595c758ab6ddfcfad",
+      "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms44_metrics.json"
+    },
+    {
+      "subset": "FD002",
+      "seed": 45,
+      "tag": "ms45",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD002\\best_model.pt",
+      "checkpoint_sha256": "83a19412de99a0d44bcc6f6ec487e97ff54b1a54f0663107d4114015c913600a",
+      "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms45_metrics.json"
+    },
+    {
+      "subset": "FD002",
+      "seed": 46,
+      "tag": "ms46",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD002\\best_model.pt",
+      "checkpoint_sha256": "235c97406013e4fdcfef1f51eae3aa91ef0313895ca6c7d2a7f8770243b1b579",
+      "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms46_metrics.json"
+    },
+    {
+      "subset": "FD003",
+      "seed": 42,
+      "tag": "ms42",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD003\\best_model.pt",
+      "checkpoint_sha256": "bdbb7b4771ab661a8d39c7c5880911590aaa4949ee8e99e5f8c8117a55bc76e6",
+      "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms42_metrics.json"
+    },
+    {
+      "subset": "FD003",
+      "seed": 43,
+      "tag": "ms43",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD003\\best_model.pt",
+      "checkpoint_sha256": "a089db3b469db1f7c31f11096a6b9a492cd20a0b3fe84716683802f895a26bc2",
+      "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms43_metrics.json"
+    },
+    {
+      "subset": "FD003",
+      "seed": 44,
+      "tag": "ms44",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD003\\best_model.pt",
+      "checkpoint_sha256": "dd7e9fd7add1d0aede64da2438afff6c48403d7128002c067ee638d5c6864099",
+      "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms44_metrics.json"
+    },
+    {
+      "subset": "FD003",
+      "seed": 45,
+      "tag": "ms45",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD003\\best_model.pt",
+      "checkpoint_sha256": "8ed514693c80683c1f8efee5f32edbac7bc8c4cdeb80d13b151dfca2e31b605c",
+      "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms45_metrics.json"
+    },
+    {
+      "subset": "FD003",
+      "seed": 46,
+      "tag": "ms46",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD003\\best_model.pt",
+      "checkpoint_sha256": "75b725c4f7ab4cd8785ffd359260701e3fc46cd1a939191dc78e80bde4d766f6",
+      "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms46_metrics.json"
+    },
+    {
+      "subset": "FD004",
+      "seed": 42,
+      "tag": "ms42",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD004\\best_model.pt",
+      "checkpoint_sha256": "4ecf8618f0c677258feea8bfc8493333b6c07469b464d86e0fd7e4e272605c29",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms42_metrics.json"
+    },
+    {
+      "subset": "FD004",
+      "seed": 43,
+      "tag": "ms43",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD004\\best_model.pt",
+      "checkpoint_sha256": "767e80bcbf7fc1974de470bf8d93d4d5eb790106b057df631f20a26d45f6a727",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms43_metrics.json"
+    },
+    {
+      "subset": "FD004",
+      "seed": 44,
+      "tag": "ms44",
+      "status": "skipped",
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD004\\best_model.pt",
+      "checkpoint_sha256": "16530129af8f591d6c11324b89d3a97578c3a7685a1c446bfa4847f80e40ea7c",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms44_metrics.json"
+    },
+    {
+      "subset": "FD004",
+      "seed": 45,
+      "tag": "ms45",
+      "status": "trained",
+      "seconds": 1000.54,
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD004\\best_model.pt",
+      "checkpoint_sha256": "0263593dca4007a766e74218bb898392036d1874134bec18cf72abd3ce2ee186",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms45_metrics.json",
+      "epoch": 26,
+      "run_metadata": {
+        "seed": 45,
+        "tag": "ms45",
+        "determinism": {
+          "seed": 45,
+          "deterministic": true,
+          "torch_use_deterministic_algorithms": true,
+          "torch_deterministic_warn_only": true,
+          "cudnn_deterministic": true,
+          "cudnn_benchmark": false,
+          "tf32_allowed": false,
+          "cublas_workspace_config": ":4096:8"
+        },
+        "arch": "gru_att_deg_v2",
+        "subset": "FD004"
+      },
+      "input_size": 23,
+      "window_size": 40
+    },
+    {
+      "subset": "FD004",
+      "seed": 46,
+      "tag": "ms46",
+      "status": "trained",
+      "seconds": 896.42,
+      "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD004\\best_model.pt",
+      "checkpoint_sha256": "ace2f094317403e5f4dcf131b5a8ebb69b39f74e94db6d14d6d4f9db18e71243",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms46_metrics.json",
+      "epoch": 22,
+      "run_metadata": {
+        "seed": 46,
+        "tag": "ms46",
+        "determinism": {
+          "seed": 46,
+          "deterministic": true,
+          "torch_use_deterministic_algorithms": true,
+          "torch_deterministic_warn_only": true,
+          "cudnn_deterministic": true,
+          "cudnn_benchmark": false,
+          "tf32_allowed": false,
+          "cublas_workspace_config": ":4096:8"
+        },
+        "arch": "gru_att_deg_v2",
+        "subset": "FD004"
+      },
+      "input_size": 23,
+      "window_size": 40
+    }
+  ]
+}

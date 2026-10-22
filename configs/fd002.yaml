@@ -1,16 +1,54 @@
+# PHM-XAI experiment configuration — FD002
+#
+# FD002 has 260 training engines across six operating conditions, so it can
+# support a slightly wider model and stronger regularisation than FD001.
+
 dataset: FD002
 
+# ------------------------------------------------------------------ data
 window_size: 40
+max_rul: 125
 
+# ------------------------------------------------------------------ model
+model: gru_att_deg_v2
+hidden_size: 160
+num_layers: 2
+dropout: 0.35
+num_heads: 4
+use_layer_norm: true
+
+# ------------------------------------------------------------------ optimisation
 batch_size: 256
+epochs: 150
+learning_rate: 0.0003
+optimizer: AdamW
+weight_decay: 0.0001
+scheduler: cosine
+warmup_epochs: 5
+min_lr: 0.000001
+patience: 30
+grad_clip: 1.0
+ema_decay: 0.995
 
-epochs: 300
+# ------------------------------------------------------------------ loss
+rul_loss_type: mse
+rul_loss_weight: 1.0
+hi_loss_weight: 0.4
+scale_loss_weight: 0.1
 
-learning_rate: 0.001
+# ------------------------------------------------------------------ augmentation
+# Ablation: augmentation raised FD002 RUL RMSE from 13.61 to 14.72, so it is
+# disabled here.  The ensemble still includes an augmented variant for
+# diversity.
+augment: false
+aug_noise_std: 0.02
+aug_bias_std: 0.06
+aug_gain_std: 0.02
+aug_sensor_dropout: 0.05
+aug_time_mask_prob: 0.15
+aug_time_mask_len: 8
+aug_history_crop: 8
 
-optimizer: Adam
-
+# ------------------------------------------------------------------ runtime
 random_seed: 42
-
-#device: cpu //use only if u wanna run on cpu or lack gpu, otherwise use cuda
 device: cuda

@@ -44,6 +44,13 @@ class MultiTaskLoss(nn.Module):
         fast the scale head learns.
     eps : float
         Numerical floor keeping s(x) strictly positive in the log term.
+    rul_loss_type : str
+        ``"mse"`` (default, matched to RMSE), ``"huber"`` or
+        ``"smooth_l1"``.  Huber/SmoothL1 clip the influence of the few
+        badly mis-estimated windows, which regularises training but
+        slightly biases the optimum away from the least-squares solution.
+    huber_delta : float
+        Transition point of the Huber loss, expressed in RUL cycles.
     """
 
     def __init__(
@@ -52,6 +59,8 @@ class MultiTaskLoss(nn.Module):
         beta: float = 0.5,
         gamma: float = 0.1,
         eps: float = 1e-6,
+        rul_loss_type: str = "mse",
+        huber_delta: float = 10.0,
     ) -> None:
 
         super().__init__()
@@ -60,8 +69,21 @@ class MultiTaskLoss(nn.Module):
         self.beta = beta
         self.gamma = gamma
         self.eps = eps
+        self.rul_loss_type = rul_loss_type
+        self.huber_delta = huber_delta
 
-        self.rul_loss = nn.MSELoss()
+        if rul_loss_type == "mse":
+            self.rul_loss = nn.MSELoss()
+        elif rul_loss_type == "huber":
+            self.rul_loss = nn.HuberLoss(delta=huber_delta)
+        elif rul_loss_type == "smooth_l1":
+            self.rul_loss = nn.SmoothL1Loss(beta=huber_delta)
+        else:
+            raise ValueError(
+                f"Unknown rul_loss_type: {rul_loss_type}. "
+                "Expected 'mse', 'huber' or 'smooth_l1'."
+            )
+
         self.hi_loss = nn.MSELoss()
 
     def forward(

@@ -1,16 +1,52 @@
+# PHM-XAI experiment configuration — FD003
+#
+# Same size as FD001 but two fault modes, which makes the degradation
+# trajectory less predictable.  Dropout is kept slightly higher.
+
 dataset: FD003
 
+# ------------------------------------------------------------------ data
 window_size: 40
+max_rul: 125
 
+# ------------------------------------------------------------------ model
+model: gru_att_deg_v2
+hidden_size: 128
+num_layers: 2
+dropout: 0.35
+num_heads: 4
+use_layer_norm: true
+
+# ------------------------------------------------------------------ optimisation
 batch_size: 256
+epochs: 150
+learning_rate: 0.0003
+optimizer: AdamW
+weight_decay: 0.0001
+scheduler: cosine
+warmup_epochs: 5
+min_lr: 0.000001
+patience: 30
+grad_clip: 1.0
+ema_decay: 0.995
 
-epochs: 300
+# ------------------------------------------------------------------ loss
+rul_loss_type: mse
+rul_loss_weight: 1.0
+hi_loss_weight: 0.4
+scale_loss_weight: 0.1
 
-learning_rate: 0.001
+# ------------------------------------------------------------------ augmentation
+# Same engine count as FD001; augmentation did not help, so it is disabled.
+augment: false
+aug_noise_std: 0.02
+aug_bias_std: 0.05
+aug_gain_std: 0.02
+aug_sensor_dropout: 0.05
+aug_time_mask_prob: 0.15
+aug_time_mask_len: 8
+aug_history_crop: 8
 
-optimizer: Adam
-
+# ------------------------------------------------------------------ runtime
 random_seed: 42
-
-#device: cpu //use only if u wanna run on cpu or lack gpu, otherwise use cuda
 device: cuda

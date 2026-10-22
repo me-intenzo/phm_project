@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "description": "Published C-MAPSS RUL RMSE reference values used by scripts/multiseed_report.py. Values are transcribed from docs/SOTA_BENCHMARK.md (see that file for the per-method citations). 'mean_rmse' is the unweighted mean of the four per-subset values, except for KESTF whose four-subset aggregate is quoted directly by its authors.",
+  "metric": "RUL RMSE (lower is better)",
+  "subsets": ["FD001", "FD002", "FD003", "FD004"],
+  "references": [
+    {
+      "method": "KESTF",
+      "venue": "Applied Sciences 2026",
+      "per_subset": null,
+      "mean_rmse": 12.83,
+      "note": "Aggregate only; per-subset values are not published."
+    },
+    {
+      "method": "TTSNet",
+      "venue": "Sensors 2025",
+      "per_subset": {"FD001": 11.02, "FD002": 13.25, "FD003": 11.06, "FD004": 18.26},
+      "mean_rmse": 13.40
+    },
+    {
+      "method": "Cau-BiMamba-LSTM",
+      "venue": "Sensors 2025",
+      "per_subset": {"FD001": 13.16, "FD002": 13.09, "FD003": 13.85, "FD004": 14.37},
+      "mean_rmse": 13.62
+    },
+    {
+      "method": "MLEAN",
+      "venue": "IEEE TAI 2024",
+      "per_subset": {"FD001": 11.48, "FD002": 14.74, "FD003": 11.73, "FD004": 16.89},
+      "mean_rmse": 13.71
+    },
+    {
+      "method": "DAST",
+      "venue": "IEEE TIM 2022",
+      "per_subset": {"FD001": 11.43, "FD002": 15.25, "FD003": 11.32, "FD004": 18.36},
+      "mean_rmse": 14.09
+    },
+    {
+      "method": "ATCN",
+      "venue": "EAAI 2024",
+      "per_subset": {"FD001": 11.48, "FD002": 15.82, "FD003": 11.34, "FD004": 17.80},
+      "mean_rmse": 14.11
+    },
+    {
+      "method": "DBA-DCRN",
+      "venue": "J. Manuf. Syst. 2024",
+      "per_subset": {"FD001": 11.04, "FD002": 15.31, "FD003": 11.81, "FD004": 18.96},
+      "mean_rmse": 14.28
+    },
+    {
+      "method": "CNN-LSTM-Att",
+      "venue": "preprint 2025",
+      "per_subset": {"FD001": 15.98, "FD002": 14.45, "FD003": 13.91, "FD004": 16.64},
+      "mean_rmse": 15.25
+    }
+  ]
+}

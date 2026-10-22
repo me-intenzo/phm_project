@@ -21,9 +21,16 @@ from __future__ import annotations
 import numpy as np
 from sklearn.cluster import KMeans
 
-# RUL domain bounds (C-MAPSS piecewise-linear cap)
+from src.utils.config import DEFAULT_CONFIG
+
+# RUL domain bounds (C-MAPSS piecewise-linear cap).
+#
+# The cap is declared in ``configs/<subset>.yaml`` as ``max_rul`` and is
+# applied by ``scripts/preprocess.py`` when the labels are generated.
+# ``scripts/train.py`` refuses to train when the stored dataset metadata
+# disagrees with the config, so the two can never drift apart silently.
 RUL_MIN: float = 0.0
-RUL_MAX: float = 125.0
+RUL_MAX: float = float(DEFAULT_CONFIG.get("max_rul", 125.0))
 # Shared scale floor. The same constant is applied when a predicted scale
 # is used in a normalised score (calibration) or an interval radius
 # (prediction), keeping the two aligned.
@@ -72,9 +79,37 @@ def absolute_nonconformity(
     return np.abs(y_true - y_pred)
 
 
+def conformal_rank(n: int, alpha: float) -> int:
+    """
+    The finite-sample conformal rank ``k = ceil((n + 1)(1 - alpha))``.
+
+    Parameters
+    ----------
+    n:
+        Number of calibration scores.
+
+    alpha:
+        Miscoverage level.
+
+    Returns
+    -------
+    int
+        The one-based conformal rank.
+    """
+
+    if n <= 0:
+        raise ValueError("n must be positive.")
+
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1.")
+
+    return int(np.ceil((n + 1) * (1.0 - alpha)))
+
+
 def conformal_quantile(
     scores: np.ndarray,
     alpha: float,
+    allow_infinite: bool = True,
 ) -> float:
     """
     Calculate the finite-sample split-conformal quantile.
@@ -92,10 +127,24 @@ def conformal_quantile(
             0.10 -> 90% interval
             0.05 -> 95% interval
 
+    allow_infinite:
+        When the finite-sample rank ``k = ceil((n + 1)(1 - alpha))`` exceeds
+        the number of calibration scores ``n``, the calibration set is too
+        small to certify the requested coverage and the mathematically
+        correct quantile is ``+inf``.
+
+        With ``allow_infinite=True`` (the default) ``+inf`` is returned so
+        the caller can see that no finite interval is justified.  With
+        ``allow_infinite=False`` a ``ValueError`` is raised instead.
+
+        Earlier revisions of this module clamped the rank to ``n``, which
+        silently returned the largest observed score and voided the
+        coverage guarantee.  The clamp is gone.
+
     Returns
     -------
     float
-        Conformal quantile q_hat.
+        Conformal quantile q_hat, possibly ``+inf``.
     """
 
     scores = np.asarray(
@@ -125,27 +174,104 @@ def conformal_quantile(
 
     sorted_scores = np.sort(scores)
 
-    # Finite-sample conformal rank:
-    #
-    # k = ceil((n + 1) * (1 - alpha))
-    #
-    # where n is the number of calibration samples.
-
     n = len(sorted_scores)
 
-    rank = int(
-        np.ceil(
-            (n + 1) * (1.0 - alpha)
-        )
-    )
+    rank = conformal_rank(n, alpha)
+
+    if rank > n:
+        if not allow_infinite:
+            raise ValueError(
+                f"The finite-sample conformal rank k={rank} exceeds the "
+                f"number of calibration scores n={n}; the requested "
+                f"coverage {1.0 - alpha:.2%} is not attainable at this "
+                f"calibration size."
+            )
+        return float("inf")
 
     # Convert one-based conformal rank
     # to a valid zero-based NumPy index.
 
-    rank = min(
-        max(rank, 1),
-        n,
+    return float(
+        sorted_scores[rank - 1]
     )
+
+
+def signed_conformal_quantile(
+    scores: np.ndarray,
+    alpha: float,
+    allow_infinite: bool = True,
+) -> float:
+    """
+    Finite-sample conformal quantile for **signed** nonconformity scores.
+
+    Parameters
+    ----------
+    scores:
+        Calibration scores that may be negative.
+
+    alpha:
+        Miscoverage level.
+
+    allow_infinite:
+        When the finite-sample rank ``k = ceil((n + 1)(1 - alpha))`` exceeds
+        the number of calibration scores ``n``, ``+inf`` is returned (or a
+        ``ValueError`` is raised when ``allow_infinite`` is ``False``).
+
+    Notes
+    -----
+    Conformalized quantile regression (CQR) uses the signed score
+
+        ``max(q_lo(x) - y, y - q_hi(x))``
+
+    which is **negative** whenever the true value falls strictly inside the
+    predicted quantile interval.  Such scores are perfectly valid
+    nonconformity scores, so the non-negativity check of
+    :func:`conformal_quantile` must not be applied to them.
+
+    The rank is never clamped: clamping would silently return the largest
+    observed score and void the coverage guarantee.
+
+    Returns
+    -------
+    float
+        Conformal quantile q_hat, possibly ``+inf``.
+    """
+
+    scores = np.asarray(
+        scores,
+        dtype=np.float64,
+    ).reshape(-1)
+
+    if scores.size == 0:
+        raise ValueError(
+            "At least one calibration score is required."
+        )
+
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(
+            "alpha must be strictly between 0 and 1."
+        )
+
+    if not np.all(np.isfinite(scores)):
+        raise ValueError(
+            "Calibration scores must be finite."
+        )
+
+    sorted_scores = np.sort(scores)
+
+    n = len(sorted_scores)
+
+    rank = conformal_rank(n, alpha)
+
+    if rank > n:
+        if not allow_infinite:
+            raise ValueError(
+                f"The finite-sample conformal rank k={rank} exceeds the "
+                f"number of calibration scores n={n}; the requested "
+                f"coverage {1.0 - alpha:.2%} is not attainable at this "
+                f"calibration size."
+            )
+        return float("inf")
 
     return float(
         sorted_scores[rank - 1]
@@ -239,14 +365,15 @@ def regime_conformal_quantile(
     Finite-sample conformal quantile for a single regime.
 
     k = ceil((n + 1)(1 - alpha))
+
+    Returns ``+inf`` when the regime has no calibration data or when the
+    finite-sample rank is not attainable, so the caller can fall back to the
+    global quantile or widen the interval instead of silently clamping.
     """
     scores = np.asarray(scores, dtype=np.float64).reshape(-1)
     if scores.size == 0:
         return float("inf")          # no calibration data -> infinite radius
-    n = len(scores)
-    rank = int(np.ceil((n + 1) * (1.0 - alpha)))
-    rank = min(max(rank, 1), n)
-    return float(np.sort(scores)[rank - 1])
+    return conformal_quantile(scores, alpha)
 
 
 def calibrate_regime_quantiles(
@@ -387,7 +514,10 @@ def prediction_interval(
     """Construct symmetric split-conformal prediction intervals.
 
     ``q_hat`` is the calibration residual quantile, so it must be a
-    finite, non-negative scalar.
+    non-negative scalar.  ``+inf`` is accepted: it is what
+    :func:`conformal_quantile` returns when the finite-sample rank is not
+    attainable, and the resulting interval is the whole RUL domain — i.e.
+    "no finite interval is justified at this calibration size".
     """
     y_pred = np.asarray(y_pred, dtype=np.float64)
     q_hat = float(q_hat)
@@ -395,12 +525,13 @@ def prediction_interval(
     if not np.all(np.isfinite(y_pred)):
         raise ValueError("y_pred must contain only finite values.")
 
-    if not np.isfinite(q_hat) or q_hat < 0.0:
+    if np.isnan(q_hat) or q_hat < 0.0:
         raise ValueError(
-            "q_hat must be a finite, non-negative scalar."
+            "q_hat must be a non-negative scalar (inf is allowed)."
         )
 
-    return y_pred - q_hat, y_pred + q_hat
+    lower, upper = y_pred - q_hat, y_pred + q_hat
+    return _clip_interval(lower, upper)
 
 
 def conformal_predict(

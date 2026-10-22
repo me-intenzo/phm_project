@@ -1,20 +1,60 @@
+# Python bytecode and caches
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
 .venv/
+venv/
+env/
+.env/
+
+# Local editor and OS files
 .vscode/
 .idea/
-docs/
-*.zip
-.pytest_cache/
+.DS_Store
+Thumbs.db
 
+# Test, coverage, and type-checker output
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.hypothesis/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+*.whl
+*.zip
+
+# Project-generated artifacts
 outputs/
 data/raw/
 data/processed/
 
+# Model weights
 *.pt
 *.pth
 
+# Experiment and local runtime files
 wandb/
 logs/
+*.log
+*.tmp
+*.temp
 
-.ipynb_checkpoints/
+# Local environment and secret configuration
+.env
+.env.*
+!.env.example

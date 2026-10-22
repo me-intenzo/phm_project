@@ -209,6 +209,7 @@ class WindowGenerator:
         output_dir: Path,
         prefix: str,
         engine_ids=None,
+        extra_metadata: dict | None = None,
     ):
         """
         Save processed dataset.
@@ -309,6 +310,9 @@ class WindowGenerator:
                 engine_ids is not None
             ),
         }
+
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         with open(
             output_dir

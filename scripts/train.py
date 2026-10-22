@@ -1,53 +1,47 @@
 """
 train.py
 
-Generic training pipeline for prognostics models.
-
-Supported models
-----------------
-- LSTM
-- GRU
-- Transformer
-- Hybrid
+Config-driven training pipeline for prognostics models.
 
 Workflow
 --------
-Load processed data
+Load YAML config (``configs/fd00X.yaml`` merged over defaults)
         ↓
-Train / validation split
+Load processed data (and verify the RUL cap matches the config)
         ↓
-Select model
+Engine-wise train / validation split
         ↓
-Multi-task loss
+Window augmentation
         ↓
-ModelTrainer
+Multi-task loss (RUL + HI + heteroscedastic scale)
         ↓
-Best checkpoint
+ModelTrainer (warm-up, cosine/plateau LR, grad clipping, weight EMA)
         ↓
-Training history
+Best checkpoint (EMA weights) + full training history
+
+The checkpoint records the exact architecture and training config, so
+``scripts/evaluate.py`` can rebuild the model without hard-coded
+hyper-parameters.
 
 Usage
 -----
-python scripts/train.py --model lstm
-python scripts/train.py --model gru
-python scripts/train.py --model transformer
-python scripts/train.py --model hybrid
-python scripts/train.py --model gru_att_deg
-
+python scripts/train.py --model gru_att_deg_v2 --subset FD001
+python scripts/train.py --model gru_att_deg_v2 --subset all
+python scripts/train.py --model gru_att_deg_v2 --subset FD001 --seed 7 --tag seed7
+python scripts/train.py --model gru_att_deg_v2 --subset FD001 --no-augment
 """
 
 from __future__ import annotations
 
 import argparse
-import random
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 from sklearn.model_selection import GroupShuffleSplit
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 # ------------------------------------------------------------------
 # Project root
@@ -59,70 +53,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from src.utils.logger import get_script_logger
-from src.models.gru import GRUPrognosticsModel
-from src.models.lstm import LSTMPrognosticsModel
-from src.models.transformer import TransformerPrognosticsModel
-from src.models.hybrid import HybridPrognosticsModel
-from src.models.gru_att_deg import GruAttDeg
+from src.models.augmentation import AugmentationConfig, WindowAugmenter
 from src.models.losses import MultiTaskLoss
+from src.models.registry import ALL_MODELS, build_model
 from src.models.trainer import ModelTrainer
-
+from src.utils.config import ALL_SUBSETS, load_config
+from src.utils.logger import get_script_logger
+from src.utils.seed import set_seed
 
 # ------------------------------------------------------------------
-# Configuration
+# Paths
 # ------------------------------------------------------------------
 
-DEFAULT_SUBSET = "FD001"
-ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
-ALL_MODELS  = ["lstm", "gru", "transformer", "hybrid", "gru_att_deg"]
-
-DATA_DIR = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-)
-
-CHECKPOINT_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "checkpoints"
-)
-
-RESULTS_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "results"
-)
-
-SEED = 42
-
-BATCH_SIZE = 256
-
-EPOCHS = 300
-
-PATIENCE = 20
-
-VALIDATION_SIZE = 0.20
-
-LEARNING_RATE = 1e-3
-
-WEIGHT_DECAY = 1e-5
-
-HIDDEN_SIZE = 128
-
-NUM_LAYERS = 2
-
-DROPOUT = 0.3
-
-RUL_LOSS_WEIGHT = 1.0
-
-HI_LOSS_WEIGHT = 0.5
-
-# Supervises the per-sample scale head that EARA-Conformal treats as the
-# conditional error magnitude s(x). Kept small so the Gaussian NLL term
-# calibrates interval width without competing with RUL accuracy.
-SCALE_LOSS_WEIGHT = 0.1
+DATA_DIR = PROJECT_ROOT / "data" / "processed"
+CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
+RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 
 
 # ------------------------------------------------------------------
@@ -132,23 +77,78 @@ SCALE_LOSS_WEIGHT = 0.1
 def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Train a prognostics model "
-            "on NASA C-MAPSS."
-        )
+        description="Train a prognostics model on NASA C-MAPSS."
     )
 
     parser.add_argument(
         "--model",
         type=str,
-        default="lstm",
-        help="Model architecture to train, or 'all'.",
+        default="gru_att_deg_v2",
+        help=f"Model architecture to train, or 'all'. Choices: {ALL_MODELS}",
     )
     parser.add_argument(
         "--subset",
         type=str,
-        default=DEFAULT_SUBSET,
+        default="FD001",
         help="C-MAPSS subset to train, or 'all'.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Explicit YAML config path (default: configs/<subset>.yaml).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override the random seed from the config.",
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        help="Suffix for the checkpoint directory (e.g. 'seed7').",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Override the maximum number of epochs.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override the learning rate.",
+    )
+    parser.add_argument(
+        "--no-augment",
+        action="store_true",
+        help="Disable window augmentation.",
+    )
+    parser.add_argument(
+        "--no-ema",
+        action="store_true",
+        help="Disable the exponential moving average of the weights.",
+    )
+    parser.add_argument(
+        "--no-deterministic",
+        action="store_true",
+        help=(
+            "Disable the deterministic torch/CUDA kernels. The run stays "
+            "seeded, but bit-for-bit reproducibility is no longer "
+            "guaranteed."
+        ),
+    )
+    parser.add_argument(
+        "--overrides",
+        type=str,
+        default=None,
+        help=(
+            "Additional config overrides as comma-separated key=value "
+            "pairs, e.g. 'hidden_size=160,dropout=0.4'."
+        ),
     )
 
     return parser.parse_args()
@@ -158,60 +158,82 @@ def parse_args() -> argparse.Namespace:
 # Reproducibility
 # ------------------------------------------------------------------
 
-def set_seed(
-    seed: int,
-) -> None:
-    """
-    Set random seeds for reproducibility.
-    """
-
-    random.seed(seed)
-
-    np.random.seed(seed)
-
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+# NOTE: ``set_seed`` lives in ``src/utils/seed.py`` so that every entry
+# point (training, calibration, bootstrap) shares one implementation.  It
+# seeds ``random``/``numpy``/``torch``/``torch.cuda`` and enables the
+# deterministic torch/CUDA kernels, so a run is identified by its seed.
 
 
 # ------------------------------------------------------------------
 # Device
 # ------------------------------------------------------------------
 
-def get_device() -> torch.device:
-    """
-    Select CUDA when available, otherwise CPU.
-    """
+def get_device(preference: str = "cuda") -> torch.device:
+    """Select CUDA when available (and requested), otherwise CPU."""
 
-    if torch.cuda.is_available():
+    if preference == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
 
-        device = torch.device(
-            "cuda"
-        )
+    if preference not in ("cuda", "cpu"):
+        raise ValueError(f"Unknown device preference: {preference}")
 
-    else:
+    return torch.device("cpu")
 
-        device = torch.device(
-            "cpu"
-        )
 
-    return device
+# ------------------------------------------------------------------
+# Override parsing
+# ------------------------------------------------------------------
+
+def _coerce(value: str):
+    """Best-effort conversion of a CLI override string to a scalar."""
+
+    lowered = value.strip().lower()
+
+    if lowered in ("true", "false"):
+        return lowered == "true"
+
+    for caster in (int, float):
+        try:
+            return caster(value)
+        except ValueError:
+            pass
+
+    return value
+
+
+def parse_overrides(raw: str | None) -> dict:
+    """Parse ``key=value,key=value`` into a typed dict."""
+
+    if not raw:
+        return {}
+
+    overrides: dict = {}
+
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid override '{item}'. Expected key=value."
+            )
+        key, value = item.split("=", 1)
+        overrides[key.strip()] = _coerce(value)
+
+    return overrides
 
 
 # ------------------------------------------------------------------
 # Data Loading
 # ------------------------------------------------------------------
 
-def load_training_data(subset: str):
-    """
-    Load processed training arrays, engine IDs, and preprocessing metadata.
+def load_training_data(subset: str, expected_max_rul: int | None = None):
+    """Load processed training arrays, engine IDs and metadata.
 
-    Reads the metadata JSON written by preprocess.py so that train.py
-    always knows the window_size and feature count the data was built with.
-    Raises if any expected file is missing or array lengths disagree.
+    Verifies that the RUL cap stored by ``preprocess.py`` matches the one
+    requested by the experiment config.  A mismatch means the labels were
+    built with a different cap, which silently invalidates the run.
     """
-    import json
 
     x_path      = DATA_DIR / f"{subset}_train_X.npy"
     rul_path    = DATA_DIR / f"{subset}_train_y_rul.npy"
@@ -226,20 +248,31 @@ def load_training_data(subset: str):
                 f"Run: python scripts/preprocess.py --subset {subset}"
             )
 
+    import json
+
+    with open(meta_path) as f:
+        metadata = json.load(f)
+
+    if expected_max_rul is not None:
+        stored = metadata.get("max_rul")
+        if stored is not None and int(stored) != int(expected_max_rul):
+            raise ValueError(
+                f"RUL cap mismatch for {subset}: processed data uses "
+                f"max_rul={stored} but the config requests "
+                f"max_rul={expected_max_rul}. Re-run preprocessing with "
+                f"--max-rul {expected_max_rul}."
+            )
+
     X          = np.load(x_path)
     y_rul      = np.load(rul_path)
     y_hi       = np.load(hi_path)
     engine_ids = np.load(engine_path)
-
-    with open(meta_path) as f:
-        metadata = json.load(f)
 
     if not (len(X) == len(y_rul) == len(y_hi) == len(engine_ids)):
         raise ValueError(
             "X, RUL, HI and engine IDs must contain the same number of samples."
         )
 
-    # Sanity-check: feature count in array must match metadata
     if X.shape[-1] != metadata["features"]:
         raise ValueError(
             f"Feature count mismatch: array has {X.shape[-1]} features "
@@ -251,103 +284,86 @@ def load_training_data(subset: str):
 
 
 # ------------------------------------------------------------------
-# Model Factory
+# Scheduler
 # ------------------------------------------------------------------
 
-def build_model(
-    model_name: str,
-    input_size: int,
-):
-    """
-    Construct the requested prognostics model.
+def build_scheduler(optimizer, config: dict):
+    """Build the LR scheduler described by the config."""
 
-    All models use the same:
-        - input size
-        - hidden representation
-        - dropout
-        - multi-task output structure
+    kind = str(config.get("scheduler", "cosine")).lower()
 
-    The Transformer additionally uses:
-        - 4 attention heads
-    """
-
-    if model_name == "lstm":
-
-        return LSTMPrognosticsModel(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
-            dropout=DROPOUT,
+    if kind == "plateau":
+        return ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=5,
+            threshold=1e-4,
         )
 
-    if model_name == "gru":
-
-        return GRUPrognosticsModel(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
-            dropout=DROPOUT,
+    if kind == "cosine":
+        total = max(1, int(config["epochs"]) - int(config.get("warmup_epochs", 0)))
+        return CosineAnnealingLR(
+            optimizer,
+            T_max=total,
+            eta_min=float(config.get("min_lr", 1e-6)),
         )
 
-    if model_name == "transformer":
-
-        return TransformerPrognosticsModel(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
-            num_heads=4,
-            dropout=DROPOUT,
-        )
-
-    if model_name == "hybrid":
-
-        return HybridPrognosticsModel(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_gru_layers=NUM_LAYERS,
-            num_transformer_layers=NUM_LAYERS,
-            num_heads=4,
-            dropout=DROPOUT,
-        )
-
-    if model_name == "gru_att_deg":
-
-        return GruAttDeg(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_layers=NUM_LAYERS,
-            dropout=DROPOUT,
-        )
+    if kind in ("none", "null"):
+        return None
 
     raise ValueError(
-        f"Unsupported model: {model_name}"
+        f"Unknown scheduler '{kind}'. Expected 'cosine', 'plateau' or 'none'."
     )
+
 
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
 
-def run(model_name: str, subset: str) -> None:
+def run(model_name: str, subset: str, config: dict, tag: str = "") -> None:
     """Run the full training pipeline for a single model/subset combination."""
-    log = get_script_logger("training", f"train_{subset}_{model_name}")
+
+    dir_name = model_name + (f"_{tag}" if tag else "")
+
+    log = get_script_logger("training", f"train_{subset}_{dir_name}")
+
+    seed = int(config["random_seed"])
 
     # Seed is set per (model, subset) run so different combinations
     # get different weight initialisations while remaining reproducible.
-    set_seed(SEED)
+    # The seed drives weight init, the engine-wise split, dataloader
+    # shuffling and the window augmenter, so it identifies the whole run.
+    #
+    # ``config["deterministic"]`` (default True) additionally enables the
+    # deterministic torch/CUDA kernels.  It is recorded in the checkpoint so
+    # a reviewer can tell exactly how a published number was produced.
+    deterministic = bool(config.get("deterministic", True))
+    determinism = set_seed(seed, deterministic=deterministic)
 
-    device = get_device()
+    device = get_device(str(config.get("device", "cuda")))
 
     log.info("=" * 60)
     log.info("TRAINING MODEL: %s  |  SUBSET: %s", model_name.upper(), subset)
     log.info("=" * 60)
     log.info("Using device: %s", device)
+    log.info("Seed        : %d", seed)
+    log.info("Determinism : %s", determinism)
+    log.info(
+        "Config      : %s",
+        {k: config[k] for k in sorted(config) if k != "dataset"},
+    )
 
     # --------------------------------------------------------------
     # Load data + metadata
     # --------------------------------------------------------------
+
     log.info("Loading processed training data...")
 
-    X, y_rul, y_hi, engine_ids, metadata = load_training_data(subset=subset)
+    X, y_rul, y_hi, engine_ids, metadata = load_training_data(
+        subset=subset,
+        expected_max_rul=config.get("max_rul"),
+    )
 
     window_size = metadata["window_size"]
     log.info("X shape        : %s", X.shape)
@@ -355,37 +371,34 @@ def run(model_name: str, subset: str) -> None:
     log.info("HI shape       : %s", y_hi.shape)
     log.info("window_size    : %d  (from preprocessing metadata)", window_size)
     log.info("features       : %d", metadata["features"])
+    log.info("RUL cap        : %s (from preprocessing metadata)", metadata.get("max_rul"))
+
+    if metadata.get("max_rul") is None:
+        log.warning(
+            "Processed metadata has no 'max_rul' entry (legacy data). "
+            "Cannot verify the label cap; assuming the default of 125. "
+            "Re-run scripts/preprocess.py to record it."
+        )
 
     # --------------------------------------------------------------
     # Engine-wise Train / Validation Split
     # --------------------------------------------------------------
 
-    log.info(
-        "Creating engine-wise train/validation split..."
-    )
+    log.info("Creating engine-wise train/validation split...")
 
     splitter = GroupShuffleSplit(
         n_splits=1,
-        test_size=VALIDATION_SIZE,
-        random_state=SEED,
+        test_size=0.20,
+        random_state=seed,
     )
 
     train_indices, val_indices = next(
-        splitter.split(
-            X,
-            y_rul,
-            groups=engine_ids,
-        )
+        splitter.split(X, y_rul, groups=engine_ids)
     )
 
-    X_train = X[train_indices]
-    X_val = X[val_indices]
-
-    y_rul_train = y_rul[train_indices]
-    y_rul_val = y_rul[val_indices]
-
-    y_hi_train = y_hi[train_indices]
-    y_hi_val = y_hi[val_indices]
+    X_train, X_val = X[train_indices], X[val_indices]
+    y_rul_train, y_rul_val = y_rul[train_indices], y_rul[val_indices]
+    y_hi_train, y_hi_val = y_hi[train_indices], y_hi[val_indices]
 
     train_engine_ids = engine_ids[train_indices]
     val_engine_ids = engine_ids[val_indices]
@@ -394,18 +407,10 @@ def run(model_name: str, subset: str) -> None:
     # Leakage Verification
     # --------------------------------------------------------------
 
-    train_engines = set(
-        train_engine_ids.tolist()
-    )
+    train_engines = set(train_engine_ids.tolist())
+    val_engines = set(val_engine_ids.tolist())
 
-    val_engines = set(
-        val_engine_ids.tolist()
-    )
-
-    overlap = (
-        train_engines
-        & val_engines
-    )
+    overlap = train_engines & val_engines
 
     if overlap:
         raise RuntimeError(
@@ -413,30 +418,11 @@ def run(model_name: str, subset: str) -> None:
             f"Overlapping engines: {sorted(overlap)}"
         )
 
-    log.info(
-        "Training engines   : %d",
-        len(train_engines),
-    )
-
-    log.info(
-        "Validation engines : %d",
-        len(val_engines),
-    )
-
-    log.info(
-        "Engine overlap     : %d",
-        len(overlap),
-    )
-
-    log.info(
-        "Training samples   : %d",
-        len(X_train),
-    )
-
-    log.info(
-        "Validation samples : %d",
-        len(X_val),
-    )
+    log.info("Training engines   : %d", len(train_engines))
+    log.info("Validation engines : %d", len(val_engines))
+    log.info("Engine overlap     : %d", len(overlap))
+    log.info("Training samples   : %d", len(X_train))
+    log.info("Validation samples : %d", len(X_val))
 
     # --------------------------------------------------------------
     # Build Model
@@ -444,10 +430,7 @@ def run(model_name: str, subset: str) -> None:
 
     input_size = X.shape[-1]
 
-    model = build_model(
-        model_name=model_name,
-        input_size=input_size,
-    )
+    model = build_model(model_name, input_size=input_size, **config)
 
     parameter_count = sum(
         parameter.numel()
@@ -455,61 +438,56 @@ def run(model_name: str, subset: str) -> None:
         if parameter.requires_grad
     )
 
-    log.info(
-        "Model input size: %d",
-        input_size,
-    )
-
-    log.info(
-        "Trainable parameters: %d",
-        parameter_count,
-    )
+    log.info("Model input size: %d", input_size)
+    log.info("Trainable parameters: %d", parameter_count)
 
     # --------------------------------------------------------------
     # Loss
     # --------------------------------------------------------------
 
     criterion = MultiTaskLoss(
-        alpha=RUL_LOSS_WEIGHT,
-        beta=HI_LOSS_WEIGHT,
-        gamma=SCALE_LOSS_WEIGHT,
+        alpha=float(config.get("rul_loss_weight", 1.0)),
+        beta=float(config.get("hi_loss_weight", 0.4)),
+        gamma=float(config.get("scale_loss_weight", 0.1)),
+        rul_loss_type=str(config.get("rul_loss_type", "mse")),
+        huber_delta=float(config.get("huber_delta", 10.0)),
     )
 
     # --------------------------------------------------------------
     # Optimizer
     # --------------------------------------------------------------
 
-    optimizer = Adam(
+    optimizer_name = str(config.get("optimizer", "AdamW")).lower()
+    optimizer_cls = AdamW if optimizer_name == "adamw" else Adam
+
+    optimizer = optimizer_cls(
         model.parameters(),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
+        lr=float(config["learning_rate"]),
+        weight_decay=float(config.get("weight_decay", 1e-4)),
     )
 
-    # --------------------------------------------------------------
-    # Scheduler
-    # --------------------------------------------------------------
-
-    scheduler = ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.5,
-        patience=5,
-        threshold=1e-4,
-    )
+    scheduler = build_scheduler(optimizer, config)
 
     # --------------------------------------------------------------
-    # Model-specific checkpoint directory
+    # Augmentation
     # --------------------------------------------------------------
 
-    model_checkpoint_dir = (
-        CHECKPOINT_DIR
-        / model_name
-        / subset
-    )
+    augmenter = None
+    if config.get("augment", True):
+        aug_config = AugmentationConfig.from_config(config)
+        if aug_config.enabled:
+            augmenter = WindowAugmenter(aug_config, seed=seed)
+            log.info("Augmentation enabled: %s", aug_config)
+        else:
+            log.info("Augmentation configured but all magnitudes are zero.")
+    else:
+        log.info("Augmentation disabled.")
 
     # --------------------------------------------------------------
     # Trainer
     # --------------------------------------------------------------
+
+    model_checkpoint_dir = CHECKPOINT_DIR / dir_name / subset
 
     trainer = ModelTrainer(
         model=model,
@@ -517,27 +495,39 @@ def run(model_name: str, subset: str) -> None:
         optimizer=optimizer,
         scheduler=scheduler,
         device=device,
-        batch_size=BATCH_SIZE,
+        batch_size=int(config["batch_size"]),
         checkpoint_dir=model_checkpoint_dir,
+        augmenter=augmenter,
+        grad_clip=float(config.get("grad_clip", 0.0)),
+        ema_decay=0.0 if config.get("no_ema") else float(config.get("ema_decay", 0.0)),
+        seed=seed,
     )
 
-    trainer.input_size  = input_size
+    trainer.input_size = input_size
     trainer.window_size = window_size
-    trainer.subset      = subset
+    trainer.subset = subset
+
+    # Record everything needed to rebuild this exact model later.
+    trainer.model_config = {**config, "arch": model_name}
+
+    # Provenance: the seed identifies the run, the determinism block records
+    # how it was made repeatable.  Both are stored in the checkpoint so a
+    # reviewer can verify that a published number came from this run.
+    trainer.run_metadata = {
+        "seed": seed,
+        "tag": tag,
+        "determinism": determinism,
+        "arch": model_name,
+        "subset": subset,
+    }
 
     # --------------------------------------------------------------
     # DataLoaders
     # --------------------------------------------------------------
 
-    train_loader, val_loader = (
-        trainer.create_dataloaders(
-            X_train,
-            y_rul_train,
-            y_hi_train,
-            X_val,
-            y_rul_val,
-            y_hi_val,
-        )
+    train_loader, val_loader = trainer.create_dataloaders(
+        X_train, y_rul_train, y_hi_train,
+        X_val, y_rul_val, y_hi_val,
     )
 
     # --------------------------------------------------------------
@@ -547,23 +537,19 @@ def run(model_name: str, subset: str) -> None:
     history = trainer.fit(
         train_loader=train_loader,
         val_loader=val_loader,
-        epochs=EPOCHS,
-        patience=PATIENCE,
+        epochs=int(config["epochs"]),
+        patience=int(config.get("patience", 40)),
+        warmup_epochs=int(config.get("warmup_epochs", 0)),
+        base_lr=float(config["learning_rate"]),
     )
 
     # --------------------------------------------------------------
     # Save history
     # --------------------------------------------------------------
 
-    RESULTS_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    history_path = (
-        RESULTS_DIR
-        / f"{subset}_{model_name}_history.npz"
-    )
+    history_path = RESULTS_DIR / f"{subset}_{dir_name}_history.npz"
 
     np.savez(
         str(history_path),
@@ -577,38 +563,45 @@ def run(model_name: str, subset: str) -> None:
     # Final logging
     # --------------------------------------------------------------
 
-    log.info(
-        "Best validation loss: %.6f",
-        trainer.best_loss,
-    )
-
-    log.info(
-        "Training history saved to: %s",
-        history_path,
-    )
-
-    log.info(
-        "Checkpoint saved to: %s",
-        model_checkpoint_dir,
-    )
-
-    log.info(
-        "Training completed successfully."
-    )
+    log.info("Best validation loss: %.6f", trainer.best_loss)
+    log.info("Training history saved to: %s", history_path)
+    log.info("Checkpoint saved to: %s", model_checkpoint_dir)
+    log.info("Training completed successfully.")
 
 
 def main():
     args = parse_args()
+
+    overrides = parse_overrides(args.overrides)
+
+    if args.seed is not None:
+        overrides["random_seed"] = args.seed
+    if args.epochs is not None:
+        overrides["epochs"] = args.epochs
+    if args.lr is not None:
+        overrides["learning_rate"] = args.lr
+    if args.no_augment:
+        overrides["augment"] = False
+
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]
-    models  = ALL_MODELS  if args.model  == "all" else [args.model]
+    models = ALL_MODELS if args.model == "all" else [args.model]
+
     for subset in subsets:
+        config = load_config(
+            path=args.config,
+            overrides=overrides,
+            subset=subset,
+        )
+
+        if args.no_ema:
+            config["no_ema"] = True
+
+        if args.no_deterministic:
+            config["deterministic"] = False
+
         for model_name in models:
-            run(model_name, subset)
+            run(model_name, subset, config, tag=args.tag)
 
-
-# ------------------------------------------------------------------
-# Entry Point
-# ------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()

@@ -4,59 +4,136 @@ src/evaluation/ablation.py
 Ablation study — measures the contribution of each pipeline component
 by comparing the full system against variants with one component removed.
 
+Every variant is produced by **re-running the decision engine** on a patched
+input state (``src.decision_engine.recommender.recommend_action``), so each
+variant goes through exactly the same code path as the full pipeline and the
+reported deltas are real measurements, not relabelled copies of the baseline.
+
 Ablation variants
 -----------------
 full            : complete pipeline (RUL + HI + uncertainty + XAI + constraints)
 no_uncertainty  : decision engine receives a wide fixed interval instead of
                   the conformal interval (simulates no uncertainty quantification)
-no_xai          : ERI set to 0.5 (random agreement baseline) — removes
-                  explanation reliability from the risk score
-no_constraints  : operational constraints are bypassed (all flags unset)
+no_xai          : ERI set to 0.5 (random agreement baseline) — the decision no
+                  longer depends on the measured explanation reliability
+no_constraints  : operational constraints are bypassed (no constraint layer)
 point_only      : only RUL point prediction, no HI, no uncertainty, no XAI
 
-Each variant is evaluated on decision effectiveness metrics loaded from
-the decision JSON artifacts, and on predictive accuracy from prediction
-artifacts.  Robustness variants are computed analytically from the
-metrics rather than re-running inference.
+Predictive accuracy is read from the prediction artifacts; the decision
+effectiveness metrics of every variant are recomputed from the re-run
+decisions.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
-from src.evaluation.metrics import predictive_accuracy, decision_effectiveness
+from src.decision_engine.recommender import recommend_action
+from src.evaluation.metrics import (
+    decision_effectiveness_from_records,
+    predictive_accuracy,
+)
+
+RUL_MAX = 125.0
 
 
-def _load_decision(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
+# ------------------------------------------------------------------ #
+# Input handling
+# ------------------------------------------------------------------ #
+
+def _decision_records(full_data: dict) -> list[dict]:
+    """Extract the list of decision records from the decision JSON."""
+    decisions = full_data.get("decisions", full_data)
+    if isinstance(decisions, dict):
+        decisions = [decisions]
+    return list(decisions)
 
 
-def _decision_with_fixed_interval(decisions: list[dict], interval_width: float = 100.0) -> list[dict]:
+def _state_from_record(record: dict) -> dict[str, Any]:
+    """
+    Rebuild the flat decision state consumed by ``recommend_action``.
+
+    The decision JSON nests the prognostic inputs under ``inputs``; the
+    recommender consumes them flat.  Patching therefore has to happen on
+    this flat state, otherwise the patched values are never read.
+    """
+    inputs = record.get("inputs") or {}
+
+    def _get(key: str, default: float) -> float:
+        value = inputs.get(key, record.get(key, default))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    state: dict[str, Any] = {
+        "rul":       _get("rul", 0.0),
+        "hi":        _get("hi", 1.0),
+        "rul_lower": _get("rul_lower", 0.0),
+        "rul_upper": _get("rul_upper", 0.0),
+        "eri":       _get("eri", 0.5),
+    }
+
+    top_k = record.get("top_k_sensors") or inputs.get("top_k_sensors")
+    if top_k:
+        state["top_k_sensors"] = list(top_k)
+
+    return state
+
+
+# ------------------------------------------------------------------ #
+# Patches
+# ------------------------------------------------------------------ #
+
+def _identity(state: dict[str, Any]) -> dict[str, Any]:
+    return dict(state)
+
+
+def _fixed_interval(state: dict[str, Any], interval_width: float = 100.0) -> dict[str, Any]:
     """Simulate no-uncertainty variant: replace intervals with a wide fixed band."""
-    patched = []
-    for d in decisions:
-        p = dict(d)
-        rul = p.get("inputs", {}).get("rul", p.get("rul", 0.0))
-        p = {**p, "rul_lower": max(0.0, rul - interval_width / 2),
-                  "rul_upper": min(125.0, rul + interval_width / 2)}
-        patched.append(p)
+    patched = dict(state)
+    rul = float(patched.get("rul", 0.0))
+    lower = max(0.0, rul - interval_width / 2.0)
+    upper = min(RUL_MAX, rul + interval_width / 2.0)
+    patched["rul_lower"] = lower
+    patched["rul_upper"] = max(lower, upper)
     return patched
 
 
-def _decision_with_neutral_eri(decisions: list[dict]) -> list[dict]:
+def _neutral_eri(state: dict[str, Any]) -> dict[str, Any]:
     """Simulate no-XAI variant: set ERI to 0.5 (random agreement baseline)."""
-    return [{**d, "eri": 0.5} for d in decisions]
+    patched = dict(state)
+    patched["eri"] = 0.5
+    return patched
 
 
-def _decision_without_constraints(decisions: list[dict]) -> list[dict]:
-    """Simulate no-constraints variant: clear all constraint violations."""
-    return [{**d, "constraint_violations": [], "constraint_status": "SATISFIED"} for d in decisions]
+def _recompute(
+    records: list[dict],
+    patch: Callable[[dict[str, Any]], dict[str, Any]],
+    constraints: dict[str, Any] | None = None,
+) -> list[dict]:
+    """Re-run the decision engine on the patched inputs of every record."""
+    decisions = []
+    for record in records:
+        state = patch(_state_from_record(record))
+        decisions.append(recommend_action(state=state, constraints=constraints))
+    return decisions
 
+
+def _same_outcome(a: dict, b: dict) -> bool:
+    return (
+        a.get("recommended_action") == b.get("recommended_action")
+        and bool(a.get("human_review")) == bool(b.get("human_review"))
+    )
+
+
+# ------------------------------------------------------------------ #
+# Ablation runner
+# ------------------------------------------------------------------ #
 
 def run_ablation(
     results_dir: str | Path,
@@ -66,8 +143,10 @@ def run_ablation(
     """
     Run the ablation study for one (subset, model) combination.
 
-    Loads the full-pipeline decision JSON and prediction NPZ, then
-    computes metrics for each ablation variant analytically.
+    Loads the full-pipeline decision JSON and prediction NPZ, re-runs the
+    decision engine on the patched inputs of every ablation variant and
+    reports the resulting decision metrics plus the deltas against the full
+    pipeline.
 
     Parameters
     ----------
@@ -89,44 +168,61 @@ def run_ablation(
     with open(decision_path) as f:
         full_data = json.load(f)
 
-    decisions = full_data.get("decisions", [full_data])
-    if isinstance(decisions, dict):
-        decisions = [decisions]
+    records = _decision_records(full_data)
+    if not records:
+        return {"error": f"no decision records in {decision_path.name}"}
 
-    report: dict[str, Any] = {}
+    # The operational constraints the original decisions were produced with.
+    constraints = full_data.get("operational_constraints") or {}
+
+    report: dict[str, Any] = {
+        "subset": subset,
+        "model": model,
+        "n_decisions": len(records),
+    }
 
     # ── full pipeline ──────────────────────────────────────────────
-    report["full"] = decision_effectiveness(decision_path)
+    # Re-run with the recorded constraints so that every variant shares
+    # one code path; the stored decisions are kept for the consistency check.
+    full_decisions = _recompute(records, _identity, constraints=constraints)
+    report["full"] = decision_effectiveness_from_records(full_decisions)
+    report["full"]["note"] = (
+        "decision engine re-run on the recorded inputs "
+        "(RUL + HI + conformal interval + ERI + operational constraints)"
+    )
+    report["full"]["matches_stored_decisions"] = bool(
+        len(full_decisions) == len(records)
+        and all(
+            _same_outcome(new, old)
+            for new, old in zip(full_decisions, records)
+        )
+    )
 
     # ── no_uncertainty ─────────────────────────────────────────────
-    # Wide fixed interval → uncertainty_level always HIGH → more reviews
-    patched_unc = _decision_with_fixed_interval(decisions)
-    _tmp = {**full_data, "decisions": patched_unc}
-    report["no_uncertainty"] = {
-        "human_review_rate": float(
-            sum(1 for d in patched_unc if d.get("human_review", False)) / max(len(patched_unc), 1)
-        ),
-        "note": "fixed interval width=100 cycles applied; uncertainty_level forced HIGH",
-    }
+    # Wide fixed interval instead of the conformal one.
+    unc_decisions = _recompute(records, _fixed_interval, constraints=constraints)
+    report["no_uncertainty"] = decision_effectiveness_from_records(unc_decisions)
+    report["no_uncertainty"]["note"] = (
+        "fixed interval width=100 cycles applied; the uncertainty level is no "
+        "longer derived from the conformal interval"
+    )
 
     # ── no_xai ─────────────────────────────────────────────────────
-    patched_xai = _decision_with_neutral_eri(decisions)
-    report["no_xai"] = {
-        "human_review_rate": float(
-            sum(1 for d in patched_xai if d.get("human_review", False)) / max(len(patched_xai), 1)
-        ),
-        "note": "ERI set to 0.5 (random baseline); explanation_reliability forced MODERATE",
-    }
+    xai_decisions = _recompute(records, _neutral_eri, constraints=constraints)
+    report["no_xai"] = decision_effectiveness_from_records(xai_decisions)
+    report["no_xai"]["note"] = (
+        "ERI set to 0.5 (random baseline); explanation_reliability forced LOW"
+    )
 
     # ── no_constraints ─────────────────────────────────────────────
-    patched_con = _decision_without_constraints(decisions)
-    report["no_constraints"] = {
-        "constraint_violation_rate": 0.0,
-        "human_review_rate": float(
-            sum(1 for d in patched_con if d.get("human_review", False)) / max(len(patched_con), 1)
-        ),
-        "note": "all constraint violations cleared",
-    }
+    # The constraint layer is bypassed entirely: the engine runs without
+    # any operational constraint instead of having its violations cleared
+    # after the fact.
+    con_decisions = _recompute(records, _identity, constraints={})
+    report["no_constraints"] = decision_effectiveness_from_records(con_decisions)
+    report["no_constraints"]["note"] = (
+        "operational constraints bypassed (constraint layer not applied)"
+    )
 
     # ── point_only (predictive accuracy only, no interval/XAI) ────
     if pred_path.exists():
@@ -142,18 +238,53 @@ def run_ablation(
         report["point_only"] = {"error": f"missing {pred_path.name}"}
 
     # ── delta summary ──────────────────────────────────────────────
-    full_review_rate = report["full"].get("human_review_rate", float("nan"))
+    def _delta(variant: str, metric: str) -> float:
+        return float(
+            report[variant].get(metric, float("nan"))
+            - report["full"].get(metric, float("nan"))
+        )
+
     report["delta_human_review_rate"] = {
-        "no_uncertainty_vs_full": (
-            report["no_uncertainty"]["human_review_rate"] - full_review_rate
-        ),
-        "no_xai_vs_full": (
-            report["no_xai"]["human_review_rate"] - full_review_rate
-        ),
+        "no_uncertainty_vs_full": _delta("no_uncertainty", "human_review_rate"),
+        "no_xai_vs_full":         _delta("no_xai", "human_review_rate"),
+        "no_constraints_vs_full": _delta("no_constraints", "human_review_rate"),
         "interpretation": (
             "positive delta = more reviews triggered without that component "
             "(component reduces unnecessary escalation)"
         ),
+    }
+
+    report["delta_constraint_violation_rate"] = {
+        "no_constraints_vs_full": _delta("no_constraints", "constraint_violation_rate"),
+        "interpretation": (
+            "positive delta = the removed constraint layer was responsible "
+            "for the recorded violations"
+        ),
+    }
+
+    report["delta_mean_risk_score"] = {
+        "no_uncertainty_vs_full": _delta("no_uncertainty", "mean_risk_score"),
+        "no_xai_vs_full":         _delta("no_xai", "mean_risk_score"),
+        "no_constraints_vs_full": _delta("no_constraints", "mean_risk_score"),
+        "interpretation": (
+            "positive delta = the removed component contributed to the risk score"
+        ),
+    }
+
+    # Action-mix deltas: they stay informative even when a variant does not
+    # change the human-review rate.
+    full_counts = report["full"].get("action_counts", {})
+    report["delta_action_counts"] = {
+        variant: {
+            action: int(
+                report[variant].get("action_counts", {}).get(action, 0)
+                - full_counts.get(action, 0)
+            )
+            for action in sorted(
+                set(full_counts) | set(report[variant].get("action_counts", {}))
+            )
+        }
+        for variant in ("no_uncertainty", "no_xai", "no_constraints")
     }
 
     return report

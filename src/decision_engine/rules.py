@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.utils.config import DEFAULT_CONFIG
+
 # ---------------------------------------------------------------------
 # Default thresholds
 # ---------------------------------------------------------------------
@@ -43,7 +45,9 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "rul_critical":  10.0,
     "rul_at_risk":   25.0,
     "rul_degrading": 50.0,
-    "rul_max":      125.0,   # C-MAPSS piecewise cap
+    # C-MAPSS piecewise cap.  Kept in sync with the ``max_rul`` key in
+    # ``configs/<subset>.yaml`` (see ``src/utils/config.py``).
+    "rul_max":      float(DEFAULT_CONFIG.get("max_rul", 125.0)),
 
     # HI breakpoints (normalised, 1 = new, 0 = failed)
     "hi_critical":  0.20,

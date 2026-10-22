@@ -42,9 +42,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sklearn.model_selection import GroupShuffleSplit
-
 
 # ------------------------------------------------------------------
 # Project root
@@ -60,27 +58,32 @@ if str(PROJECT_ROOT) not in sys.path:
 # Project imports
 # ------------------------------------------------------------------
 
-from src.models.gru import GRUPrognosticsModel
-from src.models.hybrid import CNNGRUTransformerPrognostics
-from src.models.lstm import LSTMPrognosticsModel
-from src.models.transformer import TransformerPrognosticsModel
-from src.models.uncertainty_heads import QuantileHead, ScaleHead
 from src.models.checkpoint import load_state_dict_compat
-
+from src.models.registry import ALL_MODELS
+from src.models.registry import build_model as build_model_from_registry
+from src.models.uncertainty_heads import QuantileHead, ScaleHead
+from src.uncertainty import pipeline
+from src.uncertainty.adaptive import (
+    adaptive_quantile,
+)
+from src.uncertainty.adaptive import (
+    prediction_interval as adaptive_prediction_interval,
+)
 from src.uncertainty.calibration import (
     calibrate_multiple_levels,
 )
-
-from src.uncertainty.adaptive import (
-    adaptive_quantile,
-    prediction_interval as adaptive_prediction_interval,
+from src.uncertainty.conformal import (
+    conformal_quantile,
+    prediction_interval,
+    signed_conformal_quantile,
 )
-from src.uncertainty.conformal import conformal_quantile, prediction_interval
-
 from src.uncertainty.coverage import (
     evaluate_interval,
 )
-
+from src.utils.paths import (
+    results_path,
+    run_dir_name,
+)
 
 # ------------------------------------------------------------------
 # Configuration
@@ -112,15 +115,21 @@ LOG_DIR = (
 
 SEED = 42
 
+# Fallback seed.  The real seed is read from the checkpoint that is being
+# evaluated, because the calibration split MUST reproduce the training
+# split of that exact checkpoint.  Using a hard-coded seed here would
+# calibrate a seed-43 checkpoint against the seed-42 hold-out, whose
+# engines the seed-43 model was trained on — a silent leakage bug.
+DEFAULT_SEED = SEED
+
 BATCH_SIZE = 64
 
 VALIDATION_SIZE = 0.20
 
-HIDDEN_SIZE = 128
-
-NUM_LAYERS = 2
-
-DROPOUT = 0.3
+# NOTE: the architecture (hidden size, layer count, dropout) is no longer
+# hard-coded here.  It is read from the ``model_config`` stored inside each
+# checkpoint, so a model trained with a per-subset YAML override (e.g.
+# FD002/FD004 use ``hidden_size: 160``) is rebuilt correctly.
 
 COVERAGE_LEVELS = (
     0.80,
@@ -150,7 +159,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--model",
-        choices=["lstm", "gru", "transformer", "hybrid"],
+        choices=list(ALL_MODELS),
         default="gru",
         help="Model architecture whose checkpoint will be evaluated.",
     )
@@ -180,6 +189,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        help=(
+            "Checkpoint tag (e.g. 'ms42'). Selects a specific run of the "
+            "model and makes the output paths tag-aware."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -191,6 +210,7 @@ def configure_logging(
     model_name: str,
     subset: str,
     method: str,
+    tag: str = "",
 ) -> logging.Logger:
 
     log_dir = LOG_DIR / "uncertainty"
@@ -212,7 +232,8 @@ def configure_logging(
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
                 log_dir
-                / f"uncertainty_{model_name}_{subset}_{method}.log",
+                / f"uncertainty_{model_name}_{subset}_{method}"
+                f"{'_' + tag if tag else ''}.log",
                 mode="w",
             ),
         ],
@@ -324,18 +345,24 @@ def create_calibration_split(
     X: np.ndarray,
     y_rul: np.ndarray,
     engine_ids: np.ndarray,
+    seed: int = DEFAULT_SEED,
 ):
     """
     Reproduce the engine-wise validation split used
     by scripts/train.py.
 
-    random_state=42 must remain identical to training.
+    ``seed`` must be the seed of the checkpoint being evaluated.  The
+    trainer splits the engines with ``GroupShuffleSplit(random_state=seed)``,
+    so using a different seed here would select a *different* hold-out —
+    one that can contain engines the model was trained on.  That is a
+    leakage bug, not a cosmetic difference, so the seed is taken from the
+    checkpoint rather than hard-coded.
     """
 
     splitter = GroupShuffleSplit(
         n_splits=1,
         test_size=VALIDATION_SIZE,
-        random_state=SEED,
+        random_state=int(seed),
     )
 
     train_indices, calibration_indices = next(
@@ -381,24 +408,19 @@ def create_calibration_split(
 def build_model(
     model_name: str,
     input_size: int,
+    **hyperparameters,
 ) -> torch.nn.Module:
-    """Reconstruct the architecture used by ``scripts/train.py``."""
-    if model_name == "lstm":
-        return LSTMPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, DROPOUT)
-    if model_name == "gru":
-        return GRUPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, DROPOUT)
-    if model_name == "transformer":
-        return TransformerPrognosticsModel(input_size, HIDDEN_SIZE, NUM_LAYERS, 4, DROPOUT)
-    if model_name == "hybrid":
-        return CNNGRUTransformerPrognostics(
-            input_size=input_size,
-            hidden_size=HIDDEN_SIZE,
-            num_gru_layers=NUM_LAYERS,
-            num_transformer_layers=NUM_LAYERS,
-            num_heads=4,
-            dropout=DROPOUT,
-        )
-    raise ValueError(f"Unsupported model: {model_name}")
+    """Reconstruct the architecture used by ``scripts/train.py``.
+
+    Delegates to the shared registry so every script builds a model the
+    same way.  Unknown keyword arguments are ignored by the registry, which
+    lets a flat training config be splatted straight in.
+    """
+    return build_model_from_registry(
+        model_name,
+        input_size=input_size,
+        **hyperparameters,
+    )
 
 
 def load_model(
@@ -406,19 +428,24 @@ def load_model(
     input_size: int,
     device: torch.device,
     subset: str = "",
+    tag: str = "",
 ):
     """
     Load a trained architecture-specific checkpoint.
+
+    The checkpoint stores the seed it was trained with.  That seed is
+    returned alongside the model because the conformal calibration must
+    reproduce *this* checkpoint's training split.
     """
 
     checkpoint_path = (
         CHECKPOINT_DIR
-        / model_name
+        / run_dir_name(model_name, tag)
         / subset
         / "best_model.pt"
     )
 
-    if not checkpoint_path.exists():
+    if not checkpoint_path.exists() and not tag:
         legacy_checkpoint_path = (
             CHECKPOINT_DIR
             / model_name
@@ -432,8 +459,9 @@ def load_model(
         raise FileNotFoundError(
             f"{model_name.upper()} checkpoint not found:\n"
             f"{checkpoint_path}\n\n"
-            f"Train the model first using:\n"
+            "Train the model first using:\n"
             f"python scripts/train.py --model {model_name} --subset {subset}"
+            + (f" --tag {tag}" if tag else "")
         )
 
     checkpoint = torch.load(
@@ -451,23 +479,26 @@ def load_model(
             f"python scripts/train.py --model {model_name} --subset {subset}"
         )
 
+    # Rebuild the architecture from the config the checkpoint was trained
+    # with.  The per-subset YAML configs override hyper-parameters (FD002
+    # and FD004 train with hidden_size=160), so rebuilding with hard-coded
+    # defaults would produce a mismatched state dict.
+    saved_config = dict(checkpoint.get("model_config") or {})
+    arch = saved_config.pop("arch", model_name)
+
     model = build_model(
-        model_name=model_name,
+        model_name=arch,
         input_size=input_size,
+        **saved_config,
     )
 
     state_dict = checkpoint["model_state_dict"]
 
-    # Adaptive conformal trains its own ScaleHead separately, and some
-    # checkpoints predate the scale head entirely. Drop any scale-head
-    # weights and load the rest non-strictly; a missing scale head is
-    # re-initialised to a neutral value instead of failing the load.
-    state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if not key.startswith("scale_head.")
-    }
-
+    # Load everything the checkpoint provides, including the trained
+    # ``scale_head`` when it has one.  ``load_state_dict_compat`` fills a
+    # missing scale head with a neutral scale, so checkpoints that predate
+    # the head still load.  (Dropping the head's weights here silently turned
+    # every scale-aware interval into a plain split-conformal interval.)
     load_state_dict_compat(model, state_dict)
 
     model.to(device)
@@ -475,6 +506,40 @@ def load_model(
     model.eval()
 
     return model, checkpoint
+
+
+def checkpoint_seed(
+    checkpoint: dict,
+    fallback: int = DEFAULT_SEED,
+) -> int:
+    """Read the training seed out of a checkpoint.
+
+    Priority order:
+
+    1. ``run_metadata["seed"]`` — written by the current trainer;
+    2. ``checkpoint["seed"]`` — the flat copy of the same value;
+    3. ``model_config["random_seed"]`` — the config value used by older runs;
+    4. ``fallback``.
+
+    The returned seed identifies the engine-wise split the model was
+    trained with, so the conformal calibration can reproduce it exactly.
+    """
+
+    metadata = checkpoint.get("run_metadata") or {}
+
+    for candidate in (
+        metadata.get("seed"),
+        checkpoint.get("seed"),
+        (checkpoint.get("model_config") or {}).get("random_seed"),
+    ):
+        if candidate is None:
+            continue
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            continue
+
+    return int(fallback)
 
 
 # ------------------------------------------------------------------
@@ -579,10 +644,8 @@ def predict(
 
 def _robust_scale(values: np.ndarray, floor: float = 1e-6) -> float:
     """Robust residual scale estimate."""
-    values = np.asarray(values, dtype=np.float64).reshape(-1)
-    if values.size == 0:
-        return floor
-    return max(float(np.median(np.abs(values))), floor)
+
+    return pipeline._robust_scale(values, floor)
 
 
 def _build_training_engine_profiles(
@@ -594,57 +657,18 @@ def _build_training_engine_profiles(
     """
     Build engine/regime profiles using TRAINING ENGINES ONLY.
 
-    This is deliberately constructed before conformal calibration. Therefore
-    the calibration scores and final test intervals are evaluated against a
-    fixed, learned scale function, preserving the split-conformal separation.
+    Delegates to ``src.uncertainty.pipeline`` so the production CLI and the
+    multi-seed benchmark build identical profiles.  The scale function is
+    deliberately constructed before conformal calibration, which preserves
+    the split-conformal separation between calibration and test data.
     """
-    feature_np = features.detach().cpu().numpy().astype(np.float64)
-    residuals = np.asarray(residuals, dtype=np.float64).reshape(-1)
-    predicted_rul = np.asarray(predicted_rul, dtype=np.float64).reshape(-1)
-    engine_ids = np.asarray(engine_ids)
 
-    center = np.median(feature_np, axis=0)
-    mad = np.median(np.abs(feature_np - center), axis=0)
-    mad[mad < 1e-8] = 1.0
-    z = (feature_np - center) / mad
-
-    # Regimes are learned ONLY from training predictions.
-    q1, q2 = np.quantile(predicted_rul, [1.0 / 3.0, 2.0 / 3.0])
-    regimes = np.digitize(predicted_rul, [q1, q2], right=False)
-
-    profiles = []
-    for engine in np.unique(engine_ids):
-        mask = engine_ids == engine
-        if not np.any(mask):
-            continue
-
-        engine_residuals = np.abs(residuals[mask])
-        engine_z = z[mask]
-        regime_scales = {}
-
-        for regime in range(3):
-            values = engine_residuals[regimes[mask] == regime]
-            if len(values) >= 8:
-                regime_scales[regime] = _robust_scale(values)
-
-        profiles.append(
-            {
-                "engine_id": int(engine),
-                "centroid": np.mean(engine_z, axis=0),
-                "global_scale": _robust_scale(engine_residuals),
-                "regime_scales": regime_scales,
-            }
-        )
-
-    if not profiles:
-        raise RuntimeError("EARA-Conformal could not build training-engine profiles.")
-
-    return {
-        "profiles": profiles,
-        "center": center,
-        "mad": mad,
-        "regime_edges": np.asarray([q1, q2], dtype=np.float64),
-    }
+    return pipeline.build_training_engine_profiles(
+        features,
+        residuals,
+        engine_ids,
+        predicted_rul,
+    )
 
 
 def _nearest_engine_regime_scale(
@@ -654,42 +678,13 @@ def _nearest_engine_regime_scale(
     top_k: int = 5,
 ) -> tuple[float, list[int], np.ndarray, int]:
     """Retrieve nearest training engines and produce a regime-aware scale."""
-    center = profile_data["center"]
-    mad = profile_data["mad"]
-    q = (np.asarray(feature, dtype=np.float64) - center) / mad
 
-    profiles = profile_data["profiles"]
-    centroids = np.stack([p["centroid"] for p in profiles], axis=0)
-    distances = np.linalg.norm(centroids - q[None, :], axis=1)
-
-    k = min(top_k, len(profiles))
-    indices = np.argsort(distances)[:k]
-    d = distances[indices]
-
-    # Soft nearest-engine weighting.
-    weights = 1.0 / (d + 1e-6)
-    weights /= weights.sum()
-
-    regime = int(
-        np.digitize(
-            predicted_rul,
-            profile_data["regime_edges"],
-            right=False,
-        )
+    return pipeline.nearest_engine_regime_scale(
+        feature,
+        predicted_rul,
+        profile_data,
+        top_k=top_k,
     )
-
-    scales = []
-    for idx in indices:
-        profile = profiles[idx]
-        scales.append(
-            profile["regime_scales"].get(
-                regime,
-                profile["global_scale"],
-            )
-        )
-
-    scale = float(np.sum(weights * np.asarray(scales)))
-    return max(scale, 1e-6), [profiles[i]["engine_id"] for i in indices], weights, regime
 
 
 def run_engine_joint_conformal(
@@ -706,6 +701,8 @@ def run_engine_joint_conformal(
     device: torch.device,
     log: logging.Logger,
     training_engine_ids: np.ndarray | None = None,
+    tag: str = "",
+    seed: int = DEFAULT_SEED,
 ) -> None:
     """
     Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal).
@@ -876,9 +873,11 @@ def run_engine_joint_conformal(
         )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = (
-        RESULTS_DIR
-        / f"{subset}_{model_name}_engine_joint_conformal.npz"
+    output_path = results_path(
+        subset,
+        model_name,
+        tag,
+        suffix="engine_joint_conformal",
     )
     np.savez(output_path, **save_data)
     log.info("EARA-Conformal results saved to: %s", output_path)
@@ -887,35 +886,25 @@ def run_engine_joint_conformal(
     )
 
 
+# ------------------------------------------------------------------
+# Frozen-feature helpers
+#
+# The implementations live in ``src.uncertainty.pipeline`` so that the
+# production pipeline (``scripts/uncertainty.py``) and the multi-seed
+# benchmark (``scripts/multiseed_conformal_benchmark.py``) share ONE
+# implementation of every primitive.  The wrappers below keep the
+# historical local names so the rest of this file is unchanged.
+# ------------------------------------------------------------------
+
+
 def extract_model_features(
     model: torch.nn.Module,
     X: np.ndarray,
     device: torch.device,
 ) -> torch.Tensor:
-    """Extract the input to each architecture's RUL head via a safe hook."""
-    features = []
-    captured: list[torch.Tensor] = []
+    """Capture the input to the architecture's RUL head via a safe hook."""
 
-    def capture_head_input(
-        _module: torch.nn.Module,
-        inputs: tuple[torch.Tensor, ...],
-    ) -> None:
-        captured.append(inputs[0].detach().cpu())
-
-    handle = model.rul_head.register_forward_pre_hook(capture_head_input)
-    model.eval()
-    try:
-        with torch.no_grad():
-            for start in range(0, len(X), BATCH_SIZE):
-                captured.clear()
-                batch = torch.from_numpy(X[start:start + BATCH_SIZE]).float().to(device)
-                model(batch)
-                if len(captured) != 1:
-                    raise RuntimeError("Could not capture one RUL-head feature batch.")
-                features.append(captured[0])
-    finally:
-        handle.remove()
-    return torch.cat(features, dim=0)
+    return pipeline.extract_model_features(model, X, device, BATCH_SIZE)
 
 
 def pinball_loss(
@@ -923,11 +912,9 @@ def pinball_loss(
     target: torch.Tensor,
     quantile: float,
 ) -> torch.Tensor:
-    residual = target - prediction
-    return torch.maximum(
-        quantile * residual,
-        (quantile - 1.0) * residual,
-    ).mean()
+    """Pinball (quantile) loss."""
+
+    return pipeline.pinball_loss(prediction, target, quantile)
 
 
 def train_quantile_head(
@@ -937,51 +924,48 @@ def train_quantile_head(
     lower_quantile: float,
     upper_quantile: float,
     epochs: int = 50,
+    seed: int = DEFAULT_SEED,
+    base_pred: np.ndarray | None = None,
 ) -> QuantileHead:
     """Fit a quantile head using only the training-engine features."""
-    torch.manual_seed(SEED)
-    head = QuantileHead(HIDDEN_SIZE).to(device)
-    optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
-    targets = torch.from_numpy(y_true).float()
 
-    head.train()
-    optimization_batch_size = 2048
-    for _ in range(epochs):
-        for start in torch.randperm(len(features)).split(optimization_batch_size):
-            x_batch = features[start].to(device)
-            y_batch = targets[start].to(device)
-            lower, upper = head(x_batch)
-            loss = (
-                pinball_loss(lower, y_batch, lower_quantile)
-                + pinball_loss(upper, y_batch, upper_quantile)
-            )
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-    return head.eval()
+    return pipeline.fit_quantile_head(
+        features=features,
+        y_true=y_true,
+        device=device,
+        lower_quantile=lower_quantile,
+        upper_quantile=upper_quantile,
+        epochs=epochs,
+        seed=seed,
+        base_pred=base_pred,
+    )
 
 
 def predict_quantiles(
     head: QuantileHead,
     features: torch.Tensor,
     device: torch.device,
+    base_pred: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    lowers, uppers = [], []
-    with torch.no_grad():
-        for start in range(0, len(features), BATCH_SIZE):
-            lower, upper = head(features[start:start + BATCH_SIZE].to(device))
-            lowers.append(lower.cpu().numpy())
-            uppers.append(upper.cpu().numpy())
-    return np.concatenate(lowers), np.concatenate(uppers)
+    """Predict conditional quantiles from a fitted quantile head."""
+
+    return pipeline.predict_quantiles(head, features, device, base_pred=base_pred)
 
 
 def cqr_quantile(scores: np.ndarray, alpha: float) -> float:
-    """Finite-sample conformal quantile for signed CQR scores."""
+    """Finite-sample conformal quantile for **signed** CQR scores.
+
+    The CQR nonconformity score ``max(q_lo(x) - y, y - q_hi(x))`` is
+    negative whenever the true value falls inside the predicted quantile
+    interval, so the signed variant of the conformal quantile must be used.
+    The rank is never clamped: when the calibration set is too small for the
+    requested coverage the correct answer is ``+inf`` (an unbounded
+    interval), not the largest observed score.
+    """
     scores = np.asarray(scores, dtype=np.float64).reshape(-1)
     if scores.size == 0 or not np.all(np.isfinite(scores)):
         raise ValueError("CQR calibration scores must be finite and non-empty.")
-    rank = int(np.ceil((len(scores) + 1) * (1.0 - alpha)))
-    return float(np.sort(scores)[min(max(rank, 1), len(scores)) - 1])
+    return signed_conformal_quantile(scores, alpha)
 
 
 def train_scale_head(
@@ -989,46 +973,17 @@ def train_scale_head(
     residuals: np.ndarray,
     device: torch.device,
     epochs: int = 50,
+    seed: int = DEFAULT_SEED,
 ) -> ScaleHead:
     """Fit a positive residual-scale model on training engines only."""
-    torch.manual_seed(SEED)
-    head = ScaleHead(HIDDEN_SIZE).to(device)
-    optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
-    # Ensure targets are a tensor and correctly shaped
-    targets = torch.from_numpy(np.asarray(residuals, dtype=np.float32)).to(device)
-    optimization_batch_size = 2048
 
-    # Ensure targets are a tensor and flattened for easy indexing
-    targets = torch.from_numpy(np.asarray(residuals, dtype=np.float32)).flatten().to(device)
-    optimization_batch_size = 2048
-
-    head.train()
-    for _ in range(epochs):
-        perm = torch.randperm(len(features))
-        # Use range based indexing to correctly slice both features and targets
-        for start_idx in range(0, len(features), optimization_batch_size):
-            end_idx = min(start_idx + optimization_batch_size, len(features))
-            indices = perm[start_idx : end_idx]
-            
-            batch_features = features[indices].to(device)
-            batch_targets = targets[indices]
-            
-            # Ensure batch_targets is at least 1D (if batch_size=1)
-            if batch_targets.dim() == 0:
-                batch_targets = batch_targets.unsqueeze(0)
-            
-            prediction = head(batch_features).squeeze()
-            
-            # Ensure prediction has at least one dimension for safety (e.g. if batch_size is 1)
-            if prediction.dim() == 0:
-                prediction = prediction.unsqueeze(0)
-            
-            # Ensure shapes are consistent (N,)
-            loss = nn.functional.l1_loss(prediction.view(-1), batch_targets.view(-1))
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-    return head.eval()
+    return pipeline.fit_scale_head(
+        features=features,
+        residuals=residuals,
+        device=device,
+        epochs=epochs,
+        seed=seed,
+    )
 
 
 def predict_scales(
@@ -1036,13 +991,10 @@ def predict_scales(
     features: torch.Tensor,
     device: torch.device,
 ) -> np.ndarray:
-    scales = []
-    head.eval()
-    with torch.no_grad():
-        for start in range(0, len(features), BATCH_SIZE):
-            batch = features[start:start + BATCH_SIZE].to(device)
-            scales.append(head(batch).cpu().numpy().flatten())
-    return np.concatenate(scales)
+    """Predict positive residual scales from a fitted scale head."""
+
+    return pipeline.predict_scales(head, features, device)
+
 
 
 def run_adaptive_conformal(
@@ -1055,6 +1007,8 @@ def run_adaptive_conformal(
     y_calibration: np.ndarray,
     device: torch.device,
     log: logging.Logger,
+    tag: str = "",
+    seed: int = DEFAULT_SEED,
 ) -> None:
     """Run normalized conformal prediction with a frozen-GRU scale head."""
     log.info("Extracting frozen GRU features for adaptive conformal...")
@@ -1062,7 +1016,12 @@ def run_adaptive_conformal(
     calibration_features = extract_model_features(model, X_calibration, device)
     train_predictions = predict_rul(model, X_train, device)
     log.info("Training residual-scale head on training engines only...")
-    head = train_scale_head(train_features, np.abs(y_train - train_predictions), device)
+    head = train_scale_head(
+        train_features,
+        np.abs(y_train - train_predictions),
+        device,
+        seed=seed,
+    )
 
     calibration_predictions = predict_rul(model, X_calibration, device)
     calibration_scales = predict_scales(head, calibration_features, device)
@@ -1098,7 +1057,12 @@ def run_adaptive_conformal(
         )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_adaptive_conformal.npz"
+    output_path = results_path(
+        subset,
+        model_name,
+        tag,
+        suffix="adaptive_conformal",
+    )
     np.savez(output_path, **save_data)
     log.info("Adaptive results saved to: %s", output_path)
 
@@ -1113,6 +1077,8 @@ def run_cqr(
     y_calibration: np.ndarray,
     device: torch.device,
     log: logging.Logger,
+    tag: str = "",
+    seed: int = DEFAULT_SEED,
 ) -> None:
     """Run CQR with quantile-head fitting and conformal calibration."""
     log.info("Extracting frozen model features for CQR...")
@@ -1120,6 +1086,12 @@ def run_cqr(
     calibration_features = extract_model_features(model, X_calibration, device)
     X_test, y_test, _ = load_test_data(subset)
     test_features = extract_model_features(model, X_test, device)
+    # The point predictions of the *same* checkpoint anchor the quantile
+    # head (centre = point prediction + learned correction) and are stored
+    # so a downstream consumer can pair the interval with its prediction.
+    train_pred = predict_rul(model, X_train, device)
+    calibration_pred = predict_rul(model, X_calibration, device)
+    test_pred = predict_rul(model, X_test, device)
     save_data: dict[str, np.ndarray] = {"y_rul_test": y_test}
 
     for coverage in COVERAGE_LEVELS:
@@ -1136,13 +1108,19 @@ def run_cqr(
             device,
             lower_quantile,
             upper_quantile,
+            seed=seed,
+            base_pred=train_pred,
         )
-        cal_lower, cal_upper = predict_quantiles(head, calibration_features, device)
+        cal_lower, cal_upper = predict_quantiles(
+            head, calibration_features, device, base_pred=calibration_pred
+        )
         calibration_scores = np.maximum(
             cal_lower - y_calibration,
             y_calibration - cal_upper,
         )
-        test_lower, test_upper = predict_quantiles(head, test_features, device)
+        test_lower, test_upper = predict_quantiles(
+            head, test_features, device, base_pred=test_pred
+        )
         q_hat = cqr_quantile(calibration_scores, alpha)
         lower, upper = test_lower - q_hat, test_upper + q_hat
         metrics = evaluate_interval(y_test, lower, upper, coverage)
@@ -1152,6 +1130,9 @@ def run_cqr(
         save_data[f"q_hat_{suffix}"] = np.asarray([q_hat])
         save_data[f"quantile_lower_{suffix}"] = test_lower
         save_data[f"quantile_upper_{suffix}"] = test_upper
+        # The point prediction of the *same* checkpoint, so a downstream
+        # consumer can pair the interval with the prediction it belongs to.
+        save_data["y_rul_pred"] = test_pred
         log.info(
             "CQR %.0f%% | Empirical %.4f | Error %.4f | MPIW %.4f",
             coverage * 100.0,
@@ -1161,7 +1142,12 @@ def run_cqr(
         )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_cqr.npz"
+    output_path = results_path(
+        subset,
+        model_name,
+        tag,
+        suffix="cqr",
+    )
     np.savez(output_path, **save_data)
     log.info("CQR results saved to: %s", output_path)
 
@@ -1176,11 +1162,13 @@ def main():
 
     subset = args.subset
     model_name = args.model
+    tag = args.tag
 
     log = configure_logging(
         model_name,
-        subset
-        , args.method
+        subset,
+        args.method,
+        tag,
     )
 
     device = get_device()
@@ -1212,6 +1200,12 @@ def main():
         "Model: %s",
         model_name,
     )
+
+    if tag:
+        log.info(
+            "Tag: %s",
+            tag,
+        )
 
     log.info(
         "=" * 60
@@ -1245,11 +1239,45 @@ def main():
     )
 
     # --------------------------------------------------------------
+    # Load trained model
+    #
+    # The model is loaded BEFORE the calibration split is created,
+    # because the split has to reproduce the split the checkpoint was
+    # trained with.  That seed lives in the checkpoint.
+    # --------------------------------------------------------------
+
+    log.info(
+        "Loading trained %s...",
+        model_name.upper(),
+    )
+
+    model, checkpoint = load_model(
+        model_name=model_name,
+        input_size=X_train_all.shape[-1],
+        device=device,
+        subset=subset,
+        tag=tag,
+    )
+
+    seed = checkpoint_seed(checkpoint)
+
+    log.info(
+        "Loaded checkpoint from epoch %d",
+        checkpoint["epoch"],
+    )
+
+    log.info(
+        "Checkpoint seed: %d (calibration split reproduces this split)",
+        seed,
+    )
+
+    # --------------------------------------------------------------
     # Reproduce calibration split
     # --------------------------------------------------------------
 
     log.info(
-        "Creating engine-wise calibration split..."
+        "Creating engine-wise calibration split (seed=%d)...",
+        seed,
     )
 
     (
@@ -1259,6 +1287,7 @@ def main():
         X=X_train_all,
         y_rul=y_rul_all,
         engine_ids=engine_ids,
+        seed=seed,
     )
 
     X_calibration = X_train_all[
@@ -1301,27 +1330,6 @@ def main():
     )
 
     # --------------------------------------------------------------
-    # Load trained model
-    # --------------------------------------------------------------
-
-    log.info(
-        "Loading trained %s...",
-        model_name.upper(),
-    )
-
-    model, checkpoint = load_model(
-        model_name=model_name,
-        input_size=X_train_all.shape[-1],
-        device=device,
-        subset=subset,
-    )
-
-    log.info(
-        "Loaded checkpoint from epoch %d",
-        checkpoint["epoch"],
-    )
-
-    # --------------------------------------------------------------
     # Method dispatch
     # --------------------------------------------------------------
     # IMPORTANT: method-specific implementations must return here.
@@ -1344,6 +1352,8 @@ def main():
             y_calibration=y_rul_calibration,
             device=device,
             log=log,
+            tag=tag,
+            seed=seed,
         )
         return
 
@@ -1358,6 +1368,8 @@ def main():
             y_calibration=y_rul_calibration,
             device=device,
             log=log,
+            tag=tag,
+            seed=seed,
         )
         return
 
@@ -1376,6 +1388,8 @@ def main():
             training_engine_ids=training_engine_ids,
             device=device,
             log=log,
+            tag=tag,
+            seed=seed,
         )
         return
 
@@ -1464,7 +1478,12 @@ def main():
         )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = RESULTS_DIR / f"{subset}_{model_name}_conformal.npz"
+    output_path = results_path(
+        subset,
+        model_name,
+        tag,
+        suffix="conformal",
+    )
     np.savez(output_path, **save_data)
     log.info("Results saved to: %s", output_path)
 
