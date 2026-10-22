@@ -101,12 +101,14 @@ def run_stage(
             subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
 
     elif stage == "xai":
+        # Both targets: the decision engine consumes the RUL ERI, and the
+        # certification report quotes the HI ERI as well.
         cmd = [
             sys.executable,
             str(PROJECT_ROOT / "scripts" / "explain.py"),
             "--model", model_name,
             "--subset", subset,
-            "--target", "rul",
+            "--target", "all",
             "--tag", tag,
             *extra,
         ]
@@ -150,6 +152,7 @@ def expected_artifacts(model_name: str, subset: str, tag: str) -> dict[str, Path
         "uncertainty_adaptive": RESULTS_DIR / f"{subset}_{run_name}_adaptive_conformal.npz",
         "uncertainty_engine_joint": RESULTS_DIR / f"{subset}_{run_name}_engine_joint_conformal.npz",
         "xai": PROJECT_ROOT / "outputs" / "xai" / subset / run_name / "eri_rul.json",
+        "xai_hi": PROJECT_ROOT / "outputs" / "xai" / subset / run_name / "eri_hi.json",
         "decision": RESULTS_DIR / f"decision_{subset}_{run_name}.json",
         "hitl": RESULTS_DIR / f"hitl_{subset}_{run_name}.json",
     }

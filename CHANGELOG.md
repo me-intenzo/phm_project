@@ -46,6 +46,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the only one reported, and it over-covered massively (0.99 at an 80 % target
   on FD003) because a lifetime maximum is much larger than any single test
   window. `--calibration-units` selects the set; `window` is the primary unit.
+- **The downstream chain is certified for every seed, not only for one.**
+  `scripts/multiseed_pipeline.py` now runs the four stages
+  (uncertainty → XAI → decision → HITL) for all 20 (subset, seed) pairs and
+  records the result of each run — stage status, timings, artifact paths, the
+  cross-stage prediction check and any problem — in
+  `results/multiseed/pipeline_manifest.json`. The XAI stage explains **both**
+  targets (`--target all`), so `eri_hi.json` exists for every seed as well, and
+  the artifact check covers it.
+- **`scripts/multiseed_downstream.py`** — summarises the downstream artifacts
+  of the certified grid: the ERI of both targets, the decision engine's action
+  mix, health-state and uncertainty mix, review rate, constraint violations,
+  risk and urgency, the width of the interval the decision engine actually
+  consumed, and the HITL review/feedback counts. Writes
+  `results/multiseed/downstream_per_run.csv` (one row per subset × seed) and
+  `results/multiseed/downstream_summary.csv` (mean ± std across seeds, per
+  subset and for the four-subset aggregate). A missing artifact is reported as
+  missing, never replaced by a default.
+- **The certification report covers the downstream chain.** `multiseed_report.py`
+  renders a "Downstream chain on the same checkpoints" section (runs executed,
+  runs clean, wall-clock, and the per-subset ERI / decision / interval-width
+  table) and `certification.json` gains a `downstream_chain` block listing any
+  run that produced an error or an artifact-consistency problem.
 
 ### Fixed
 

@@ -309,7 +309,7 @@ model anywhere in the certification path:
 
 ```powershell
 # Intervals, SHAP/IG attributions, decisions and HITL for every seed
-python scripts/multiseed_pipeline.py --stages all --seeds 42 43 44 45 46
+python scripts/multiseed_pipeline.py --subsets all --seeds 42 43 44 45 46 --stages all
 
 # Five-method interval benchmark on the real checkpoints (24 min on the
 # reference GPU; writes results/conformal_benchmark/)
@@ -323,7 +323,10 @@ python scripts/multiseed_report.py
 each run exist and that they describe the same weights: the point prediction
 the uncertainty stage stores must match the one the evaluation stage stored to
 within 0.1 RUL cycles (the two stages use different batch sizes, so the GPU
-forward pass is not bit-identical) and correlate above 0.9999.
+forward pass is not bit-identical) and correlate above 0.9999. It writes
+`results/multiseed/pipeline_manifest.json`, which records the per-run stage
+status, timings, artifact paths and the verification result for every
+(subset, seed) pair.
 
 `scripts/multiseed_report.py` writes:
 
@@ -335,6 +338,16 @@ forward pass is not bit-identical) and correlate above 0.9999.
 | `results/multiseed/literature_comparison.csv` | this repository vs. published four-subset means |
 | `results/multiseed/certification.json` | machine-readable verdict and all inputs |
 | `outputs/reports/multiseed_report.md` | the human-readable report |
+
+`scripts/multiseed_downstream.py` summarises the *downstream* artifacts of the
+same grid — the ERI of both explainability targets, the decision-engine action
+mix, review rate, constraint violations and the width of the interval the
+decision engine actually consumed, and the HITL review/feedback counts:
+
+| File | Contents |
+|---|---|
+| `results/multiseed/downstream_per_run.csv` | one row per (subset, seed) |
+| `results/multiseed/downstream_summary.csv` | mean ± std across seeds, per subset and for the four-subset aggregate |
 
 The certified result of that grid is **13.361 ± 0.136** mean RUL RMSE on the
 four-subset mean (per subset: 12.38 ± 0.28 / 13.92 ± 0.43 / 11.97 ± 0.26 /
@@ -533,7 +546,8 @@ Results below are from specific project runs and depend on the preprocessing con
 | Point prediction (FD001–FD004 mean, `gru_att_deg_v2`, 5 seeds) | RUL RMSE **13.361 ± 0.136**, MAE 9.62, NASA Score 632 | [RESULTS.md § 2](RESULTS.md#2-point-prediction--this-repository) |
 | Conformal intervals, 90% nominal, window unit (5 seeds) | `nex_scp` coverage 0.888–0.904, width 30.6–41.1 · `split_conformal` 0.896–0.910, width 35.1–44.1 · `eara_conformal` 0.852–0.917, width 29.1–40.3 | [RESULTS.md § 3.1](RESULTS.md#31-coverage-at-the-90-nominal-level-window-unit) |
 | Conformal intervals, engine unit (5 seeds) | Deliberately conservative: coverage 0.977–1.000 at the 90 % target; not comparable to the window widths | [RESULTS.md § 3.3](RESULTS.md#33-the-engine-unit-conservative-reading) |
-| Explanation reliability (mean ERI) | 0.880 (HI), 0.872 (RUL) across subsets and models | [RESULTS.md § 4](RESULTS.md#4-explainability) |
+| Explanation reliability (mean ERI, 5 seeds) | RUL **0.905 ± 0.016**, HI **0.907 ± 0.025** on the four-subset aggregate | [RESULTS.md § 4](RESULTS.md#4-explainability) |
+| Downstream chain on the same checkpoints | uncertainty → XAI → decision → HITL executed for **20 / 20** (subset, seed) pairs, 0 errors and 0 artifact-consistency problems; 0 constraint violations | [RESULTS.md § 4.1](RESULTS.md#41-the-downstream-chain-on-the-same-checkpoints) |
 
 Every point-prediction number above is reproduced from the per-seed artifacts in
 `results/multiseed/` by `scripts/multiseed_report.py`, so the same checkpoints

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-10-22T10:20:30.851256+00:00",
+  "generated_at_utc": "2026-10-22T11:30:58.835017+00:00",
   "model": "gru_att_deg_v2",
   "tag_prefix": "ms",
   "seeds": [
@@ -474,5 +474,18 @@
     "All runs are full checkpoints of the named architecture trained by scripts/train.py via scripts/multiseed_train.py. No proxy model is used.",
     "Standard deviations are sample standard deviations across seeds (ddof=1).",
     "The four-subset aggregate is the unweighted mean of the four per-subset RMSEs for a given seed, matching the convention used in docs/SOTA_BENCHMARK.md."
-  ]
+  ],
+  "downstream_chain": {
+    "pipeline_manifest": "results\\multiseed\\pipeline_manifest.json",
+    "n_runs": 20,
+    "n_clean": 20,
+    "total_seconds": 952.41,
+    "stages": [
+      "uncertainty",
+      "xai",
+      "decision",
+      "hitl"
+    ],
+    "problems": []
+  }
 }

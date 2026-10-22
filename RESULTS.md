@@ -20,6 +20,7 @@ comparison against published state-of-the-art (SOTA) RUL baselines.
 - [2. Point prediction — this repository](#2-point-prediction--this-repository)
 - [3. Conformal interval benchmark (multi-seed)](#3-conformal-interval-benchmark-multi-seed)
 - [4. Explainability](#4-explainability)
+- [4.1 The downstream chain on the same checkpoints](#41-the-downstream-chain-on-the-same-checkpoints)
 - [5. How to reproduce](#5-how-to-reproduce)
 - [6. Caveats](#6-caveats)
 
@@ -306,16 +307,76 @@ can re-run the comparisons independently.
 
 The Explainability Reliability Index (ERI) measures cross-method agreement
 between Integrated Gradients, SHAP and temporal relevance; an uncorrelated pair
-scores 0.5. Source: `scripts/explain.py` outputs.
+scores 0.5.
 
-| Target | Mean ERI (across subsets and models) |
-|---|---|
-| HI | 0.880 |
-| RUL | 0.872 |
+**Certified (five seeds × four subsets, `gru_att_deg_v2`).** Source:
+`results/multiseed/downstream_summary.csv`, produced by
+`scripts/multiseed_downstream.py` from the artifacts the pipeline wrote for
+each seed. Mean ± std across the five seeds:
+
+| Subset | ERI (RUL) | ERI (HI) | Decisions per run | Review rate | Mean interval width (cycles) | Constraint violations |
+|---|---|---|---|---|---|---|
+| FD001 | 0.920 ± 0.031 | 0.925 ± 0.024 | 100 | 0.322 ± 0.022 | 40.2 ± 3.7 | 0 |
+| FD002 | 0.978 ± 0.017 | 0.966 ± 0.023 | 259 | 0.460 ± 0.026 | 46.6 ± 2.0 | 0 |
+| FD003 | 0.847 ± 0.043 | 0.829 ± 0.061 | 100 | 0.292 ± 0.038 | 33.4 ± 2.6 | 0 |
+| FD004 | 0.875 ± 0.026 | 0.908 ± 0.030 | 248 | 0.406 ± 0.040 | 45.9 ± 4.4 | 0 |
+| **ALL** (four-subset aggregate) | **0.905 ± 0.016** | **0.907 ± 0.025** | 177 | 0.370 ± 0.012 | 41.5 ± 1.6 | 0 |
+
+The interval width is the width of the interval the **decision engine actually
+consumed** — the uncertainty artifact of that same seed — so the explainability
+numbers, the interval numbers and the decision numbers in this section all
+describe one set of weights.
+
+Legacy single-run figures (all models, all subsets, not certified) were
+`HI 0.880` and `RUL 0.872`; they are superseded by the table above.
 
 These are agreement scores, not faithfulness scores — see
 [Implementation Status](README.md#implementation-status) (`faithfulness
 validation pending`).
+
+---
+
+## 4.1 The downstream chain on the same checkpoints
+
+`scripts/multiseed_pipeline.py` runs the four downstream stages
+(uncertainty → XAI → decision → HITL) for **every** (subset, seed) pair and
+verifies that the artifacts of one run describe the same weights. The result is
+recorded in `results/multiseed/pipeline_manifest.json`:
+
+| Check | Result |
+|---|---|
+| Runs executed (4 subsets × 5 seeds) | **20** |
+| Runs with no stage error and no artifact-consistency problem | **20 / 20** |
+| Wall-clock for the four stages | 952 s |
+| Cross-stage check | the point prediction stored by the uncertainty stage matches the one stored by the evaluation stage to within 0.1 RUL cycles, Pearson r > 0.9999, for every run |
+| Decision engine input | the interval bounds are the ones the uncertainty stage produced for that seed's tag |
+| HITL | `prognostic_model_updated` is `false` on every run — HITL refines the decision policy only, it never touches the model |
+
+**Action mix** (share of decisions, pooled over the five seeds):
+
+| Subset | Continue | Monitor | Inspect | Schedule maintenance | Urgent maintenance |
+|---|---|---|---|---|---|
+| FD001 | 27.6 % | 34.8 % | 18.2 % | 5.2 % | 14.2 % |
+| FD002 | 29.3 % | 24.4 % | 26.9 % | 0.2 % | 19.2 % |
+| FD003 | 23.2 % | 45.8 % | 16.4 % | 1.8 % | 12.8 % |
+| FD004 | 23.2 % | 36.1 % | 27.8 % | 0.0 % | 12.8 % |
+
+**Human review.** Between 25 and 126 of the decisions per run are routed to a
+reviewer (29–46 % of the decisions; 0.370 ± 0.012 over the grid), and the
+review queue is non-empty on every one of the 20 runs.
+
+**The policy did not adapt in any of the 20 runs** (`adaptation_count` 0,
+`adaptations_applied` 0, `recommendation_change_rate` 0). The append-only
+feedback log holds three historical records — from an earlier `gru` run on
+FD001, not from these seeds — and no single alternative action reaches the
+adoption threshold (≥3 consistent observations, weighted support ≥2.0, consensus
+≥0.70). `prognostic_model_updated` is `false` on every run: HITL refines the
+decision policy only, and in this configuration it had nothing to refine. That
+is worth stating plainly rather than leaving a reviewer to infer it from the
+feedback log.
+
+No constraint violation was produced on any of the 20 runs, before or after
+adaptation.
 
 ---
 
@@ -343,15 +404,22 @@ python scripts/multiseed_report.py
 python scripts/multiseed_conformal_benchmark.py --subsets all --seeds 42 43 44 45 46
 
 # 5. Downstream chain on the same checkpoints, per seed
-python scripts/multiseed_pipeline.py --stages all --seeds 42 43 44 45 46
+python scripts/multiseed_pipeline.py --subsets all --seeds 42 43 44 45 46 --stages all
+
+# 5b. Summarise the downstream artifacts of that grid (Section 4 / 4.1)
+python scripts/multiseed_downstream.py --model gru_att_deg_v2
 
 # 6. Explainability (the ERI numbers in Section 4)
 python scripts/explain.py --model all --subset all --target all
 ```
 
-Every multi-seed stage is resumable: re-running a command skips the
-(subset, seed) combinations whose checkpoint and metrics already exist.
-`--force` re-runs them.
+`scripts/multiseed_train.py` is resumable: re-running it skips the
+(subset, seed) combinations whose checkpoint and metrics already exist, and
+`--force` retrains them. `scripts/multiseed_report.py` and
+`scripts/multiseed_conformal_benchmark.py` re-read the stored artifacts and
+recompute the aggregations. `scripts/multiseed_pipeline.py` always re-runs its
+four stages, because it is verifying that the chain still works for every
+seed, not producing new weights.
 
 All benchmark outputs land in `results/` (tracked); all other generated
 artifacts land in `outputs/` (not tracked).
@@ -397,6 +465,16 @@ artifacts land in `outputs/` (not tracked).
 - **Neither interval method has been stress-tested under distribution shift.**
   All calibration and test engines come from the same C-MAPSS simulation; the
   coverage numbers do not transfer to a different machine or operating profile.
+- **The ERI measures agreement, not faithfulness.** Section 4 reports how
+  consistently Integrated Gradients, SHAP and temporal relevance rank the
+  sensors. A high ERI means the three methods agree with each other, not that
+  they identify the physically important sensor; faithfulness validation is
+  still pending.
+- **The HITL policy did not adapt in the certified runs.** All 20 runs reuse
+  the same three historical feedback records, and no alternative action reaches
+  the adoption threshold, so `adaptations_applied` is 0 everywhere. The HITL
+  evidence in § 4.1 is therefore "the workflow runs, routes reviews and
+  respects the constraints", not "the policy learned from expert feedback".
 - **Score-metric values in Section 1 are not directly comparable** across
   papers; see the warning above.
 

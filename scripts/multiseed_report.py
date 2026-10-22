@@ -59,6 +59,8 @@ from src.utils.paths import REPORTS_DIR, RESULTS_DIR
 MULTISEED_DIR = PROJECT_ROOT / "results" / "multiseed"
 MANIFEST_PATH = MULTISEED_DIR / "training_manifest.json"
 LITERATURE_PATH = MULTISEED_DIR / "literature_reference.json"
+PIPELINE_MANIFEST_PATH = MULTISEED_DIR / "pipeline_manifest.json"
+DOWNSTREAM_SUMMARY_PATH = MULTISEED_DIR / "downstream_summary.csv"
 
 HEADLINE_METRICS = ("RMSE", "MAE", "R2", "NASA_Score")
 
@@ -332,6 +334,39 @@ def read_manifest() -> dict[str, Any]:
         return {}
 
 
+def read_downstream() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read the downstream-chain evidence, if the pipeline has been run.
+
+    Returns the pipeline manifest (which records the per-run stage status and
+    the cross-stage consistency check) and the per-subset summary of the
+    downstream artifacts.
+    """
+
+    pipeline: dict[str, Any] = {}
+    if PIPELINE_MANIFEST_PATH.exists():
+        try:
+            pipeline = json.loads(PIPELINE_MANIFEST_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pipeline = {}
+
+    rows: list[dict[str, Any]] = []
+    if DOWNSTREAM_SUMMARY_PATH.exists():
+        with DOWNSTREAM_SUMMARY_PATH.open(encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                rows.append(
+                    {
+                        key: (
+                            float(value)
+                            if key.endswith(("_mean", "_std")) and value not in ("", None)
+                            else value
+                        )
+                        for key, value in row.items()
+                    }
+                )
+
+    return pipeline, rows
+
+
 # ------------------------------------------------------------------
 # Report rendering
 # ------------------------------------------------------------------
@@ -346,6 +381,8 @@ def render_markdown(
     literature_rows: list[dict[str, Any]],
     analysis: dict[str, Any],
     manifest: dict[str, Any],
+    pipeline: dict[str, Any] | None = None,
+    downstream_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     lines: list[str] = []
     add = lines.append
@@ -446,7 +483,68 @@ def render_markdown(
         )
         add("")
 
-    add("## 5. Reproducing this report")
+    add("## 5. Downstream chain on the same checkpoints")
+    add("")
+    if pipeline:
+        n_runs = pipeline.get("n_runs", 0)
+        n_clean = pipeline.get("n_clean", 0)
+        total_seconds = float(pipeline.get("total_seconds", 0.0) or 0.0)
+        add(
+            f"- Runs executed: **{n_runs}** "
+            f"(subsets {', '.join(pipeline.get('subsets', []))} x seeds "
+            f"{', '.join(str(seed) for seed in pipeline.get('seeds', []))})"
+        )
+        add(
+            f"- Runs without an error and without an artifact-consistency "
+            f"problem: **{n_clean} / {n_runs}**"
+        )
+        add(
+            f"- Wall-clock for the four stages (uncertainty, XAI, decision, "
+            f"HITL): {total_seconds:.0f} s"
+        )
+        add(
+            "- Every stage ran on the checkpoint of its own tag, and the "
+            "pipeline verified that the point prediction stored by the "
+            "uncertainty stage matches the one stored by the evaluation stage "
+            "(max deviation 0.1 RUL cycles, Pearson r > 0.9999)."
+        )
+    else:
+        add(
+            "_No pipeline manifest found. Run "
+            "`python scripts/multiseed_pipeline.py --subsets all --seeds "
+            f"{' '.join(str(seed) for seed in seeds)}` to produce it._"
+        )
+    add("")
+
+    if downstream_rows:
+        add(
+            "| Subset | ERI (RUL) | ERI (HI) | Decisions | Review rate | "
+            "Mean interval width | Constraint violations |"
+        )
+        add("|---|---|---|---|---|---|---|")
+        for row in downstream_rows:
+            add(
+                f"| {row.get('subset', '')} "
+                f"| {float(row.get('eri_rul_mean', float('nan'))):.3f} ± "
+                f"{float(row.get('eri_rul_std', float('nan'))):.3f} "
+                f"| {float(row.get('eri_hi_mean', float('nan'))):.3f} ± "
+                f"{float(row.get('eri_hi_std', float('nan'))):.3f} "
+                f"| {float(row.get('n_decisions_mean', float('nan'))):.0f} "
+                f"| {float(row.get('review_rate_mean', float('nan'))):.3f} "
+                f"| {float(row.get('mean_interval_width_mean', float('nan'))):.1f} "
+                f"| {float(row.get('constraint_violation_count_mean', float('nan'))):.2f} |"
+            )
+        add("")
+        add(
+            "Mean ± std across seeds. `ALL` is the four-subset aggregate: the "
+            "subset means are averaged within a seed first, so the aggregate is "
+            "itself a distribution over seeds. The interval width is the width of "
+            "the interval the decision engine actually consumed, i.e. the "
+            "uncertainty artifact of that same seed."
+        )
+        add("")
+
+    add("## 6. Reproducing this report")
     add("")
     add("```bash")
     add(
@@ -457,6 +555,11 @@ def render_markdown(
         f"python scripts/multiseed_report.py --model {model_name} "
         f"--tag-prefix {tag_prefix}"
     )
+    add(
+        f"python scripts/multiseed_pipeline.py --subsets all --seeds "
+        f"{' '.join(str(seed) for seed in seeds)} --stages all"
+    )
+    add(f"python scripts/multiseed_downstream.py --model {model_name}")
     add("```")
     add("")
 
@@ -509,6 +612,7 @@ def main() -> None:
     args = parse_args()
 
     manifest = read_manifest()
+    pipeline, downstream_rows = read_downstream()
 
     seeds = args.seeds
     if seeds is None:
@@ -586,6 +690,27 @@ def main() -> None:
             "per-subset RMSEs for a given seed, matching the convention used "
             "in docs/SOTA_BENCHMARK.md.",
         ],
+        "downstream_chain": {
+            "pipeline_manifest": (
+                str(PIPELINE_MANIFEST_PATH.relative_to(PROJECT_ROOT))
+                if PIPELINE_MANIFEST_PATH.exists()
+                else None
+            ),
+            "n_runs": pipeline.get("n_runs"),
+            "n_clean": pipeline.get("n_clean"),
+            "total_seconds": pipeline.get("total_seconds"),
+            "stages": pipeline.get("stages"),
+            "problems": [
+                {
+                    "subset": run.get("subset"),
+                    "seed": run.get("seed"),
+                    "errors": run.get("errors"),
+                    "problems": run.get("problems"),
+                }
+                for run in pipeline.get("runs", [])
+                if run.get("errors") or run.get("problems")
+            ],
+        },
     }
 
     if missing:
@@ -606,6 +731,8 @@ def main() -> None:
         literature_rows=literature_rows,
         analysis=analysis,
         manifest=manifest,
+        pipeline=pipeline,
+        downstream_rows=downstream_rows,
     )
 
     report_path = REPORTS_DIR / "multiseed_report.md"
