@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-10-22T09:34:17.964937+00:00",
-  "git_commit": "0d8869227a1086bd7d4998896f30ee2c663f5c52",
+  "generated_at_utc": "2026-10-22T14:54:05.899183+00:00",
+  "git_commit": "7c547bdd9e07426843bce8b8f34badb834da0482",
   "model": "gru_att_deg_v2",
   "subsets": [
     "FD001",
@@ -19,7 +19,7 @@
   "tag_prefix": "ms",
   "tag_pattern": "ms<seed>",
   "overrides": {},
-  "total_seconds": 1897.49,
+  "total_seconds": 0.12,
   "device": "cuda",
   "note": "Every run in this manifest is a full checkpoint of the named architecture trained by scripts/train.py. No proxy or surrogate model is involved.",
   "is_multi_seed_certification": true,
@@ -30,7 +30,7 @@
       "tag": "ms42",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD001\\best_model.pt",
-      "checkpoint_sha256": "e0bb2aa55643104f9449bece9a1c74805bb3dc42ca2819271ff671dff56399d1",
+      "checkpoint_sha256": "97e8a9df73f85d9b1450d4aac776f867c2ba411ff6e4422dd66767fe9b7bf9cb",
       "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms42_metrics.json"
     },
     {
@@ -39,7 +39,7 @@
       "tag": "ms43",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD001\\best_model.pt",
-      "checkpoint_sha256": "07e05c4ce27171abed8520095915971fd3aa1c3b39f61baddf7507e3e2431a51",
+      "checkpoint_sha256": "916c4ed3aedcfa01ac260dd2380e2fec67464bf9d042d1b05fcf26d46a5259d8",
       "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms43_metrics.json"
     },
     {
@@ -48,7 +48,7 @@
       "tag": "ms44",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD001\\best_model.pt",
-      "checkpoint_sha256": "5c170e704cee86ae80026a04191a910a8894996fb6fec7ed53dbadcc973a2845",
+      "checkpoint_sha256": "f012de09d5545d603be9b0d80e9cb6ac4d212197845f33b37ae0b3b04dcb4069",
       "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms44_metrics.json"
     },
     {
@@ -57,7 +57,7 @@
       "tag": "ms45",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD001\\best_model.pt",
-      "checkpoint_sha256": "d718a123fe16166e57bb931de940431c3db1a4d21c459aca9db232e97cfd6b0d",
+      "checkpoint_sha256": "e36ebf2f741fae9a75abfc364b3fa02905d1bbd6dba4a94ef18095aea929430c",
       "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms45_metrics.json"
     },
     {
@@ -66,7 +66,7 @@
       "tag": "ms46",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD001\\best_model.pt",
-      "checkpoint_sha256": "f0090c8c50dd8c15ed14c79f1f54ce5132614f340555906ad4b37f5452516676",
+      "checkpoint_sha256": "0f7fc7c454fd72ed3609fe92a0c28bbe8a5dfb814d26480847b167b2a89d5741",
       "metrics": "outputs\\results\\FD001_gru_att_deg_v2_ms46_metrics.json"
     },
     {
@@ -75,7 +75,7 @@
       "tag": "ms42",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD002\\best_model.pt",
-      "checkpoint_sha256": "478a552d1f5fdad7ce5b032ced153204af4e211088fc1784a7984cc0c3183624",
+      "checkpoint_sha256": "307d979e0393e341871a38a0c2dcac68e766ff596c46a6d71aa7bdc249d38c96",
       "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms42_metrics.json"
     },
     {
@@ -84,7 +84,7 @@
       "tag": "ms43",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD002\\best_model.pt",
-      "checkpoint_sha256": "937e2639f448c5cef778dc8305445769aeba066d41611ba5e3a290ead7917e7f",
+      "checkpoint_sha256": "e916cc117b9864435a540c5cf7e58b11057173d90e6a571b263b5718c07da0d7",
       "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms43_metrics.json"
     },
     {
@@ -93,7 +93,7 @@
       "tag": "ms44",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD002\\best_model.pt",
-      "checkpoint_sha256": "c5beee71d784638d934d11c64c67d51fb4d82599b37026c595c758ab6ddfcfad",
+      "checkpoint_sha256": "3ca281626a8369d33ca4e2d55919b9053ebdf0e62de648ff44d656f7c6830a51",
       "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms44_metrics.json"
     },
     {
@@ -102,7 +102,7 @@
       "tag": "ms45",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD002\\best_model.pt",
-      "checkpoint_sha256": "83a19412de99a0d44bcc6f6ec487e97ff54b1a54f0663107d4114015c913600a",
+      "checkpoint_sha256": "0358f72738a2ba95301a0805da817fda33c385963fb4e624695c37c22830966e",
       "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms45_metrics.json"
     },
     {
@@ -111,7 +111,7 @@
       "tag": "ms46",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD002\\best_model.pt",
-      "checkpoint_sha256": "235c97406013e4fdcfef1f51eae3aa91ef0313895ca6c7d2a7f8770243b1b579",
+      "checkpoint_sha256": "41648f86020475592f3436bcd39da3cbd4b36f69c191d762cfb9a0ad05583568",
       "metrics": "outputs\\results\\FD002_gru_att_deg_v2_ms46_metrics.json"
     },
     {
@@ -120,7 +120,7 @@
       "tag": "ms42",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD003\\best_model.pt",
-      "checkpoint_sha256": "bdbb7b4771ab661a8d39c7c5880911590aaa4949ee8e99e5f8c8117a55bc76e6",
+      "checkpoint_sha256": "71f12efd576952f0a81d005f939d3c38c1ef957f93648c358a8d75fb6d68b962",
       "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms42_metrics.json"
     },
     {
@@ -129,7 +129,7 @@
       "tag": "ms43",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD003\\best_model.pt",
-      "checkpoint_sha256": "a089db3b469db1f7c31f11096a6b9a492cd20a0b3fe84716683802f895a26bc2",
+      "checkpoint_sha256": "3e158b2aa6fd673e8438aad1bbd9461ace1003c51f7d6da9527a30caedb71ff2",
       "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms43_metrics.json"
     },
     {
@@ -138,7 +138,7 @@
       "tag": "ms44",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD003\\best_model.pt",
-      "checkpoint_sha256": "dd7e9fd7add1d0aede64da2438afff6c48403d7128002c067ee638d5c6864099",
+      "checkpoint_sha256": "62c6ff9e5089102097088634fcc3def0fc257faf3049ed3ee725cccf227d52dd",
       "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms44_metrics.json"
     },
     {
@@ -147,7 +147,7 @@
       "tag": "ms45",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD003\\best_model.pt",
-      "checkpoint_sha256": "8ed514693c80683c1f8efee5f32edbac7bc8c4cdeb80d13b151dfca2e31b605c",
+      "checkpoint_sha256": "22bd5cbbef1d5030a67139bcb9340160597475f12ae9f0c3a70ea6e684eb6416",
       "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms45_metrics.json"
     },
     {
@@ -156,7 +156,7 @@
       "tag": "ms46",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD003\\best_model.pt",
-      "checkpoint_sha256": "75b725c4f7ab4cd8785ffd359260701e3fc46cd1a939191dc78e80bde4d766f6",
+      "checkpoint_sha256": "b9ea70d92a506b15f4895c158b242b60ca2bd7f0cfb8d9e0e4ebb6dddba95218",
       "metrics": "outputs\\results\\FD003_gru_att_deg_v2_ms46_metrics.json"
     },
     {
@@ -165,7 +165,7 @@
       "tag": "ms42",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms42\\FD004\\best_model.pt",
-      "checkpoint_sha256": "4ecf8618f0c677258feea8bfc8493333b6c07469b464d86e0fd7e4e272605c29",
+      "checkpoint_sha256": "c09861920e46947eb32eaf2afc73445bfd67c698d31febdb4e74c2bfe3326cb3",
       "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms42_metrics.json"
     },
     {
@@ -174,7 +174,7 @@
       "tag": "ms43",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms43\\FD004\\best_model.pt",
-      "checkpoint_sha256": "767e80bcbf7fc1974de470bf8d93d4d5eb790106b057df631f20a26d45f6a727",
+      "checkpoint_sha256": "c9ee7ac4e9dd6df35a511a476ef2f1cc4443163a4d842b492e31d13247ee9fbe",
       "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms43_metrics.json"
     },
     {
@@ -183,66 +183,26 @@
       "tag": "ms44",
       "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms44\\FD004\\best_model.pt",
-      "checkpoint_sha256": "16530129af8f591d6c11324b89d3a97578c3a7685a1c446bfa4847f80e40ea7c",
+      "checkpoint_sha256": "807fedd3b6c0ed4e8688a30e796833178e2da185ba52902f90975ae3fc8e1f3a",
       "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms44_metrics.json"
     },
     {
       "subset": "FD004",
       "seed": 45,
       "tag": "ms45",
-      "status": "trained",
-      "seconds": 1000.54,
+      "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms45\\FD004\\best_model.pt",
-      "checkpoint_sha256": "0263593dca4007a766e74218bb898392036d1874134bec18cf72abd3ce2ee186",
-      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms45_metrics.json",
-      "epoch": 26,
-      "run_metadata": {
-        "seed": 45,
-        "tag": "ms45",
-        "determinism": {
-          "seed": 45,
-          "deterministic": true,
-          "torch_use_deterministic_algorithms": true,
-          "torch_deterministic_warn_only": true,
-          "cudnn_deterministic": true,
-          "cudnn_benchmark": false,
-          "tf32_allowed": false,
-          "cublas_workspace_config": ":4096:8"
-        },
-        "arch": "gru_att_deg_v2",
-        "subset": "FD004"
-      },
-      "input_size": 23,
-      "window_size": 40
+      "checkpoint_sha256": "64df2c00a78cae8d5a9734ce2c2e1da92af2462491024a1c990b31f682ac3420",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms45_metrics.json"
     },
     {
       "subset": "FD004",
       "seed": 46,
       "tag": "ms46",
-      "status": "trained",
-      "seconds": 896.42,
+      "status": "skipped",
       "checkpoint": "outputs\\checkpoints\\gru_att_deg_v2_ms46\\FD004\\best_model.pt",
-      "checkpoint_sha256": "ace2f094317403e5f4dcf131b5a8ebb69b39f74e94db6d14d6d4f9db18e71243",
-      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms46_metrics.json",
-      "epoch": 22,
-      "run_metadata": {
-        "seed": 46,
-        "tag": "ms46",
-        "determinism": {
-          "seed": 46,
-          "deterministic": true,
-          "torch_use_deterministic_algorithms": true,
-          "torch_deterministic_warn_only": true,
-          "cudnn_deterministic": true,
-          "cudnn_benchmark": false,
-          "tf32_allowed": false,
-          "cublas_workspace_config": ":4096:8"
-        },
-        "arch": "gru_att_deg_v2",
-        "subset": "FD004"
-      },
-      "input_size": 23,
-      "window_size": 40
+      "checkpoint_sha256": "e99a6ec8461bad4d31da962e5a7b30485281519cf4b3cceba1cd0d9f0bbde7f5",
+      "metrics": "outputs\\results\\FD004_gru_att_deg_v2_ms46_metrics.json"
     }
   ]
 }

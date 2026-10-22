@@ -39,8 +39,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
-ALL_SUBSETS = ("FD001", "FD002", "FD003", "FD004")
-ALL_MODELS = ("lstm", "gru", "transformer", "hybrid")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.decision_engine.scenarios import scenario_names
+from src.models.registry import ALL_MODELS
+from src.utils.config import ALL_SUBSETS
+
 DEFAULT_SUBSET = "FD001"
 DEFAULT_MODEL = "gru"
 
@@ -116,10 +121,9 @@ def main() -> None:
         help="C-MAPSS subset, or 'all' for FD001-FD004.",
     )
     parser.add_argument(
-        "--model", type=str, choices=ALL_MODELS, default=DEFAULT_MODEL,
-        help="Model architecture used for every trainable stage. Only the "
-             "architectures that run through the full chain are allowed "
-             "(gru_att_deg is not wired into the decision engine).",
+        "--model", type=str, choices=list(ALL_MODELS), default=DEFAULT_MODEL,
+        help="Model architecture used for every trainable stage. Choices: "
+             + ", ".join(ALL_MODELS),
     )
     parser.add_argument(
         "--eda", action="store_true",
@@ -150,6 +154,10 @@ def main() -> None:
     parser.add_argument("--resource-availability", type=str, default=None,
                         choices=["true", "false"],
                         help="Whether crew and parts are available.")
+    parser.add_argument("--constraint-scenario", type=str, default="",
+                        choices=["", *scenario_names()],
+                        help=("Named operational-constraint scenario applied by "
+                              "the decision stage."))
 
     args = parser.parse_args()
 
@@ -264,6 +272,8 @@ def main() -> None:
             decision_extra += [flag, str(value)]
     if args.resource_availability is not None:
         decision_extra += ["--resource-availability", args.resource_availability]
+    if args.constraint_scenario:
+        decision_extra += ["--constraint-scenario", args.constraint_scenario]
 
     for subset in subsets:
         if not args.skip_decision:

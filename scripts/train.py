@@ -58,6 +58,7 @@ from src.models.losses import MultiTaskLoss
 from src.models.registry import ALL_MODELS, build_model
 from src.models.trainer import ModelTrainer
 from src.utils.config import ALL_SUBSETS, load_config
+from src.utils.config import get_device as get_device_from_config
 from src.utils.logger import get_script_logger
 from src.utils.seed import set_seed
 
@@ -169,15 +170,13 @@ def parse_args() -> argparse.Namespace:
 # ------------------------------------------------------------------
 
 def get_device(preference: str = "cuda") -> torch.device:
-    """Select CUDA when available (and requested), otherwise CPU."""
+    """Select CUDA when available (and requested), otherwise CPU.
 
-    if preference == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
+    See ``src.utils.config.get_device`` — the single device selection of
+    the project.
+    """
 
-    if preference not in ("cuda", "cpu"):
-        raise ValueError(f"Unknown device preference: {preference}")
-
-    return torch.device("cpu")
+    return get_device_from_config(preference)
 
 
 # ------------------------------------------------------------------
@@ -351,7 +350,7 @@ def run(model_name: str, subset: str, config: dict, tag: str = "") -> None:
     log.info("Determinism : %s", determinism)
     log.info(
         "Config      : %s",
-        {k: config[k] for k in sorted(config) if k != "dataset"},
+        {k: config[k] for k in sorted(config)},
     )
 
     # --------------------------------------------------------------
@@ -379,6 +378,20 @@ def run(model_name: str, subset: str, config: dict, tag: str = "") -> None:
             "Cannot verify the label cap; assuming the default of 125. "
             "Re-run scripts/preprocess.py to record it."
         )
+
+    # The health-index construction is part of the label contract: a model
+    # trained against a different HI label is not the model that was
+    # certified, so the stored mode is checked against the config.
+    stored_hi_mode = metadata.get("hi_mode")
+    configured_hi_mode = str(config.get("hi_mode", "sensor")).lower()
+    if stored_hi_mode is not None and stored_hi_mode != configured_hi_mode:
+        raise ValueError(
+            f"The processed data was built with hi_mode={stored_hi_mode!r} "
+            f"but the config requests {configured_hi_mode!r}. "
+            f"Re-run scripts/preprocess.py --subset {subset} "
+            f"--hi-mode {configured_hi_mode}."
+        )
+    log.info("HI label mode   : %s", stored_hi_mode or "unknown (legacy data)")
 
     # --------------------------------------------------------------
     # Engine-wise Train / Validation Split
@@ -445,12 +458,34 @@ def run(model_name: str, subset: str, config: dict, tag: str = "") -> None:
     # Loss
     # --------------------------------------------------------------
 
+    # The HI term is a bounded MSE while the RUL term is an MSE in cycles
+    # squared, so the raw HI loss would move the shared trunk by ~1e-5 in
+    # relative terms.  "rul_max" expresses it in cycle-equivalent units,
+    # which makes ``hi_loss_weight`` comparable with ``rul_loss_weight``.
+    hi_scale_mode = str(config.get("hi_loss_scale", "rul_max")).lower()
+    if hi_scale_mode == "rul_max":
+        hi_scale = float(config.get("max_rul", 125)) ** 2
+    elif hi_scale_mode == "none":
+        hi_scale = 1.0
+    else:
+        raise ValueError(
+            f"Unknown hi_loss_scale {hi_scale_mode!r}; expected 'rul_max' or 'none'."
+        )
+
     criterion = MultiTaskLoss(
         alpha=float(config.get("rul_loss_weight", 1.0)),
         beta=float(config.get("hi_loss_weight", 0.4)),
         gamma=float(config.get("scale_loss_weight", 0.1)),
+        hi_scale=hi_scale,
         rul_loss_type=str(config.get("rul_loss_type", "mse")),
         huber_delta=float(config.get("huber_delta", 10.0)),
+    )
+    log.info(
+        "Loss weights: rul=%.3f | hi=%.3f (scale=%.1f) | scale=%.3f",
+        criterion.alpha,
+        criterion.beta,
+        criterion.hi_scale,
+        criterion.gamma,
     )
 
     # --------------------------------------------------------------
@@ -519,6 +554,8 @@ def run(model_name: str, subset: str, config: dict, tag: str = "") -> None:
         "determinism": determinism,
         "arch": model_name,
         "subset": subset,
+        "hi_mode": stored_hi_mode,
+        "hi_loss_scale": hi_scale_mode,
     }
 
     # --------------------------------------------------------------

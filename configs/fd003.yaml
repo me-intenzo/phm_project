@@ -2,15 +2,15 @@
 #
 # Same size as FD001 but two fault modes, which makes the degradation
 # trajectory less predictable.  Dropout is kept slightly higher.
-
-dataset: FD003
+#
+# The subset and the architecture are not configured here: the subset comes
+# from the file name, the architecture from ``scripts/train.py --model``.
 
 # ------------------------------------------------------------------ data
 window_size: 40
 max_rul: 125
 
 # ------------------------------------------------------------------ model
-model: gru_att_deg_v2
 hidden_size: 128
 num_layers: 2
 dropout: 0.35

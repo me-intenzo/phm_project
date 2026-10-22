@@ -38,6 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.evaluate import load_model, load_test_data, predict
 from src.evaluation.metrics import predictive_accuracy
 from src.utils.config import ALL_SUBSETS
+from src.utils.config import get_device as get_device_from_config
 from src.utils.logger import get_script_logger
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
@@ -96,13 +97,14 @@ def parse_members(raw: str) -> list[tuple[str, str]]:
 
 
 def get_device(preference: str | None) -> torch.device:
-    if preference == "cpu":
-        return torch.device("cpu")
-    if preference == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but not available.")
-        return torch.device("cuda")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """Select the device to run on (see ``src.utils.config.get_device``).
+
+    An explicitly requested CUDA device that is not available is an
+    error here: the ensemble would silently produce CPU numbers for a
+    run that was supposed to be a GPU run.
+    """
+
+    return get_device_from_config(preference, strict=True)
 
 
 def run(subset: str, members: list[tuple[str, str]], name: str, device) -> dict:

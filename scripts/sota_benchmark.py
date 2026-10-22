@@ -42,12 +42,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.metrics import nasa_score
+from src.evaluation.metrics import mae, nasa_score, r2, rmse
+from src.utils.config import ALL_SUBSETS
 
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
 
-SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
+SUBSETS = list(ALL_SUBSETS)
 
 DEFAULT_MODELS = [
     "gru_att_deg_v2",
@@ -122,18 +123,14 @@ def load_predictions(subset: str, model: str) -> tuple[np.ndarray, np.ndarray]:
     return y_true, y_pred
 
 
-def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
-
-
-def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float(np.mean(np.abs(y_pred - y_true)))
-
-
-def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
-    return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+# ------------------------------------------------------------------
+# Metrics
+# ------------------------------------------------------------------
+#
+# MAE, RMSE and R² come from ``src/evaluation/metrics.py`` — the single
+# implementation of the accuracy metrics.  This script used to carry its
+# own copies, which is how the benchmark and the evaluation report could
+# end up reporting different numbers for the same predictions.
 
 
 # ------------------------------------------------------------------

@@ -57,6 +57,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import numpy as np
 
+from src.decision_engine.scenarios import (
+    DEFAULT_SCENARIO,
+    describe_scenario,
+    scenario_names,
+)
 from src.utils.config import ALL_SUBSETS
 from src.utils.paths import RESULTS_DIR
 
@@ -85,6 +90,7 @@ def run_stage(
     subset: str,
     tag: str,
     extra: list[str],
+    constraint_scenario: str = "",
 ) -> None:
     """Invoke a pipeline stage as a subprocess (same entry points as the CLI)."""
 
@@ -123,6 +129,8 @@ def run_stage(
             "--tag", tag,
             "--uncertainty-variant", "engine_joint_conformal",
         ]
+        if constraint_scenario:
+            cmd += ["--constraint-scenario", constraint_scenario]
         subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
 
     elif stage == "hitl":
@@ -235,6 +243,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of explained samples (default: script default).",
     )
+    parser.add_argument(
+        "--constraint-scenario",
+        type=str,
+        default=DEFAULT_SCENARIO,
+        choices=scenario_names(),
+        help=(
+            "Operational-constraint scenario applied by the decision stage.  "
+            "The certified runs use a degraded-operations context so that the "
+            "constraint layer is actually exercised; 'unconstrained' "
+            "reproduces the historical reading."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -255,6 +275,10 @@ def main() -> None:
     print(f"Subsets : {', '.join(subsets)}")
     print(f"Seeds   : {', '.join(str(s) for s in args.seeds)}")
     print(f"Stages  : {', '.join(stages)}")
+    print(
+        f"Scenario: {args.constraint_scenario} "
+        f"({describe_scenario(args.constraint_scenario)})"
+    )
 
     MULTISEED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -272,13 +296,21 @@ def main() -> None:
                 "seed": seed,
                 "tag": tag,
                 "stages": stages,
+                "constraint_scenario": args.constraint_scenario,
                 "errors": [],
             }
 
             for stage in stages:
                 stage_started = time.perf_counter()
                 try:
-                    run_stage(stage, args.model, subset, tag, extra)
+                    run_stage(
+                        stage,
+                        args.model,
+                        subset,
+                        tag,
+                        extra,
+                        constraint_scenario=args.constraint_scenario,
+                    )
                     record[f"{stage}_seconds"] = round(
                         time.perf_counter() - stage_started, 2
                     )
@@ -309,6 +341,7 @@ def main() -> None:
         "subsets": subsets,
         "seeds": args.seeds,
         "stages": stages,
+        "constraint_scenario": args.constraint_scenario,
         "total_seconds": round(elapsed, 2),
         "n_runs": len(records),
         "n_clean": sum(1 for r in records if not r["problems"] and not r["errors"]),

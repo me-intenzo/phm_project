@@ -23,6 +23,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.preprocessing.loader import get_feature_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,13 +47,9 @@ class WindowGenerator:
     def get_feature_columns(
         df: pd.DataFrame,
     ) -> list[str]:
+        """Feature columns of *df* (see ``src.preprocessing.loader``)."""
 
-        return [
-            col
-            for col in df.columns
-            if col.startswith("operational_setting")
-            or col.startswith("sensor_")
-        ]
+        return get_feature_columns(df)
 
     # ------------------------------------------------ #
     # Training Windows

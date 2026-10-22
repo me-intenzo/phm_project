@@ -10,8 +10,19 @@ This module contains three layers:
   3. Named conformal variants -- global, scale-adaptive, CQR-style, and
      engine-block intervals used by the uncertainty pipeline and tests.
 
-Calibration and prediction share the same scale floor (``_EPS``) so that
-normalised scores and adaptive radii remain numerically consistent.
+It is also the **single source of truth** for the three quantities that
+used to be re-declared in half a dozen places:
+
+* :data:`SCALE_FLOOR` -- the floor applied to a predicted scale.  The
+  *same* constant and the *same* bounding operator (``max``) are used
+  when a scale is normalised into a calibration score and when it is
+  multiplied into an interval radius, so calibration and prediction can
+  never drift apart.
+* :func:`conformal_quantile` -- the finite-sample conformal quantile.
+  :func:`signed_conformal_quantile` is a thin wrapper around the same
+  implementation for the signed (CQR) scores.
+* :func:`clip_interval` -- the single interval builder: clip to the RUL
+  domain *and* order the bounds.
 
 author: me-intenzo
 """
@@ -31,10 +42,16 @@ from src.utils.config import DEFAULT_CONFIG
 # disagrees with the config, so the two can never drift apart silently.
 RUL_MIN: float = 0.0
 RUL_MAX: float = float(DEFAULT_CONFIG.get("max_rul", 125.0))
-# Shared scale floor. The same constant is applied when a predicted scale
-# is used in a normalised score (calibration) or an interval radius
-# (prediction), keeping the two aligned.
-_EPS: float = 1e-6
+
+#: Shared scale floor.
+#:
+#: A predicted scale is bounded from below with ``max(scale, SCALE_FLOOR)``
+#: — never with an *addition*.  An additive floor changes the scale that
+#: the calibration score was built from (the score divides by
+#: ``scale + eps``) and therefore makes the calibration quantile and the
+#: prediction radius disagree.  A multiplicative floor keeps the two
+#: paths exactly aligned.
+SCALE_FLOOR: float = 1e-3
 
 
 # ------------------------------------------------------------------
@@ -106,13 +123,14 @@ def conformal_rank(n: int, alpha: float) -> int:
     return int(np.ceil((n + 1) * (1.0 - alpha)))
 
 
-def conformal_quantile(
+def _finite_sample_quantile(
     scores: np.ndarray,
     alpha: float,
+    *,
     allow_infinite: bool = True,
+    require_non_negative: bool = True,
 ) -> float:
-    """
-    Calculate the finite-sample split-conformal quantile.
+    """The one implementation of the finite-sample conformal quantile.
 
     Parameters
     ----------
@@ -141,6 +159,11 @@ def conformal_quantile(
         silently returned the largest observed score and voided the
         coverage guarantee.  The clamp is gone.
 
+    require_non_negative:
+        Whether the scores have to be non-negative.  Signed (CQR) scores
+        are perfectly valid nonconformity scores, so that check is
+        skipped for them.
+
     Returns
     -------
     float
@@ -167,7 +190,7 @@ def conformal_quantile(
             "Calibration scores must be finite."
         )
 
-    if np.any(scores < 0):
+    if require_non_negative and np.any(scores < 0):
         raise ValueError(
             "Nonconformity scores must be non-negative."
         )
@@ -196,6 +219,47 @@ def conformal_quantile(
     )
 
 
+def conformal_quantile(
+    scores: np.ndarray,
+    alpha: float,
+    allow_infinite: bool = True,
+) -> float:
+    """
+    Calculate the finite-sample split-conformal quantile.
+
+    This is the canonical implementation; every other module in the
+    project delegates to it.
+
+    Parameters
+    ----------
+    scores:
+        Calibration nonconformity scores.
+
+    alpha:
+        Miscoverage level.
+
+        Examples:
+            0.20 -> 80% interval
+            0.10 -> 90% interval
+            0.05 -> 95% interval
+
+    allow_infinite:
+        See :func:`_finite_sample_quantile`.
+
+    Returns
+    -------
+    float
+        Conformal quantile q_hat, possibly ``+inf``.
+    """
+
+    return _finite_sample_quantile(
+        scores,
+        alpha,
+        allow_infinite=allow_infinite,
+        require_non_negative=True,
+    )
+
+
 def signed_conformal_quantile(
     scores: np.ndarray,
     alpha: float,
@@ -213,9 +277,7 @@ def signed_conformal_quantile(
         Miscoverage level.
 
     allow_infinite:
-        When the finite-sample rank ``k = ceil((n + 1)(1 - alpha))`` exceeds
-        the number of calibration scores ``n``, ``+inf`` is returned (or a
-        ``ValueError`` is raised when ``allow_infinite`` is ``False``).
+        See :func:`_finite_sample_quantile`.
 
     Notes
     -----
@@ -237,44 +299,32 @@ def signed_conformal_quantile(
         Conformal quantile q_hat, possibly ``+inf``.
     """
 
-    scores = np.asarray(
+    return _finite_sample_quantile(
         scores,
-        dtype=np.float64,
-    ).reshape(-1)
+        alpha,
+        allow_infinite=allow_infinite,
+        require_non_negative=False,
+    )
 
-    if scores.size == 0:
-        raise ValueError(
-            "At least one calibration score is required."
-        )
 
-    if not 0.0 < alpha < 1.0:
-        raise ValueError(
-            "alpha must be strictly between 0 and 1."
-        )
+# ------------------------------------------------------------------
+# Scale handling
+# ------------------------------------------------------------------
 
-    if not np.all(np.isfinite(scores)):
-        raise ValueError(
-            "Calibration scores must be finite."
-        )
+def floor_scale(
+    scale: np.ndarray,
+    floor: float = SCALE_FLOOR,
+) -> np.ndarray:
+    """Bound a predicted scale from below with the shared scale floor.
 
-    sorted_scores = np.sort(scores)
+    The *same* operation is used by the calibration path (normalised
+    nonconformity) and by the prediction path (interval radius), which is
+    what keeps the calibrated quantile and the emitted interval aligned.
+    """
 
-    n = len(sorted_scores)
-
-    rank = conformal_rank(n, alpha)
-
-    if rank > n:
-        if not allow_infinite:
-            raise ValueError(
-                f"The finite-sample conformal rank k={rank} exceeds the "
-                f"number of calibration scores n={n}; the requested "
-                f"coverage {1.0 - alpha:.2%} is not attainable at this "
-                f"calibration size."
-            )
-        return float("inf")
-
-    return float(
-        sorted_scores[rank - 1]
+    return np.maximum(
+        np.asarray(scale, dtype=np.float64),
+        float(floor),
     )
 
 
@@ -341,7 +391,10 @@ def normalised_nonconformity(
     """
     Compute normalised nonconformity scores.
 
-    r_i = |y_i - y_hat_i| / (s_i + eps)
+    r_i = |y_i - y_hat_i| / max(s_i, SCALE_FLOOR)
+
+    The scale floor is the shared :data:`SCALE_FLOOR` and the bounding
+    operator is ``max`` — the very same one the interval radius uses.
     """
     y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
     y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
@@ -350,7 +403,7 @@ def normalised_nonconformity(
     if not (y_true.shape == y_pred.shape == scale.shape):
         raise ValueError("y_true, y_pred and scale must have the same length.")
 
-    return np.abs(y_true - y_pred) / (scale + _EPS)
+    return np.abs(y_true - y_pred) / floor_scale(scale)
 
 
 # ------------------------------------------------------------------
@@ -405,6 +458,109 @@ def calibrate_regime_quantiles(
 
 
 # ------------------------------------------------------------------
+# Calibration entry points
+# ------------------------------------------------------------------
+
+def calibrate_multiple_levels(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    coverage_levels: tuple[float, ...] = (
+        0.80,
+        0.90,
+        0.95,
+    ),
+) -> dict[float, dict[str, float]]:
+    """
+    Calibrate conformal quantiles for multiple coverage levels.
+
+    Parameters
+    ----------
+    y_true:
+        Calibration-set ground-truth RUL.
+
+    y_pred:
+        Calibration-set GRU predictions.
+
+    coverage_levels:
+        Desired nominal coverage levels.
+
+    Returns
+    -------
+    dict
+        Mapping:
+
+            coverage level
+                -> alpha
+                -> q_hat
+    """
+    scores = absolute_nonconformity(
+        y_true=y_true,
+        y_pred=y_pred,
+    )
+
+    results: dict[float, dict[str, float]] = {}
+
+    for coverage in coverage_levels:
+
+        if not 0.0 < coverage < 1.0:
+            raise ValueError(
+                "Coverage levels must be strictly between 0 and 1."
+            )
+
+        alpha = 1.0 - coverage
+
+        q_hat = conformal_quantile(
+            scores=scores,
+            alpha=alpha,
+        )
+
+        results[float(coverage)] = {
+            "alpha": float(alpha),
+            "q_hat": float(q_hat),
+        }
+
+    return results
+
+
+def calibrate_eara_levels(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    scale: np.ndarray,
+    regimes: np.ndarray,
+    n_regimes: int,
+    coverage_levels: tuple[float, ...] = (0.80, 0.90, 0.95),
+) -> dict[float, dict[str, object]]:
+    """
+    Calibrate EARA-Conformal quantiles for multiple coverage levels.
+
+    Returns
+    -------
+    dict  coverage -> {alpha, q_hats (shape n_regimes,)}
+    """
+    scores = normalised_nonconformity(
+        y_true=y_true,
+        y_pred=y_pred,
+        scale=scale,
+    )
+
+    results: dict[float, dict[str, object]] = {}
+    for coverage in coverage_levels:
+        alpha = 1.0 - coverage
+        q_hats = calibrate_regime_quantiles(
+            scores=scores,
+            regimes=regimes,
+            alpha=alpha,
+            n_regimes=n_regimes,
+            min_regime_size=30,
+        )
+        results[float(coverage)] = {
+            "alpha": float(alpha),
+            "q_hats": q_hats,
+        }
+    return results
+
+
+# ------------------------------------------------------------------
 # Adaptive prediction intervals
 # ------------------------------------------------------------------
 
@@ -417,7 +573,8 @@ def adaptive_prediction_interval(
     """
     Construct per-sample adaptive intervals.
 
-    C(x) = [y_hat - q_k * s(x), y_hat + q_k * s(x)]  clipped to [0, 125]
+    C(x) = [y_hat - q_k * max(s(x), SCALE_FLOOR), y_hat + q_k * max(s(x), SCALE_FLOOR)]
+    clipped to the RUL domain and ordered.
 
     Parameters
     ----------
@@ -438,10 +595,8 @@ def adaptive_prediction_interval(
     scale = np.asarray(scale, dtype=np.float64).reshape(-1)
     regimes = np.asarray(regimes, dtype=np.int32).reshape(-1)
 
-    radius = q_hats[regimes] * (scale + _EPS)
-    lower = np.clip(y_pred - radius, RUL_MIN, RUL_MAX)
-    upper = np.clip(y_pred + radius, RUL_MIN, RUL_MAX)
-    return lower, upper
+    radius = np.asarray(q_hats, dtype=np.float64)[regimes] * floor_scale(scale)
+    return clip_interval(y_pred - radius, y_pred + radius)
 
 
 # ------------------------------------------------------------------
@@ -531,7 +686,7 @@ def prediction_interval(
         )
 
     lower, upper = y_pred - q_hat, y_pred + q_hat
-    return _clip_interval(lower, upper)
+    return clip_interval(lower, upper)
 
 
 def conformal_predict(
@@ -590,13 +745,54 @@ def _validate_alpha(alpha: float) -> None:
         raise ValueError("alpha must be strictly between 0 and 1.")
 
 
-def _clip_interval(
+def clip_interval(
     lower: np.ndarray,
     upper: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Clip an interval to the RUL domain and order its bounds.
+
+    This is the **only** interval builder in the project.  Every
+    conformal variant routes through it, so an interval can never be
+    emitted with ``lower > upper`` or with a bound outside
+    ``[RUL_MIN, RUL_MAX]``.
+    """
     lower = np.clip(np.asarray(lower, dtype=np.float64), RUL_MIN, RUL_MAX)
     upper = np.clip(np.asarray(upper, dtype=np.float64), RUL_MIN, RUL_MAX)
     return np.minimum(lower, upper), np.maximum(lower, upper)
+
+
+#: Backwards-compatible alias of :func:`clip_interval`.
+_clip_interval = clip_interval
+
+
+def scale_adaptive_interval(
+    y_pred: np.ndarray,
+    q_hat: float,
+    scale: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Construct ``prediction ± q_hat * max(scale, SCALE_FLOOR)`` intervals.
+
+    The floored scale mirrors :func:`normalised_nonconformity`, so the
+    calibrated quantile and the prediction radius use the same scale
+    convention.
+    """
+
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    scale = np.asarray(scale, dtype=np.float64)
+    q_hat = float(q_hat)
+
+    if y_pred.shape != scale.shape:
+        raise ValueError("y_pred and scale must have the same shape.")
+
+    if not np.all(np.isfinite(y_pred)) or not np.all(np.isfinite(scale)):
+        raise ValueError("predictions and scales must be finite.")
+
+    if np.isnan(q_hat) or q_hat < 0.0:
+        raise ValueError("q_hat must be a non-negative scalar (inf is allowed).")
+
+    radius = q_hat * floor_scale(scale)
+
+    return clip_interval(y_pred - radius, y_pred + radius)
 
 
 def conformal_interval(
@@ -609,7 +805,7 @@ def conformal_interval(
     _validate_alpha(alpha)
     scores = absolute_nonconformity(y_true_cal, y_pred_cal)
     q_hat = conformal_quantile(scores, alpha)
-    lower, upper = _clip_interval(
+    lower, upper = clip_interval(
         np.asarray(y_pred_test) - q_hat,
         np.asarray(y_pred_test) + q_hat,
     )
@@ -628,8 +824,8 @@ def adaptive_conformal_interval(
     _validate_alpha(alpha)
     scores = normalised_nonconformity(y_true_cal, y_pred_cal, scale_cal)
     q_hat = conformal_quantile(scores, alpha)
-    radius = q_hat * (np.asarray(scale_test, dtype=np.float64) + _EPS)
-    lower, upper = _clip_interval(np.asarray(y_pred_test) - radius, np.asarray(y_pred_test) + radius)
+    radius = q_hat * floor_scale(scale_test)
+    lower, upper = clip_interval(np.asarray(y_pred_test) - radius, np.asarray(y_pred_test) + radius)
     return {"q_hat": q_hat, "calibration_scores": scores, "lower": lower, "upper": upper}
 
 
@@ -653,7 +849,7 @@ def scale_conformalized_interval(
     scores = np.maximum(cal_lower - np.asarray(y_true_cal), np.asarray(y_true_cal) - cal_upper)
     scores = np.maximum(scores, 0.0)
     q_hat = conformal_quantile(scores, alpha)
-    lower, upper = _clip_interval(
+    lower, upper = clip_interval(
         np.asarray(y_pred_test) - np.asarray(scale_test) - q_hat,
         np.asarray(y_pred_test) + np.asarray(scale_test) + q_hat,
     )
@@ -687,7 +883,7 @@ def engine_joint_interval(
         dtype=np.float64,
     )
     q_hat = conformal_quantile(engine_scores, alpha)
-    lower, upper = _clip_interval(np.asarray(y_pred_test) - q_hat, np.asarray(y_pred_test) + q_hat)
+    lower, upper = clip_interval(np.asarray(y_pred_test) - q_hat, np.asarray(y_pred_test) + q_hat)
     return {
         "q_hat": q_hat,
         "calibration_scores": scores,
@@ -695,3 +891,32 @@ def engine_joint_interval(
         "lower": lower,
         "upper": upper,
     }
+
+
+__all__ = [
+    "RUL_MAX",
+    "RUL_MIN",
+    "SCALE_FLOOR",
+    "absolute_nonconformity",
+    "adaptive_conformal_interval",
+    "adaptive_prediction_interval",
+    "assign_regimes",
+    "calibrate_eara_levels",
+    "calibrate_multiple_levels",
+    "calibrate_regime_quantiles",
+    "clip_interval",
+    "conformal_interval",
+    "conformal_quantile",
+    "conformal_rank",
+    "cqr_interval",
+    "eara_conformal_predict",
+    "engine_joint_interval",
+    "fit_regime_detector",
+    "floor_scale",
+    "normalised_nonconformity",
+    "prediction_interval",
+    "regime_conformal_quantile",
+    "scale_adaptive_interval",
+    "scale_conformalized_interval",
+    "signed_conformal_quantile",
+]

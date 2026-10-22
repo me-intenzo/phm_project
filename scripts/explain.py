@@ -50,6 +50,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -72,15 +73,14 @@ from src.explainability.visualization import (
     plot_sensor_importance,
     plot_temporal_importance,
 )
-from src.models.checkpoint import load_state_dict_compat
+from src.models.outputs import unpack_model_output
 from src.models.registry import ALL_MODELS as MODEL_REGISTRY
-from src.models.registry import build_model
-from src.preprocessing.feature_selection import FeatureSelector
-from src.preprocessing.labeling import LabelGenerator
-from src.preprocessing.loader import CMAPSSLoader
-from src.preprocessing.scaling import FeatureScaler
+from src.models.registry import load_model_from_checkpoint
 from src.preprocessing.windowing import WindowGenerator
+from src.utils.config import ALL_SUBSETS, get_device
 from src.utils.logger import get_script_logger
+from src.utils.paths import run_dir_name
+from src.utils.seed import set_seed
 
 # ─────────────────────────────────────────────────────────────────────
 # Constants
@@ -90,13 +90,10 @@ DATA_DIR       = PROJECT_ROOT / "data" / "processed"
 CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
 XAI_DIR        = PROJECT_ROOT / "outputs" / "xai"
 
-from src.utils.paths import run_dir_name
-
 SEED            = 42
 DEFAULT_SAMPLES = 32
 IG_STEPS        = 50
 
-ALL_SUBSETS = ["FD001", "FD002", "FD003", "FD004"]
 ALL_TARGETS = ["rul", "hi"]
 
 SENSOR_NAMES_14 = [
@@ -198,30 +195,43 @@ def load_metadata(subset: str) -> dict:
 
 
 def load_visualization_data(subset: str):
-    """Build sliding test windows so engine plots contain full trajectories."""
+    """Build sliding test windows so engine plots contain full trajectories.
+
+    The windows are built from the **processed test frame** that
+    ``scripts/preprocess.py`` writes to ``data/processed/``.  This
+    function used to re-run the whole preprocessing pipeline (feature
+    selection, scaling and label generation) on the raw dataset, which
+    meant the degradation plots were computed from a *different* health
+    index than the one the model was trained on — and from a feature set
+    that could silently differ from the one in the checkpoint.
+    """
+
     metadata = load_metadata(subset)
     window_size = int(metadata.get("window_size", 40))
-    max_rul = int(metadata.get("max_rul", 125))
 
-    loader = CMAPSSLoader()
-    train_df, test_df, rul_df = loader.load_dataset(subset)
-    max_cycles = test_df.groupby("unit_number")["time_in_cycles"].transform("max")
-    test_df["RUL"] = (
-        max_cycles
-        - test_df["time_in_cycles"]
-        + rul_df["RUL"].reindex(test_df["unit_number"] - 1).values
-    ).clip(upper=max_rul)
-    test_df["HI"] = test_df.groupby("unit_number")["RUL"].transform(
-        lambda values: values / values.max()
-    ).fillna(0)
+    frame_path = DATA_DIR / f"{subset}_test_frame.npz"
 
-    selector = FeatureSelector(method="variance", threshold=1e-4)
-    train_df = selector.fit_transform(train_df.assign(**LabelGenerator(max_rul).generate_labels(train_df)[["RUL", "HI"]]))
-    test_df = selector.transform(test_df)
-    scaler = FeatureScaler()
-    train_df = scaler.fit_transform(train_df)
-    test_df = scaler.transform(test_df)
-    return WindowGenerator(window_size=window_size, stride=1).create_windows(test_df)
+    if not frame_path.exists():
+        raise FileNotFoundError(
+            f"Processed test frame not found: {frame_path}\n"
+            f"Run: python scripts/preprocess.py --subset {subset}"
+        )
+
+    with np.load(frame_path, allow_pickle=False) as frame:
+        feature_names = [str(name) for name in frame["feature_names"]]
+        frame_df = pd.DataFrame(
+            frame["features"],
+            columns=feature_names,
+        )
+        frame_df["unit_number"] = frame["engine_ids"]
+        frame_df["time_in_cycles"] = frame["time_in_cycles"]
+        frame_df["RUL"] = frame["y_rul"]
+        frame_df["HI"] = frame["y_hi"]
+
+    return WindowGenerator(
+        window_size=window_size,
+        stride=1,
+    ).create_windows(frame_df)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -235,34 +245,17 @@ def load_model(
     device: torch.device,
     tag: str = "",
 ):
-    ckpt_path = CHECKPOINT_DIR / run_dir_name(model_name, tag) / subset / "best_model.pt"
-    if not ckpt_path.exists():
-        raise FileNotFoundError(
-            f"Checkpoint not found: {ckpt_path}\n"
-            f"Train {model_name} on {subset} first"
-            + (f" (tag '{tag}')" if tag else "")
-            + "."
-        )
+    """Load a checkpoint through the shared model registry."""
 
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    model, checkpoint, _arch = load_model_from_checkpoint(
+        model_name=model_name,
+        input_size=input_size,
+        device=device,
+        subset=subset,
+        tag=tag,
+    )
 
-    # Rebuild the architecture from the config the checkpoint was trained with.
-    # Hard-coding the hyper-parameters here would silently produce a
-    # mismatched state dict for any subset whose YAML config overrides them
-    # (FD002/FD004 train with hidden_size=160, not 128).
-    ckpt_input_size = ckpt.get("input_size", input_size)
-    saved_config = dict(ckpt.get("model_config") or {})
-    arch = saved_config.pop("arch", model_name)
-
-    if saved_config:
-        model = build_model(arch, input_size=ckpt_input_size, **saved_config)
-    else:
-        # Legacy checkpoint: no architecture metadata was stored.
-        model = build_model(arch, input_size=ckpt_input_size)
-
-    load_state_dict_compat(model, ckpt["model_state_dict"])
-    model.to(device).eval()
-    return model, ckpt
+    return model, checkpoint
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -519,8 +512,9 @@ def run_model_xai(
         x_eng = torch.from_numpy(X_engine).float().to(device)
         with torch.no_grad():
             preds = model(x_eng)
-            hi_pred  = preds[1].cpu().numpy()
-            rul_pred = preds[0].cpu().numpy()
+            rul_pred_tensor, hi_pred_tensor, _ = unpack_model_output(preds)
+            hi_pred = hi_pred_tensor.cpu().numpy()
+            rul_pred = rul_pred_tensor.cpu().numpy()
 
         eng_attn = explain_attention(model=model, data=x_eng, target=target)
         temporal_rel = eng_attn["temporal_relevance"].cpu().numpy().mean(axis=1)
@@ -569,10 +563,10 @@ def run_model_xai(
 
 def main():
     args = parse_args()
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(SEED)
+
+    device = get_device()
 
     tag = args.tag
     subsets = ALL_SUBSETS if args.subset == "all" else [args.subset]

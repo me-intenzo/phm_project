@@ -31,6 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .heads import build_task_heads, forward_task_heads
+
 
 class TemporalAttention(nn.Module):
     """Additive (Bahdanau-style) attention over GRU hidden states."""
@@ -89,16 +91,15 @@ class GruAttDeg(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # RUL head
-        self.rul_head = nn.Linear(hidden_size, 1)
-        self.scale_head = nn.Linear(hidden_size, 1)
-
-        # Degradation head — sigmoid keeps HI in (0, 1)
-        self.hi_head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1),
-            nn.Sigmoid(),
+        # Task heads (shared layout, see ``src/models/heads.py``).
+        # The degradation head keeps the sigmoid so that HI stays in (0, 1).
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
+            hidden_size,
+            style="att_deg",
         )
 
     def forward(
@@ -109,9 +110,12 @@ class GruAttDeg(nn.Module):
         context, _attn_weights = self.attention(gru_out) # (B, H)
         features = self.shared(context)                  # (B, H)
 
-        pred_rul = self.rul_head(features).squeeze(-1)
-        pred_hi = self.hi_head(features).squeeze(-1)
-        pred_scale = F.softplus(self.scale_head(features)).squeeze(-1)
+        pred_rul, pred_hi, pred_scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
+        )
 
         return pred_rul, pred_hi, pred_scale
 

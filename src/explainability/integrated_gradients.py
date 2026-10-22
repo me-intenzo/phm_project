@@ -22,6 +22,8 @@ from typing import Iterator
 
 import torch
 
+from src.models.outputs import select_task_output
+
 
 @contextmanager
 def _eval_guard(model) -> Iterator[None]:
@@ -48,13 +50,9 @@ def _select_output(
     x: torch.Tensor,
     target: str,
 ) -> torch.Tensor:
-    pred_rul, pred_hi, *_ = model(x)
-    target = target.lower()
-    if target == "rul":
-        return pred_rul
-    if target == "hi":
-        return pred_hi
-    raise ValueError("target must be either 'rul' or 'hi'.")
+    """Select the RUL or the HI output of a multi-task model."""
+
+    return select_task_output(model(x), target)
 
 
 def integrated_gradients(

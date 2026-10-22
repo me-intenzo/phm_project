@@ -21,6 +21,8 @@ import joblib
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
+from src.preprocessing.loader import get_feature_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,18 +40,12 @@ class FeatureScaler:
     ) -> list[str]:
         """
         Return operational settings and sensor columns.
+
+        See ``src.preprocessing.loader.get_feature_columns`` — the single
+        definition of the feature selection.
         """
 
-        return [
-
-            col
-
-            for col in df.columns
-
-            if col.startswith("operational_setting")
-
-            or col.startswith("sensor_")
-        ]
+        return get_feature_columns(df)
 
     # ------------------------------------------------ #
 

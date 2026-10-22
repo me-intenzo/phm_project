@@ -171,9 +171,22 @@ class TestApplyRules:
             apply_rules(_state(lower=90, upper=70))
 
     def test_high_uncertainty_healthy_monitor(self):
-        # Wide interval on healthy engine → MONITOR
-        result = apply_rules(_state(rul=80, hi=0.85, lower=10, upper=120, eri=0.90))
-        assert result["candidate_action"] == "MONITOR"
+        # A wide interval on a healthy engine: the action is planned on the
+        # conservative end of the interval, so an engine that is still healthy
+        # at its lower bound keeps operating — but the wide interval routes
+        # the record to human review.
+        result = apply_rules(_state(rul=80, hi=0.85, lower=60, upper=120, eri=0.90))
+        assert result["planning_state"] == "HEALTHY"
+        assert result["candidate_action"] == "CONTINUE_OPERATION"
+        assert result["human_review"] is True
+
+    def test_interval_reaching_the_critical_band_is_urgent(self):
+        # The same point estimate, but the interval now reaches into the
+        # critical band: the action is planned on the worst credible case.
+        result = apply_rules(_state(rul=80, hi=0.85, lower=6, upper=120, eri=0.90))
+        assert result["health_state"] == "HEALTHY"
+        assert result["planning_state"] == "CRITICAL"
+        assert result["candidate_action"] == "URGENT_MAINTENANCE"
 
     def test_low_eri_degrading_inspect(self):
         result = apply_rules(_state(rul=40, hi=0.65, lower=35, upper=45, eri=0.30))

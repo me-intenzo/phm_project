@@ -17,9 +17,14 @@ Final ERI ∈ [0, 1]:
 
 Interpretation
 --------------
-ERI > 0.8  → High trustworthiness: methods agree on what matters.
-ERI > 0.6  → Moderate: partial agreement, review top sensors.
-ERI ≤ 0.6  → Low: explanations diverge, model may be unreliable.
+ERI >= 0.80  → High trustworthiness: methods agree on what matters.
+ERI >= 0.60  → Moderate: partial agreement, review top sensors.
+ERI <  0.60  → Low: explanations diverge, model may be unreliable.
+
+The two band thresholds live in ``src/utils/config.py`` and are shared with
+the decision policy (``src/decision_engine/rules.py``), so the report and the
+policy classify the same ERI value identically — including the boundary
+values 0.60 and 0.80.
 
 author: me-intenzo
 """
@@ -27,41 +32,54 @@ author: me-intenzo
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import spearmanr
 
-
-def _to_numpy(v) -> np.ndarray:
-    if hasattr(v, "detach"):
-        v = v.detach().cpu().numpy()
-    return np.asarray(v, dtype=np.float64)
+from src.utils.config import ERI_HIGH_THRESHOLD, ERI_LOW_THRESHOLD
+from src.utils.math_utils import normalize_importance, to_numpy
 
 
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
-    """Spearman rank correlation between two 1-D importance vectors."""
-    n = len(a)
-    if n < 2:
+    """Spearman rank correlation between two 1-D importance vectors.
+
+    The rank correlation is computed with :func:`scipy.stats.spearmanr`,
+    which assigns *average* ranks to tied values.  The previous
+    implementation ranked the values by a double ``argsort``, so every
+    tied pair received an arbitrary (and different) rank and the
+    correlation of two vectors with ties was wrong.
+    """
+    a = np.asarray(a, dtype=np.float64).reshape(-1)
+    b = np.asarray(b, dtype=np.float64).reshape(-1)
+
+    if a.shape != b.shape:
+        raise ValueError("Both importance vectors must have the same length.")
+
+    if a.size < 2:
         return 0.0
-    rank_a = np.argsort(np.argsort(-a)).astype(np.float64)
-    rank_b = np.argsort(np.argsort(-b)).astype(np.float64)
-    d2 = ((rank_a - rank_b) ** 2).sum()
-    rho = 1.0 - 6.0 * d2 / (n * (n ** 2 - 1))
-    return float(np.clip(rho, -1.0, 1.0))
+
+    result = spearmanr(a, b)
+
+    statistic = float(result.statistic)
+
+    if not np.isfinite(statistic):
+        # A constant vector has no rank correlation.
+        return 0.0
+
+    return float(np.clip(statistic, -1.0, 1.0))
 
 
 def _sensor_importance_from_ig(ig_explanation: dict) -> np.ndarray:
-    attrs = _to_numpy(ig_explanation["attributions"])
+    attrs = to_numpy(ig_explanation["attributions"], dtype=np.float64)
     if attrs.ndim == 3:
         imp = np.abs(attrs).mean(axis=(0, 1))
     else:
         imp = np.abs(attrs).mean(axis=0)
-    total = imp.sum()
-    return imp / total if total > 1e-12 else imp
+    return normalize_importance(imp)
 
 
 def _sensor_importance_from_shap(shap_explanation: dict) -> np.ndarray:
-    vals = _to_numpy(shap_explanation["sensor_shap_values"])
+    vals = to_numpy(shap_explanation["sensor_shap_values"], dtype=np.float64)
     imp = np.abs(vals).mean(axis=0)
-    total = imp.sum()
-    return imp / total if total > 1e-12 else imp
+    return normalize_importance(imp)
 
 
 def _sensor_importance_from_temporal_relevance(
@@ -74,10 +92,13 @@ def _sensor_importance_from_temporal_relevance(
 
     This bridges temporal (timestep) attention to sensor space.
     """
-    relevance = _to_numpy(attention_explanation["temporal_relevance"])  # (B, T)
+    relevance = to_numpy(
+        attention_explanation["temporal_relevance"],
+        dtype=np.float64,
+    )  # (B, T)
     mean_temporal = relevance.mean(axis=0)  # (T,)
 
-    attrs = _to_numpy(ig_explanation["attributions"])  # (B, T, F)
+    attrs = to_numpy(ig_explanation["attributions"], dtype=np.float64)  # (B, T, F)
     if attrs.ndim == 3:
         # Weight each timestep's sensor attribution by its temporal relevance
         weighted = np.abs(attrs) * mean_temporal[np.newaxis, :, np.newaxis]
@@ -85,8 +106,7 @@ def _sensor_importance_from_temporal_relevance(
     else:
         imp = np.abs(attrs).mean(axis=0)
 
-    total = imp.sum()
-    return imp / total if total > 1e-12 else imp
+    return normalize_importance(imp)
 
 
 def _consensus_top_k(
@@ -150,9 +170,9 @@ def compute_eri(
 
     eri = 0.4 * norm_ig_attn + 0.4 * norm_ig_shap + 0.2 * consensus
 
-    if eri > 0.8:
+    if eri >= ERI_HIGH_THRESHOLD:
         interpretation = "HIGH — methods strongly agree, explanations are trustworthy"
-    elif eri > 0.6:
+    elif eri >= ERI_LOW_THRESHOLD:
         interpretation = "MODERATE — partial agreement, review top sensors manually"
     else:
         interpretation = "LOW — methods diverge, treat explanations with caution"

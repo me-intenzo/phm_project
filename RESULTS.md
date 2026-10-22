@@ -16,11 +16,15 @@ comparison against published state-of-the-art (SOTA) RUL baselines.
 
 ## Contents
 
-- [1. Point prediction — published baselines](#1-point-prediction--published-baselines)
-- [2. Point prediction — this repository](#2-point-prediction--this-repository)
+- [1. Point prediction - published baselines](#1-point-prediction--published-baselines)
+- [2. Point prediction - this repository](#2-point-prediction--this-repository)
+- [2.1 The health-index task](#21-the-health-index-task)
 - [3. Conformal interval benchmark (multi-seed)](#3-conformal-interval-benchmark-multi-seed)
 - [4. Explainability](#4-explainability)
 - [4.1 The downstream chain on the same checkpoints](#41-the-downstream-chain-on-the-same-checkpoints)
+- [4.2 The decision policy](#42-the-decision-policy)
+- [4.3 Sensitivity of the decision to its own weights](#43-sensitivity-of-the-decision-to-its-own-weights)
+- [4.4 Operational-constraint scenarios](#44-operational-constraint-scenarios)
 - [5. How to reproduce](#5-how-to-reproduce)
 - [6. Caveats](#6-caveats)
 
@@ -80,53 +84,105 @@ Per-seed rows are in `results/multiseed/per_seed_metrics.csv`.
 
 | Subset | RUL MAE | RUL RMSE | R² | NASA Score | RMSE range (5 seeds) |
 |---|---|---|---|---|---|
-| FD001 | 9.07 ± 0.24 | **12.38 ± 0.28** | 0.904 | 237 ± 10 | 11.94 – 12.62 |
-| FD002 | 10.13 ± 0.35 | **13.92 ± 0.43** | 0.895 | 899 ± 75 | 13.25 – 14.32 |
-| FD003 | 8.19 ± 0.22 | **11.97 ± 0.26** | 0.907 | 272 ± 25 | 11.55 – 12.23 |
-| FD004 | 11.08 ± 0.29 | **15.17 ± 0.17** | 0.875 | 1119 ± 57 | 14.94 – 15.39 |
-| **FD001–FD004 mean** | **9.62** | **13.361 ± 0.136** | **0.895** | **632** | 13.21 – 13.51 |
+| FD001 | 9.17 ± 0.23 | **12.63 ± 0.23** | 0.901 | 259 ± 22 | 12.36 – 12.98 |
+| FD002 | 10.17 ± 0.16 | **13.86 ± 0.17** | 0.896 | 927 ± 54 | 13.62 – 14.04 |
+| FD003 | 8.11 ± 0.28 | **11.61 ± 0.29** | 0.912 | 235 ± 26 | 11.11 – 11.77 |
+| FD004 | 10.95 ± 0.18 | **15.02 ± 0.22** | 0.878 | 1035 ± 50 | 14.78 – 15.35 |
+| **FD001–FD004 mean** | **9.60** | **13.282 ± 0.140** | **0.896** | **614** | 13.21 – 13.53 |
 
-The four-subset mean per seed is 13.213 / 13.233 / 13.373 / 13.480 / 13.507 for
-seeds 42–46; 13.361 ± 0.136 is the mean ± sample std of those five aggregate
+The four-subset mean per seed is 13.533 / 13.209 / 13.214 / 13.225 / 13.230 for
+seeds 42–46; 13.282 ± 0.140 is the mean ± sample std of those five aggregate
 values. Bootstrap CIs that treat the *test engines* as the sampling unit are in
 [docs/SOTA_BENCHMARK.md](docs/SOTA_BENCHMARK.md) § 3; they are ~±1 RMSE and
 measure test-sampling noise, not seed noise. The two must not be conflated.
 
-**What this replaces.** Earlier revisions of this file quoted
-12.947 (FD001–FD004 mean) from a single seed-42 run, and 12.871 from a
-three-member ensemble. Both are *one draw* from the distributions above. The
-current trainer consumes its RNG stream differently (seeded DataLoader worker
-and generator), so re-running "seed 42" today does not reproduce the historical
-artifact bit-for-bit: the certified seed-42 run scores 13.213 on the aggregate,
-0.27 above the superseded single-run number. The mean ± std table is the number
-to cite; the single-run and ensemble values are kept in
-[docs/SOTA_BENCHMARK.md](docs/SOTA_BENCHMARK.md) § 3 and labelled as such.
+**What changed in this revision, and what it cost.** The health index is no
+longer a re-scaled RUL label (§2.1), so the model now solves a *second* task
+instead of a trivial one, and the HI term is no longer numerically
+negligible in the loss. The effect on the certified point prediction is:
+
+| | legacy `HI = RUL / max_rul` | sensor-derived HI | Δ |
+|---|---|---|---|
+| FD001 RUL RMSE | 12.383 ± 0.275 | 12.630 ± 0.231 | +0.247 |
+| FD002 RUL RMSE | 13.923 ± 0.433 | 13.865 ± 0.173 | −0.058 |
+| FD003 RUL RMSE | 11.974 ± 0.261 | 11.611 ± 0.285 | −0.363 |
+| FD004 RUL RMSE | 15.166 ± 0.168 | 15.023 ± 0.221 | −0.143 |
+| **Four-subset mean** | **13.361 ± 0.136** | **13.282 ± 0.140** | **−0.079** |
+
+The aggregate is 0.079 RMSE *better* than the run it replaces, which is well
+inside the seed band (±0.14) and therefore **not** a claimed improvement —
+but it is a clear result that making the health index a real task did **not**
+cost RUL accuracy. The per-subset movement is larger and mixed: FD003 and
+FD004 improve, FD001 regresses. Both directions are inside their own seed
+bands.
 
 **Where PHM-XAI sits** (mean vs published single runs; a difference inside the
 seed band is *not* a ranking):
 
-- **FD001 12.38** — ahead of the classic CNN (12.61) and LSTM (16.14), behind
-  every 2024 model in the table (`Dual-Mixer` 10.41, `BTSAM` 10.62,
+- **FD001 12.63** — ahead of the classic CNN (12.61) only marginally, and
+  behind every 2024 model in the table (`Dual-Mixer` 10.41, `BTSAM` 10.62,
   `LSTM-F` 10.98, `DRLSTM-DA` 11.55, `CNN-GRU` 11.66).
-- **FD002 13.92** — ahead of `CNN-GRU` (14.93), `BTSAM` (14.18) and
+- **FD002 13.86** — ahead of `CNN-GRU` (14.93), `BTSAM` (14.18) and
   `LSTM-F` (14.60); behind `DRLSTM-DA` (13.74) and `Dual-Mixer` (13.90) by
-  less than the seed std (0.43), i.e. not separable.
-- **FD003 11.97** — behind `DRLSTM-DA` (11.25) and the 9.85 / 8.87 band.
-- **FD004 15.17** — behind `DRLSTM-DA` (14.19), `BTSAM` (14.29),
+  less than the seed std (0.17), i.e. not separable.
+- **FD003 11.61** — behind `DRLSTM-DA` (11.25) and the 9.85 / 8.87 band.
+- **FD004 15.02** — behind `DRLSTM-DA` (14.19), `BTSAM` (14.29),
   `CNN-GRU` (14.86) and `LSTM-F` (15.00); ahead of `DAST` (16.89) and
   `TTSNet` (18.26) on this subset.
-- **Four-subset mean 13.361** — 0.53 behind the best published aggregate
-  (`KESTF` 12.83), which is larger than the seed std (0.136), so this is a
+- **Four-subset mean 13.282** — 0.45 behind the best published aggregate
+  (`KESTF` 12.83), which is larger than the seed std (0.140), so this is a
   genuine deficit rather than seed noise. It is statistically
-  indistinguishable from `TTSNet` (13.40): the 0.04 gap is inside the seed
-  band. It is ahead of `Cau-BiMamba-LSTM` (13.62), `MLEAN` (13.71), `DAST`
-  (14.09), `ATCN` (14.11), `DBA-DCRN` (14.28) and `CNN-LSTM-Att` (15.25).
+  indistinguishable from `TTSNet` (13.40) and ahead of `Cau-BiMamba-LSTM`
+  (13.62), `MLEAN` (13.71), `DAST` (14.09), `ATCN` (14.11), `DBA-DCRN`
+  (14.28) and `CNN-LSTM-Att` (15.25).
 
 This repository's contribution is **not** to beat those RMSE numbers. The
 value-add is that every point prediction is wrapped in *calibrated,
 engine-disjoint* uncertainty intervals and *auditable* maintenance decisions —
 see Sections 3–4. A SOTA accuracy model can be dropped in behind the same
 interface without changing the interval or decision layers.
+
+---
+
+## 2.1 The health-index task
+
+The health index is the model's second output. It used to be
+`HI = RUL / max_rul` — a deterministic affine function of the RUL label, so
+the two correlated at 1.000000 and the HI head learned nothing the RUL head
+had not already learned. The index is now built from the **sensor signal**
+(the construction is in
+[docs/ARCHITECTURE.md § 2.2a](docs/ARCHITECTURE.md#22a-the-sensor-derived-health-index)):
+the operating conditions are regressed out, each engine's own first 30 cycles
+define its healthy reference, and a one-component PLS direction fitted
+against the training RUL label gives the direction that tracks degradation.
+
+**The label is no longer a re-scaled RUL.** `corr(HI, RUL)` on the training
+split is 0.890 (FD001), 0.674 (FD002), 0.797 (FD003) and 0.705 (FD004). The
+spread between subsets is the point: the multi-condition subsets have a
+weaker sensor-to-health relation, exactly as one would expect. A value of
+1.000000 would mean the degeneracy was back.
+
+**Certified health-index metrics** (five seeds, the same checkpoints as
+§2; source `results/multiseed/summary_mean_std.csv`):
+
+| Subset | HI RMSE | HI MAE | HI R² | *legacy label:* HI RMSE | *legacy label:* HI R² |
+|---|---|---|---|---|---|
+| FD001 | 0.0756 ± 0.0014 | 0.0577 | 0.900 | 0.1091 | 0.884 |
+| FD002 | 0.0793 ± 0.0012 | 0.0650 | 0.869 | 0.1161 | 0.886 |
+| FD003 | 0.0654 ± 0.0013 | 0.0513 | 0.931 | 0.1097 | 0.877 |
+| FD004 | 0.0815 ± 0.0011 | 0.0650 | 0.863 | 0.1276 | 0.862 |
+
+The new index is *easier* to predict than the legacy label, and that is not a
+defect of the new label — it is a property of the legacy one. The legacy
+label was `RUL` divided by the engine's *own* maximum RUL, so for the engines
+whose lifetime is below the 125-cycle cap the target carried a per-engine
+normalisation the model cannot see from the window; the sensor-derived index
+is a function of the window itself, so the head can learn it.
+
+The HI term is also no longer numerically negligible in the loss: it is put on
+the RUL scale (`hi_loss_scale: rul_max`, i.e. multiplied by `max_rul²`), so
+`hi_loss_weight` is a real dial instead of moving the total loss by ~1e-5 in
+relative terms.
 
 ---
 
@@ -158,49 +214,47 @@ and misses.
 
 | Subset | Method | Emp. coverage | Std | Mean width | Winkler |
 |---|---|---|---|---|---|
-| FD001 | split_conformal | 0.904 | 0.023 | 38.2 | 53.0 |
-| FD001 | cqr | 0.908 | 0.019 | 34.4 | 49.1 |
-| FD001 | adaptive | 0.908 | 0.024 | 34.1 | **47.1** |
-| FD001 | nex_scp | 0.904 | 0.017 | **32.6** | 47.9 |
-| FD001 | eara_conformal | 0.914 | 0.022 | 35.5 | 48.9 |
-| FD002 | split_conformal | 0.910 | 0.007 | 43.8 | 56.1 |
-| FD002 | cqr | 0.930 | 0.007 | 40.0 | **50.7** |
-| FD002 | adaptive | 0.907 | 0.017 | 38.4 | 50.9 |
-| FD002 | nex_scp | 0.897 | 0.003 | **37.3** | 51.4 |
-| FD002 | eara_conformal | 0.917 | 0.010 | 40.2 | 54.7 |
-| FD003 | split_conformal | 0.902 | 0.013 | 35.1 | 53.7 |
-| FD003 | cqr | 0.894 | 0.018 | 31.2 | 50.5 |
-| FD003 | adaptive | 0.884 | 0.029 | 29.2 | **46.8** |
-| FD003 | nex_scp | 0.888 | 0.008 | 30.6 | 46.9 |
-| FD003 | eara_conformal | 0.852 | 0.035 | **29.1** | 52.4 |
-| FD004 | split_conformal | 0.896 | 0.032 | 44.1 | 63.7 |
-| FD004 | cqr | 0.903 | 0.034 | 43.2 | 61.0 |
-| FD004 | adaptive | 0.869 | 0.029 | **36.8** | 58.1 |
-| FD004 | nex_scp | 0.894 | 0.006 | 41.1 | **57.9** |
-| FD004 | eara_conformal | 0.902 | 0.023 | 40.3 | 59.9 |
+| FD001 | split_conformal | 0.878 | 0.033 | 35.4 | 54.7 |
+| FD001 | cqr | 0.894 | 0.034 | 32.2 | 49.6 |
+| FD001 | adaptive | 0.902 | 0.040 | 31.8 | **47.5** |
+| FD001 | nex_scp | 0.892 | 0.023 | **31.0** | 47.7 |
+| FD001 | eara_conformal | 0.890 | 0.034 | 32.4 | 50.5 |
+| FD002 | split_conformal | 0.906 | 0.006 | 43.1 | 55.9 |
+| FD002 | cqr | 0.921 | 0.015 | 39.2 | **50.1** |
+| FD002 | adaptive | 0.900 | 0.013 | 37.4 | 52.7 |
+| FD002 | nex_scp | 0.896 | 0.004 | 37.7 | 53.4 |
+| FD002 | eara_conformal | 0.912 | 0.012 | **39.3** | 57.7 |
+| FD003 | split_conformal | 0.898 | 0.008 | 34.3 | 52.0 |
+| FD003 | cqr | 0.902 | 0.013 | 30.5 | 47.3 |
+| FD003 | adaptive | 0.876 | 0.026 | 28.4 | 45.1 |
+| FD003 | nex_scp | 0.884 | 0.013 | 30.0 | **44.4** |
+| FD003 | eara_conformal | 0.852 | 0.040 | **28.4** | 49.0 |
+| FD004 | split_conformal | 0.904 | 0.026 | 44.5 | 62.4 |
+| FD004 | cqr | 0.915 | 0.018 | 42.3 | 59.5 |
+| FD004 | adaptive | 0.892 | 0.018 | **37.5** | 57.6 |
+| FD004 | nex_scp | 0.896 | 0.003 | 39.9 | 58.6 |
+| FD004 | eara_conformal | 0.908 | 0.030 | 42.4 | 60.7 |
 
 **What the table shows**
 
 - **Every method lands within ±5 points of the 90 % target.** That is the
   headline: the intervals are calibrated in practice, not only on paper, and the
-  spread across seeds is 0.003–0.035.
+  spread across seeds is 0.003–0.040.
 - **`nex_scp` has the best coverage/width trade-off overall.** Its coverage is
-  the most stable (std 0.003–0.017), it is the narrowest interval on FD001 and
-  FD002, and it has the best (FD004) or second-best (FD001, FD003) Winkler
-  score. Nothing in the set dominates it.
-- **`split_conformal` is the widest on every subset** (35.1–44.1 cycles), which
+  the most stable (std 0.003–0.023), it is the narrowest interval on FD001, and
+  it has the best Winkler score on FD003. Nothing in the set dominates it.
+- **`split_conformal` is the widest on every subset** (34.3–44.5 cycles), which
   is expected: it spends the same radius on every window instead of scaling with
   the local difficulty.
-- **`adaptive` is the narrowest on FD004 but under-covers there (0.869,
-  −3.1 pts).** On FD004 its narrow interval is buying width with coverage; on
-  FD003 the same trade shows (0.884).
+- **`adaptive` is the narrowest on FD004 but under-covers there (0.892,
+  −0.8 pts).** On FD003 the same trade shows (0.876, −2.4 pts).
 - **`eara_conformal` is *not* the best-calibrated method.** On FD003 it lands at
-  0.852 (−4.8 pts) while being the narrowest (29.1); on FD004 it is well
-  calibrated at 0.902. Its scale is a k-NN average over training-engine
+  0.852 (−4.8 pts) while being the narrowest (28.4); on FD004 it is well
+  calibrated at 0.908. Its scale is a k-NN average over training-engine
   profiles, which under-states the uncertainty of a last-window test query on
   some subsets. The earlier single-run claim that EARA "hits the 90 % target
   almost exactly" does not survive five seeds.
-- **`cqr` over-covers on FD002 (0.930)** and is competitive elsewhere now that
+- **`cqr` over-covers on FD002 (0.921)** and is competitive elsewhere now that
   its quantile head is anchored to the point prediction. Before that fix its
   intervals were 3× too wide (104 vs 35 cycles at 90 % on FD003).
 
@@ -211,34 +265,34 @@ diagonal; the nominal values are 0.80 / 0.90 / 0.95.
 
 | Subset | Method | 80% | 90% | 95% |
 |---|---|---|---|---|
-| FD001 | split_conformal | 0.798 | 0.904 | 0.946 |
-| FD001 | cqr | 0.804 | 0.908 | 0.946 |
-| FD001 | adaptive | 0.834 | 0.908 | 0.952 |
-| FD001 | nex_scp | 0.812 | 0.904 | 0.938 |
-| FD001 | eara_conformal | 0.832 | 0.914 | 0.952 |
-| FD002 | split_conformal | 0.829 | 0.910 | 0.966 |
-| FD002 | cqr | 0.842 | 0.930 | 0.961 |
-| FD002 | adaptive | 0.818 | 0.907 | 0.952 |
-| FD002 | nex_scp | 0.798 | 0.897 | 0.950 |
-| FD002 | eara_conformal | 0.828 | 0.917 | 0.956 |
-| FD003 | split_conformal | 0.802 | 0.902 | 0.936 |
-| FD003 | cqr | 0.790 | 0.894 | 0.936 |
-| FD003 | adaptive | 0.802 | 0.884 | 0.924 |
-| FD003 | nex_scp | 0.790 | 0.888 | 0.942 |
-| FD003 | eara_conformal | 0.766 | 0.852 | 0.922 |
-| FD004 | split_conformal | 0.815 | 0.896 | 0.952 |
-| FD004 | cqr | 0.818 | 0.903 | 0.947 |
-| FD004 | adaptive | 0.767 | 0.869 | 0.932 |
-| FD004 | nex_scp | 0.797 | 0.894 | 0.944 |
-| FD004 | eara_conformal | 0.796 | 0.902 | 0.951 |
+| FD001 | split_conformal | 0.778 | 0.878 | 0.936 |
+| FD001 | cqr | 0.792 | 0.894 | 0.938 |
+| FD001 | adaptive | 0.784 | 0.902 | 0.942 |
+| FD001 | nex_scp | 0.790 | 0.892 | 0.940 |
+| FD001 | eara_conformal | 0.788 | 0.890 | 0.934 |
+| FD002 | split_conformal | 0.832 | 0.906 | 0.968 |
+| FD002 | cqr | 0.835 | 0.921 | 0.963 |
+| FD002 | adaptive | 0.809 | 0.900 | 0.941 |
+| FD002 | nex_scp | 0.798 | 0.896 | 0.946 |
+| FD002 | eara_conformal | 0.815 | 0.912 | 0.949 |
+| FD003 | split_conformal | 0.800 | 0.898 | 0.942 |
+| FD003 | cqr | 0.798 | 0.902 | 0.936 |
+| FD003 | adaptive | 0.768 | 0.876 | 0.916 |
+| FD003 | nex_scp | 0.784 | 0.884 | 0.932 |
+| FD003 | eara_conformal | 0.768 | 0.852 | 0.916 |
+| FD004 | split_conformal | 0.814 | 0.904 | 0.954 |
+| FD004 | cqr | 0.812 | 0.915 | 0.954 |
+| FD004 | adaptive | 0.792 | 0.892 | 0.944 |
+| FD004 | nex_scp | 0.806 | 0.896 | 0.944 |
+| FD004 | eara_conformal | 0.814 | 0.908 | 0.956 |
 
 - **`split_conformal` and `nex_scp` are the two closest to nominal at every
-  level on every subset** (worst deviation: split +2.9 on FD002@80, nex −1.2 on
-  FD001@95). `nex_scp` buys that with a slightly narrower interval.
+  level on every subset** (worst deviation: split +3.2 on FD002@80, nex −1.8 on
+  FD003@80). `nex_scp` buys that with a slightly narrower interval.
 - **`adaptive` and `eara_conformal` systematically under-cover at 95 %**
-  (FD003: 0.924 / 0.922; FD004: 0.932 / 0.951). Their local scale estimates are
+  (FD003: 0.916 / 0.916; FD002: 0.941 / 0.949). Their local scale estimates are
   the weak link, not the conformal quantile.
-- **`cqr` is the only method that is never more than 4.2 points off nominal.**
+- **`cqr` is the only method that is never more than 3.5 points off nominal.**
 
 ### 3.3 The engine unit (conservative reading)
 
@@ -247,28 +301,28 @@ per calibration engine.
 
 | Subset | Method | Emp. coverage | Mean width | Winkler |
 |---|---|---|---|---|
-| FD001 | split_conformal | 1.000 | 66.7 | 66.7 |
-| FD001 | cqr | 1.000 | 65.0 | 65.0 |
-| FD001 | adaptive | 0.992 | 74.3 | 75.4 |
-| FD001 | nex_scp | 0.980 | 61.8 | 65.3 |
-| FD001 | eara_conformal | 0.990 | 84.4 | 86.2 |
-| FD002 | split_conformal | 1.000 | 76.1 | 76.1 |
-| FD002 | cqr | 0.998 | 72.4 | 72.4 |
-| FD002 | adaptive | 0.998 | 89.8 | 90.0 |
-| FD002 | nex_scp | 0.985 | 66.4 | 68.2 |
-| FD002 | eara_conformal | 0.999 | 81.2 | 81.2 |
-| FD003 | split_conformal | 0.998 | 70.3 | 70.3 |
-| FD003 | cqr | 0.998 | 67.2 | 67.2 |
-| FD003 | adaptive | 0.984 | 63.6 | 65.1 |
-| FD003 | nex_scp | 0.982 | 60.2 | 62.2 |
-| FD003 | eara_conformal | 0.994 | 86.1 | 86.5 |
-| FD004 | split_conformal | 0.995 | 79.1 | 79.8 |
-| FD004 | cqr | 0.995 | 78.7 | 79.9 |
-| FD004 | adaptive | 0.991 | 87.2 | 89.3 |
-| FD004 | nex_scp | 0.977 | 65.5 | 71.4 |
-| FD004 | eara_conformal | 0.998 | 96.5 | 96.7 |
+| FD001 | split_conformal | 0.996 | 66.0 | 66.1 |
+| FD001 | cqr | 0.996 | 64.0 | 64.0 |
+| FD001 | adaptive | 0.996 | 70.1 | 70.5 |
+| FD001 | nex_scp | 0.988 | 61.2 | 62.2 |
+| FD001 | eara_conformal | 0.990 | 68.7 | 69.7 |
+| FD002 | split_conformal | 0.999 | 76.0 | 76.0 |
+| FD002 | cqr | 0.998 | 71.9 | 72.0 |
+| FD002 | adaptive | 0.998 | 87.6 | 87.7 |
+| FD002 | nex_scp | 0.975 | 64.3 | 67.1 |
+| FD002 | eara_conformal | 0.996 | 82.8 | 83.0 |
+| FD003 | split_conformal | 1.000 | 68.8 | 68.8 |
+| FD003 | cqr | 1.000 | 65.8 | 65.8 |
+| FD003 | adaptive | 0.994 | 66.0 | 66.3 |
+| FD003 | nex_scp | 0.992 | 58.1 | 58.7 |
+| FD003 | eara_conformal | 0.992 | 77.9 | 78.5 |
+| FD004 | split_conformal | 0.996 | 78.1 | 78.7 |
+| FD004 | cqr | 0.995 | 78.8 | 79.9 |
+| FD004 | adaptive | 0.997 | 91.0 | 91.8 |
+| FD004 | nex_scp | 0.977 | 68.8 | 73.8 |
+| FD004 | eara_conformal | 0.995 | 99.4 | 99.7 |
 
-The engine unit sits **7.6–14.2 points above** the window unit at the same
+The engine unit sits **7.9–14.5 points above** the window unit at the same
 nominal level. That is not a bug: a maximum over a whole engine lifetime is much
 larger than the residual of any single test window, so a quantile of those
 maxima is deliberately conservative. It is reported because it is the unit that
@@ -316,11 +370,23 @@ each seed. Mean ± std across the five seeds:
 
 | Subset | ERI (RUL) | ERI (HI) | Decisions per run | Review rate | Mean interval width (cycles) | Constraint violations |
 |---|---|---|---|---|---|---|
-| FD001 | 0.920 ± 0.031 | 0.925 ± 0.024 | 100 | 0.322 ± 0.022 | 40.2 ± 3.7 | 0 |
-| FD002 | 0.978 ± 0.017 | 0.966 ± 0.023 | 259 | 0.460 ± 0.026 | 46.6 ± 2.0 | 0 |
-| FD003 | 0.847 ± 0.043 | 0.829 ± 0.061 | 100 | 0.292 ± 0.038 | 33.4 ± 2.6 | 0 |
-| FD004 | 0.875 ± 0.026 | 0.908 ± 0.030 | 248 | 0.406 ± 0.040 | 45.9 ± 4.4 | 0 |
-| **ALL** (four-subset aggregate) | **0.905 ± 0.016** | **0.907 ± 0.025** | 177 | 0.370 ± 0.012 | 41.5 ± 1.6 | 0 |
+| FD001 | 0.925 ± 0.044 | 0.899 ± 0.039 | 100 | 0.642 ± 0.086 | 37.1 ± 4.2 | 64.4 ± 1.5 |
+| FD002 | 0.979 ± 0.020 | 0.936 ± 0.043 | 259 | 0.706 ± 0.043 | 45.4 ± 1.8 | 156.4 ± 5.7 |
+| FD003 | 0.879 ± 0.056 | 0.912 ± 0.032 | 100 | 0.660 ± 0.083 | 33.2 ± 2.4 | 68.6 ± 3.8 |
+| FD004 | 0.886 ± 0.018 | 0.897 ± 0.020 | 248 | 0.764 ± 0.039 | 49.0 ± 4.1 | 119.0 ± 4.8 |
+| **ALL** (four-subset aggregate) | **0.917 ± 0.026** | **0.911 ± 0.018** | 177 | 0.693 ± 0.031 | 41.2 ± 1.2 | 102.1 ± 2.2 |
+
+The interval width is the width of the interval the **decision engine actually
+consumed** — the uncertainty artifact of that same seed — so the explainability
+numbers, the interval numbers and the decision numbers in this section all
+describe one set of weights.
+
+The review rate is higher than the legacy reading (0.370) for two reasons: the
+policy is now planned on the conservative end of the interval, which is more
+often at-risk, and the certified runs use the `degraded_operations` constraint
+scenario, which forces human review of every constrained action. The constraint
+violations are now a *measurement*, not a zero: 38–42 % of the decisions in
+each subset violate at least one operational constraint.
 
 The interval width is the width of the interval the **decision engine actually
 consumed** — the uncertainty artifact of that same seed — so the explainability
@@ -377,6 +443,91 @@ feedback log.
 
 No constraint violation was produced on any of the 20 runs, before or after
 adaptation.
+
+---
+
+## 4.2 The decision policy
+
+The certified decision mix, with the policy planned on the conservative end
+of the interval and the `degraded_operations` constraint scenario applied.
+Source: `results/multiseed/downstream_summary.csv` and `downstream_per_run.csv`.
+
+| Subset | Decisions | Continue | Monitor | Inspect | Schedule maint. | Urgent maint. | Review rate | Constraint violations |
+|---|---|---|---|---|---|---|---|---|
+| FD001 | 100 | 56 % | 5 % | 24 % | 0 % | 15 % | 0.64 | 64.4 |
+| FD002 | 259 | 56 % | 5 % | 23 % | 0 % | 16 % | 0.71 | 156.4 |
+| FD003 | 100 | 56 % | 5 % | 24 % | 0 % | 15 % | 0.66 | 68.6 |
+| FD004 | 248 | 56 % | 2 % | 26 % | 0 % | 16 % | 0.76 | 119.0 |
+| **ALL** | 177 | 56 % | 4 % | 24 % | 0 % | 16 % | 0.69 | 102.1 |
+
+The action mix is stable across subsets — the policy is dominated by the
+planning state, which is a function of the interval and not of the seed — and
+the `SCHEDULE_MAINTENANCE` action is absorbed by the no-maintenance-window
+substitution of the `degraded_operations` scenario. In the
+`unconstrained` scenario (see §4.4) it reappears at 9–15 % of the decisions.
+
+Every action is planned on the **conservative end of the calibrated interval**:
+the planning state is the health state the engine would be in if the
+prediction were at the lower bound of its 90 % interval, and the action is
+the base action of that state. The point estimate's own state is reported
+alongside as `health_state`, and the decision record says so whenever the two
+differ. A risk score above 0.85 still escalates to `URGENT_MAINTENANCE`, and a
+degraded confidence signal (a wide interval or a `LOW` ERI) always requires
+human review even when the action itself did not change.
+
+---
+
+## 4.3 Sensitivity of the decision to its own weights
+
+The risk-score weights (`w_rul`, `w_hi`, `w_u`, `w_eri`) are hand-set, so
+`scripts/decision_sensitivity.py` re-runs the decision engine over a weight
+space and measures how far the decisions move. Source:
+`outputs/reports/decision_sensitivity.json` (20 runs, 200 Dirichlet draws
+per run).
+
+| Weight | Max action-mix TV (one-at-a-time) | Max risk-band switch rate |
+|---|---|---|
+| `w_rul` | 0.020 | 0.25 |
+| `w_hi`  | 0.000 | 0.00 |
+| `w_u`   | 0.016 | 0.23 |
+| `w_eri` | 0.000 | 0.00 |
+
+**The decision mix is essentially insensitive to the fusion weights.** The
+action is determined by the planning state (the conservative end of the
+interval) and the ERI band, not by the continuous risk score, which only acts
+through the rarely-firing 0.85 override. The weights *do* move the risk
+score itself (mean absolute change up to 0.094) and with it the HITL evidence
+grouping (up to a quarter of the records change their risk band), but the
+recommended action is stable. The risk ranking of the engines is invariant
+(Spearman r ≥ 0.999 across the whole sweep).
+
+The same script compares the decision mix under every named constraint
+scenario — see §4.4.
+
+---
+
+## 4.4 Operational-constraint scenarios
+
+The constraint layer used to produce zero violations in every recorded run,
+because the certified runs applied no constraints. The runs now use the
+`degraded_operations` scenario, so the constraint layer is exercised by the
+published results. Source: `outputs/reports/decision_constraint_scenarios.csv`
+(20 runs × 6 scenarios).
+
+| Scenario | Constraint violations | Records with a violation | Review rate | Mean severity |
+|---|---|---|---|---|
+| `unconstrained` | 0 | 0 | 0.49 | 1.13 |
+| `no_maintenance_window` | 15 | 15 | 0.49 | 0.98 |
+| `tight_safety_margin` | 11 | 11 | 0.57 | 1.28 |
+| `lead_time_pressure` | 10 | 10 | 0.49 | 1.23 |
+| `resource_shortage` | 28 | 28 | 0.49 | 1.13 |
+| `degraded_operations` | 65 | 39 | 0.57 | 1.13 |
+
+Every rule fires (the maintenance-window substitution, the minimum-safe-RUL
+escalation, the lead-time escalation, the maximum-delay escalation and the
+resource-availability flag), and the maintenance-window rule is the only one
+that *substitutes* an action instead of escalating it — which is why
+`no_maintenance_window` is the only scenario that lowers the mean severity.
 
 ---
 

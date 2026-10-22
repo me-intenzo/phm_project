@@ -60,6 +60,12 @@ dev = [
   "pytest-cov",
   "ruff",
 ]
+# The Streamlit dashboard (app.py) is optional: the CLI pipeline does not
+# import it.  Install with `pip install -e ".[dashboard]"`.
+dashboard = [
+  "streamlit>=1.49",
+  "plotly>=5.20",
+]
 
 [project.urls]
 Homepage = "https://github.com/me-intenzo/phm_project"
@@ -101,5 +107,6 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # The CLI entry points insert the repository root into ``sys.path`` before
 # importing ``src.*``, so their project imports are not at the top of the file
-# by design.
+# by design.  The same is true of the Streamlit dashboard.
 "scripts/*.py" = ["E402"]
+"app.py" = ["E402"]

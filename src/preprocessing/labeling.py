@@ -82,13 +82,21 @@ class LabelGenerator:
         self,
         df: pd.DataFrame,
     ) -> pd.DataFrame:
-        """
-        Generate normalized Health Index.
+        """Generate the **legacy** normalised Health Index.
+
+        .. deprecated::
+            ``HI = RUL / max(RUL per engine)`` is a deterministic affine
+            function of the RUL label, so it carries no information the RUL
+            head does not already have (see ``docs/ARCHITECTURE.md`` §7.2).
+            The pipeline default is now the sensor-derived index built by
+            :class:`src.preprocessing.health_index.HealthIndexModel`; this
+            method is kept so the legacy label can still be reproduced for
+            comparison.
 
         HI = RUL / max(RUL per engine)
         """
 
-        logger.info("Generating Health Index...")
+        logger.info("Generating legacy Health Index...")
 
         data = df.copy()
 
@@ -101,7 +109,7 @@ class LabelGenerator:
             data["RUL"] / max_rul
         ).fillna(0)
 
-        logger.info("Health Index generation completed.")
+        logger.info("Legacy Health Index generation completed.")
 
         return data
 

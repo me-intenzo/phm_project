@@ -21,11 +21,7 @@ import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 
-
-def _to_numpy(v) -> np.ndarray:
-    if hasattr(v, "detach"):
-        v = v.detach().cpu().numpy()
-    return np.asarray(v, dtype=np.float64)
+from src.utils.math_utils import to_numpy
 
 
 def plot_engine_degradation(
@@ -53,10 +49,10 @@ def plot_engine_degradation(
     rul_true          : (T,) true RUL over engine life
     temporal_relevance: (T,) or (T, F) mean temporal attention weights
     """
-    hi_pred  = _to_numpy(hi_pred).ravel()
-    rul_pred = _to_numpy(rul_pred).ravel()
-    rul_true = _to_numpy(rul_true).ravel()
-    rel      = _to_numpy(temporal_relevance)
+    hi_pred  = to_numpy(hi_pred, dtype=np.float64).ravel()
+    rul_pred = to_numpy(rul_pred, dtype=np.float64).ravel()
+    rul_true = to_numpy(rul_true, dtype=np.float64).ravel()
+    rel      = to_numpy(temporal_relevance, dtype=np.float64)
 
     if rel.ndim == 2:
         rel = rel.mean(axis=1)
@@ -153,7 +149,7 @@ def plot_multi_model_degradation(
     model_hi_dict : {model_name: hi_pred array (T,)}
     rul_true      : (T,) true RUL for secondary axis reference
     """
-    rul_true = _to_numpy(rul_true).ravel()
+    rul_true = to_numpy(rul_true, dtype=np.float64).ravel()
     T = len(rul_true)
     cycles = np.arange(1, T + 1)
 
@@ -163,7 +159,7 @@ def plot_multi_model_degradation(
 
     ax1 = axes[0]
     for idx, (mname, hi) in enumerate(model_hi_dict.items()):
-        hi = _to_numpy(hi).ravel()
+        hi = to_numpy(hi, dtype=np.float64).ravel()
         ax1.plot(cycles[:len(hi)], hi, lw=2, color=colors[idx % len(colors)], label=mname)
     ax1.axhline(0.5, color="#FF9800", ls="--", lw=1, alpha=0.7)
     ax1.axhline(0.2, color="#F44336", ls="--", lw=1, alpha=0.7)
@@ -180,7 +176,7 @@ def plot_multi_model_degradation(
     ax2.plot(cycles, rul_true, color="#4CAF50", lw=2.5, label="True RUL")
     if model_rul_dict:
         for idx, (mname, rul) in enumerate(model_rul_dict.items()):
-            rul = _to_numpy(rul).ravel()
+            rul = to_numpy(rul, dtype=np.float64).ravel()
             ax2.plot(
                 cycles[:len(rul)],
                 rul,

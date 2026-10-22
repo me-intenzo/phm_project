@@ -56,28 +56,14 @@ from src.hitl.workflow import (
     review_to_feedback,
     summarize_review_queue,
 )
+from src.models.registry import ALL_MODELS
+from src.utils.config import ALL_SUBSETS
 from src.utils.logger import get_script_logger
 from src.utils.paths import run_dir_name
 
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 
 REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
-
-ALL_SUBSETS = [
-    "FD001",
-    "FD002",
-    "FD003",
-    "FD004",
-]
-
-ALL_MODELS = [
-    "lstm",
-    "gru",
-    "transformer",
-    "hybrid",
-    "gru_att_deg",
-    "gru_att_deg_v2",
-]
 
 CONTROLLED_BASELINE_MODEL = "gru"
 

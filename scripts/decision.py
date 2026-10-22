@@ -41,14 +41,22 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.decision_engine.recommender import recommend_action
+from src.decision_engine.rules import DEFAULT_THRESHOLDS
+from src.decision_engine.scenarios import (
+    describe_scenario,
+    get_scenario,
+    scenario_names,
+)
 from src.models.registry import ALL_MODELS as REGISTERED_MODELS
+from src.utils.config import ALL_SUBSETS as CONFIG_SUBSETS
 from src.utils.logger import get_script_logger
 from src.utils.paths import run_dir_name
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
 REPORTS_DIR  = PROJECT_ROOT / "outputs" / "reports"
-ALL_SUBSETS  = ("FD001", "FD002", "FD003", "FD004")
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+ALL_SUBSETS  = tuple(CONFIG_SUBSETS)
 ALL_MODELS   = tuple(REGISTERED_MODELS)
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
 XAI_DIR      = PROJECT_ROOT / "outputs" / "xai"
@@ -155,6 +163,10 @@ def process_records(
 
     Each record must contain: rul, hi, rul_lower, rul_upper, eri.
     Optional: id, engine_id, unit_id, timestamp, top_k_sensors.
+
+    The **whole** record is carried into the decision record: only a
+    hand-written list of four identifiers used to be forwarded, so any
+    other field of the upstream record was silently dropped.
     """
     decisions = []
     for index, record in enumerate(records):
@@ -168,11 +180,7 @@ def process_records(
             constraints=constraints,
             thresholds=thresholds,
         )
-        result = {"index": index, **decision}
-        for key in ("id", "engine_id", "unit_id", "timestamp"):
-            if key in record:
-                result[key] = record[key]
-        decisions.append(result)
+        decisions.append({"index": index, **record, **decision})
     return decisions
 
 
@@ -187,6 +195,7 @@ def summarize_decisions(decisions: list[dict[str, Any]]) -> dict[str, Any]:
     uncertainty_counts: dict[str, int] = {}
     review_count        = 0
     constraint_violations = 0
+    constraint_violated_records = 0
     risk_scores:    list[float] = []
     urgency_scores: list[float] = []
 
@@ -202,7 +211,10 @@ def summarize_decisions(decisions: list[dict[str, Any]]) -> dict[str, Any]:
 
         if d.get("human_review", False):
             review_count += 1
-        constraint_violations += len(d.get("constraint_violations", []))
+        violations = d.get("constraint_violations", [])
+        constraint_violations += len(violations)
+        if violations:
+            constraint_violated_records += 1
 
         if "risk_score" in d:
             risk_scores.append(float(d["risk_score"]))
@@ -216,6 +228,7 @@ def summarize_decisions(decisions: list[dict[str, Any]]) -> dict[str, Any]:
         "uncertainty_distribution":   uncertainty_counts,
         "human_review_count":         review_count,
         "constraint_violation_count": constraint_violations,
+        "constraint_violated_records": constraint_violated_records,
     }
 
     if risk_scores:
@@ -270,6 +283,93 @@ def resolve_input_path(subset: str) -> Path:
     return subset_path if subset_path.exists() else default_path
 
 
+def load_thresholds(subset: str) -> dict[str, float]:
+    """Policy thresholds for a subset, with the calibrated HI breakpoints.
+
+    The default thresholds of ``src.decision_engine.rules`` belong to the
+    legacy ``HI = RUL / max_rul`` label.  When the pipeline builds the
+    sensor-derived health index, preprocessing calibrates the three HI
+    breakpoints on the training split and stores them in the dataset
+    metadata; they are merged in here so that the HI criterion fires at the
+    same degradation levels as the RUL criterion.
+    """
+
+    thresholds = dict(DEFAULT_THRESHOLDS)
+
+    metadata_path = PROCESSED_DIR / f"{subset.upper()}_test_metadata.json"
+    if not metadata_path.exists():
+        return thresholds
+
+    try:
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return thresholds
+
+    calibrated = metadata.get("hi_thresholds") or {}
+    for key in ("hi_critical", "hi_at_risk", "hi_degrading"):
+        value = calibrated.get(key)
+        if value is not None:
+            thresholds[key] = float(value)
+
+    return thresholds
+
+
+def resolve_uncertainty_path(
+    subset: str,
+    run_name: str,
+    uncertainty_variant: str,
+) -> tuple[Path, str]:
+    """Choose the interval artifact to read, preferring the flat layout.
+
+    Two layouts exist for the same artifact:
+
+    * the **flat** file ``outputs/results/<subset>_<run>_<variant>.npz``,
+      which is what ``scripts/uncertainty.py`` writes today;
+    * the **structured** file
+      ``outputs/results/uncertainty/<variant>/<subset>/<run>.npz``, a
+      legacy read-path fallback that no current script writes.
+
+    The flat file must win.  Preferring the structured tree let a
+    month-old artifact silently shadow the fresh one: the two files for
+    FD001/``gru``/``eara_conformal`` disagreed by up to 16 RUL cycles in
+    their point predictions, so a maintenance decision could have been
+    produced from a different model's intervals than the ones on disk.
+
+    Returns
+    -------
+    (path, note)
+        The resolved path and a short note describing which layout was
+        used (empty when there is nothing worth reporting).
+    """
+
+    structured_path = (
+        RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{run_name}.npz"
+    )
+    flat_path = RESULTS_DIR / f"{subset}_{run_name}_{uncertainty_variant}.npz"
+
+    flat_exists = flat_path.exists()
+    structured_exists = structured_path.exists()
+
+    if flat_exists:
+        note = ""
+        if structured_exists:
+            note = (
+                f"both the flat and the legacy structured artifact exist for "
+                f"{subset}/{run_name}/{uncertainty_variant}; the flat file "
+                f"was used"
+            )
+        return flat_path, note
+
+    if structured_exists:
+        return structured_path, (
+            f"the flat artifact for {subset}/{run_name}/{uncertainty_variant} "
+            f"is missing; the legacy structured file was used instead"
+        )
+
+    return flat_path, ""
+
+
 def load_upstream_records(
     subset: str,
     model_name: str = DEFAULT_MODEL,
@@ -293,9 +393,11 @@ def load_upstream_records(
     prediction_path = RESULTS_DIR / f"{subset}_{run_name}_predictions.npz"
     if uncertainty_variant not in UNCERTAINTY_VARIANTS:
         raise ValueError(f"Unsupported uncertainty variant: {uncertainty_variant}")
-    structured_path = RESULTS_DIR / "uncertainty" / uncertainty_variant / subset / f"{run_name}.npz"
-    legacy_path = RESULTS_DIR / f"{subset}_{run_name}_{uncertainty_variant}.npz"
-    uncertainty_path = structured_path if structured_path.exists() else legacy_path
+    uncertainty_path, _ = resolve_uncertainty_path(
+        subset,
+        run_name,
+        uncertainty_variant,
+    )
     eri_path = XAI_DIR / subset / run_name / "eri_rul.json"
 
     missing = [
@@ -548,11 +650,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resource-availability", type=lambda x: x.lower() == "true",
                         default=None,
                         help="true/false — whether maintenance resources are available.")
+    parser.add_argument(
+        "--constraint-scenario",
+        type=str,
+        default="",
+        choices=["", *scenario_names()],
+        help=(
+            "Named operational-constraint scenario to apply.  Explicit "
+            "constraint flags override the scenario's values.  Use "
+            "'unconstrained' for the reference reading with no constraints."
+        ),
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=str,
+        default=None,
+        help=(
+            "Optional JSON file with policy threshold overrides, e.g. "
+            '{"w_rul": 0.5, "rul_critical": 8.0}.'
+        ),
+    )
     return parser.parse_args()
 
 
 def build_constraints(args: argparse.Namespace) -> dict[str, Any]:
+    """Merge the named scenario with the explicit constraint flags.
+
+    The explicit flags win: a scenario provides the baseline operational
+    context, and a flag overrides one of its values.
+    """
+
     constraints: dict[str, Any] = {}
+
+    if args.constraint_scenario:
+        constraints.update(get_scenario(args.constraint_scenario))
+
     if args.maintenance_window:
         constraints["maintenance_window_available"] = True
     if args.no_maintenance_window:
@@ -566,6 +698,22 @@ def build_constraints(args: argparse.Namespace) -> dict[str, Any]:
     if args.resource_availability is not None:
         constraints["resource_availability"] = args.resource_availability
     return constraints
+
+
+def build_thresholds(args: argparse.Namespace, subset: str) -> dict[str, float]:
+    """Subset thresholds (with the calibrated HI breakpoints) plus overrides."""
+
+    thresholds = load_thresholds(subset)
+
+    if args.thresholds:
+        overrides = load_json(args.thresholds)
+        if not isinstance(overrides, dict):
+            raise ValueError(
+                f"The thresholds file {args.thresholds} must contain a JSON object."
+            )
+        thresholds.update({key: float(value) for key, value in overrides.items()})
+
+    return thresholds
 
 
 def _merge_xai_context(
@@ -593,6 +741,7 @@ def run_subset(
     model_name: str,
     args: argparse.Namespace,
     constraints: dict[str, Any],
+    thresholds: dict[str, float],
 ) -> None:
     stem = f"{subset}_{run_dir_name(model_name, args.tag)}"
     log = get_script_logger("decision", f"decision_{stem}")
@@ -606,6 +755,12 @@ def run_subset(
     log.info("Model  : %s", model_name)
     if args.tag:
         log.info("Tag    : %s", args.tag)
+    if args.constraint_scenario:
+        log.info(
+            "Scenario: %s (%s)",
+            args.constraint_scenario,
+            describe_scenario(args.constraint_scenario),
+        )
     log.info(
         "Input  : outputs/results/%s_%s_* + outputs/xai/%s/%s",
         subset, run_dir_name(model_name, args.tag), subset,
@@ -620,6 +775,13 @@ def run_subset(
         args.uncertainty_variant,
         tag=args.tag,
     )
+    _, path_note = resolve_uncertainty_path(
+        subset,
+        run_dir_name(model_name, args.tag),
+        args.uncertainty_variant,
+    )
+    if path_note:
+        log.warning("Interval artifact: %s", path_note)
     log.info(
         "Loaded %d decision record(s) from %s uncertainty and %s XAI outputs.",
         len(records), model_name, model_name,
@@ -634,12 +796,20 @@ def run_subset(
         log.info("No additional operational constraints supplied.")
 
     log.info("Generating maintenance recommendations...")
-    decisions = process_records(records=records, constraints=constraints)
+    decisions = process_records(
+        records=records,
+        constraints=constraints,
+        thresholds=thresholds,
+    )
     summary = summarize_decisions(decisions)
 
     log.info("Decisions             : %d", summary["num_decisions"])
     log.info("Human review required : %d", summary["human_review_count"])
     log.info("Constraint violations : %d", summary["constraint_violation_count"])
+    log.info(
+        "Records with a violation: %d",
+        summary["constraint_violated_records"],
+    )
 
     output = {
         "objective": "O4",
@@ -650,6 +820,8 @@ def run_subset(
         "subset": subset,
         "model": model_name,
         "tag": args.tag,
+        "constraint_scenario": args.constraint_scenario or "unconstrained",
+        "thresholds": thresholds,
         "inputs": ["RUL", "HI", "RUL uncertainty interval", "ERI",
                    "top_k_sensors", "operational constraints"],
         "summary": summary,
@@ -675,12 +847,14 @@ def main() -> None:
     constraints = build_constraints(args)
 
     for subset in subsets:
+        thresholds = build_thresholds(args, subset)
         for model_name in models:
             run_subset(
                 subset=subset,
                 model_name=model_name,
                 args=args,
                 constraints=constraints,
+                thresholds=thresholds,
             )
 
 

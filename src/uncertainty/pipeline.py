@@ -39,25 +39,32 @@ import numpy as np
 import torch
 from torch import nn
 
+from src.models.outputs import unpack_model_output
 from src.models.uncertainty_heads import QuantileHead, ScaleHead
 
 from .conformal import (
-    RUL_MAX,
-    RUL_MIN,
+    SCALE_FLOOR,
+    clip_interval,
     conformal_quantile,
     conformal_rank,
+    floor_scale,
     signed_conformal_quantile,
+)
+from .coverage import (
+    empirical_coverage,
+    mean_prediction_interval_width,
+    winkler_score,
 )
 
 # ------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------
 
-# Shared scale floor.  The *same* constant must be applied when a predicted
-# scale is normalised into a calibration score and when it is multiplied
-# into an interval radius, otherwise calibration and prediction drift apart
-# for near-zero scales.
-SCALE_FLOOR: float = 1e-3
+#: Shared scale floor.  It is imported from :mod:`src.uncertainty.conformal`
+#: so that this module cannot drift away from the calibration path: the
+#: *same* constant and the *same* bounding operator (``max``) are applied
+#: when a predicted scale is normalised into a calibration score and when
+#: it is multiplied into an interval radius.
 
 DEFAULT_BATCH_SIZE: int = 64
 
@@ -89,10 +96,7 @@ def predict_rul(
     for start in range(0, len(X), batch_size):
         batch = torch.from_numpy(X[start:start + batch_size]).float().to(device)
         outputs = model(batch)
-        if isinstance(outputs, (tuple, list)):
-            pred_rul = outputs[0]
-        else:
-            pred_rul = outputs
+        pred_rul, _, _ = unpack_model_output(outputs)
         predictions.append(pred_rul.detach().cpu().numpy().reshape(-1))
     return np.concatenate(predictions) if predictions else np.empty(0)
 
@@ -110,10 +114,8 @@ def predict_rul_hi(
     for start in range(0, len(X), batch_size):
         batch = torch.from_numpy(X[start:start + batch_size]).float().to(device)
         outputs = model(batch)
-        if isinstance(outputs, (tuple, list)):
-            pred_rul, pred_hi = outputs[0], outputs[1]
-        else:
-            pred_rul = outputs
+        pred_rul, pred_hi, _ = unpack_model_output(outputs)
+        if pred_hi is None:
             pred_hi = torch.zeros_like(pred_rul)
         rul_predictions.append(pred_rul.detach().cpu().numpy().reshape(-1))
         hi_predictions.append(pred_hi.detach().cpu().numpy().reshape(-1))
@@ -134,17 +136,15 @@ def predict_rul_scale(
     for start in range(0, len(X), batch_size):
         batch = torch.from_numpy(X[start:start + batch_size]).float().to(device)
         outputs = model(batch)
-        if isinstance(outputs, (tuple, list)) and len(outputs) >= 3:
-            pred_rul, pred_scale = outputs[0], outputs[2]
-        else:
-            pred_rul = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
+        pred_rul, _, pred_scale = unpack_model_output(outputs)
+        if pred_scale is None:
             pred_scale = torch.ones_like(pred_rul)
         rul_predictions.append(pred_rul.detach().cpu().numpy().reshape(-1))
         scale_predictions.append(pred_scale.detach().cpu().numpy().reshape(-1))
 
     rul = np.concatenate(rul_predictions) if rul_predictions else np.empty(0)
     scale = np.concatenate(scale_predictions) if scale_predictions else np.empty(0)
-    return rul, np.maximum(scale, scale_floor)
+    return rul, floor_scale(scale, scale_floor)
 
 
 @torch.no_grad()
@@ -439,25 +439,24 @@ def interval_metrics(
     upper: np.ndarray,
     coverage: float,
 ) -> dict[str, float]:
-    """Coverage, width and Winkler score for one interval set."""
+    """Coverage, width and Winkler score for one interval set.
+
+    The metrics themselves are computed by
+    :mod:`src.uncertainty.coverage` — the single implementation of the
+    interval metrics.  This function only maps them onto the key names
+    the benchmark tables use.
+    """
 
     alpha = 1.0 - coverage
-    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
-    lower = np.asarray(lower, dtype=np.float64).reshape(-1)
-    upper = np.asarray(upper, dtype=np.float64).reshape(-1)
 
-    below = np.maximum(lower - y_true, 0.0)
-    above = np.maximum(y_true - upper, 0.0)
-    winkler = (upper - lower) + (2.0 / alpha) * (below + above)
-
-    empirical = float(np.mean((y_true >= lower) & (y_true <= upper)))
+    empirical = empirical_coverage(y_true, lower, upper)
 
     return {
         "nominal_coverage": float(coverage),
         "empirical_coverage": empirical,
         "coverage_gap": empirical - float(coverage),
-        "mean_interval_width": float(np.mean(upper - lower)),
-        "winkler_score": float(np.mean(winkler)),
+        "mean_interval_width": mean_prediction_interval_width(lower, upper),
+        "winkler_score": winkler_score(y_true, lower, upper, alpha),
     }
 
 
@@ -465,18 +464,21 @@ def clip_to_rul_domain(
     lower: np.ndarray,
     upper: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Clip intervals to the physical RUL range, keeping them ordered."""
+    """Clip intervals to the physical RUL range, keeping them ordered.
 
-    lower = np.clip(np.asarray(lower, dtype=np.float64), RUL_MIN, RUL_MAX)
-    upper = np.clip(np.asarray(upper, dtype=np.float64), RUL_MIN, RUL_MAX)
-    return np.minimum(lower, upper), np.maximum(lower, upper)
+    Delegates to the single interval builder of
+    :mod:`src.uncertainty.conformal` so that every module in the project
+    clips and orders an interval the same way.
+    """
+
+    return clip_interval(lower, upper)
 
 
 # ------------------------------------------------------------------
 # EARA-Conformal: engine-aware, regime-adaptive scale
 # ------------------------------------------------------------------
 
-def _robust_scale(values: np.ndarray, floor: float = 1e-6) -> float:
+def _robust_scale(values: np.ndarray, floor: float = SCALE_FLOOR) -> float:
     values = np.asarray(values, dtype=np.float64).reshape(-1)
     if values.size == 0:
         return floor
@@ -584,7 +586,12 @@ def nearest_engine_regime_scale(
         )
 
     scale = float(np.sum(weights * np.asarray(scales)))
-    return max(scale, 1e-6), [profiles[i]["engine_id"] for i in indices], weights, regime
+    return (
+        max(scale, SCALE_FLOOR),
+        [profiles[i]["engine_id"] for i in indices],
+        weights,
+        regime,
+    )
 
 
 # ------------------------------------------------------------------
@@ -641,10 +648,12 @@ def prequential_aci_intervals(
     for index in range(len(y_pred)):
         quantile = finite_sample_quantile(scores, alpha_t)
         radius = quantile * max(float(scales[index]), scale_floor)
-        lo = float(np.clip(y_pred[index] - radius, RUL_MIN, RUL_MAX))
-        hi = float(np.clip(y_pred[index] + radius, RUL_MIN, RUL_MAX))
-        lower[index] = lo
-        upper[index] = hi
+        lo, hi = clip_interval(
+            np.asarray([y_pred[index] - radius]),
+            np.asarray([y_pred[index] + radius]),
+        )
+        lower[index] = lo[0]
+        upper[index] = hi[0]
         alpha_stream.append(alpha_t)
 
         error = 0.0 if lo <= y_true[index] <= hi else 1.0
@@ -785,7 +794,7 @@ def compute_all_intervals(
     # Window-level calibration scores (reduced to the unit below)
     # ------------------------------------------------------------------
 
-    adaptive_raw = cal_residuals / np.maximum(cal_scale, scale_floor)
+    adaptive_raw = cal_residuals / floor_scale(cal_scale, scale_floor)
 
     # ------------------------------------------------------------------
     # EARA profiles (training engines only)
@@ -821,7 +830,10 @@ def compute_all_intervals(
         test_scales[index] = scale
         test_regimes[index] = regime
 
-    eara_raw = np.abs(y_true_calibration - cal_pred) / np.maximum(cal_scales, scale_floor)
+    eara_raw = (
+        np.abs(y_true_calibration - cal_pred)
+        / floor_scale(cal_scales, scale_floor)
+    )
 
     window_scores = {
         "split_conformal": cal_residuals,
@@ -905,7 +917,7 @@ def compute_all_intervals(
 
             # ---------------- adaptive (scale-normalised) ----------------
             q_adaptive = finite_sample_quantile(adaptive_scores, alpha)
-            radius = q_adaptive * np.maximum(test_scale, scale_floor)
+            radius = q_adaptive * floor_scale(test_scale, scale_floor)
             results[unit]["adaptive"][coverage] = _build_result(
                 "adaptive",
                 coverage,
@@ -918,7 +930,7 @@ def compute_all_intervals(
 
             # ---------------- EARA-Conformal ----------------
             q_eara = finite_sample_quantile(eara_scores, alpha)
-            radius = q_eara * np.maximum(test_scales, scale_floor)
+            radius = q_eara * floor_scale(test_scales, scale_floor)
             results[unit]["eara_conformal"][coverage] = _build_result(
                 "eara_conformal",
                 coverage,

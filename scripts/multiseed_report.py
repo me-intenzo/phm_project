@@ -64,6 +64,11 @@ DOWNSTREAM_SUMMARY_PATH = MULTISEED_DIR / "downstream_summary.csv"
 
 HEADLINE_METRICS = ("RMSE", "MAE", "R2", "NASA_Score")
 
+#: The health-index task is a real estimation task now (the label is derived
+#: from the sensor signal, not from the RUL label), so its metrics are
+#: aggregated and certified alongside the RUL ones.
+HI_METRICS = ("HI_RMSE", "HI_MAE", "HI_R2")
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -190,6 +195,12 @@ def build_summary(per_seed: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry[f"{metric}_min"] = min(values) if values else float("nan")
             entry[f"{metric}_max"] = max(values) if values else float("nan")
             entry[f"{metric}_ci95_halfwidth"] = t_interval_halfwidth(std, len(values))
+
+        for metric in HI_METRICS:
+            values = [float(row[metric]) for row in group if row.get(metric) is not None]
+            mean, std = mean_and_std(values)
+            entry[f"{metric}_mean"] = mean
+            entry[f"{metric}_std"] = std
 
         summary.append(entry)
 

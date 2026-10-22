@@ -40,6 +40,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .heads import build_task_heads, forward_task_heads
+
 
 class MultiHeadTemporalAttention(nn.Module):
     """Multi-head scaled dot-product attention over GRU timesteps.
@@ -197,27 +199,19 @@ class GruAttDegV2(nn.Module):
         )
 
         # --------------------------------------------------
-        # Task heads
+        # Task heads (shared layout, see ``src/models/heads.py``).
+        # The degradation head keeps the sigmoid so that HI stays in (0, 1).
         # --------------------------------------------------
 
-        self.rul_head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, 1),
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
+            hidden_size,
+            style="att_deg_v2",
+            dropout=dropout,
         )
-
-        # Degradation head — sigmoid keeps HI in (0, 1)
-        self.hi_head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, 1),
-            nn.Sigmoid(),
-        )
-
-        # Heteroscedastic scale head for EARA-Conformal.
-        self.scale_head = nn.Linear(hidden_size, 1)
 
     # ------------------------------------------------------
     # Forward Pass
@@ -256,9 +250,12 @@ class GruAttDegV2(nn.Module):
 
         features = self.shared(features)               # (B, H)
 
-        pred_rul = self.rul_head(features).squeeze(-1)
-        pred_hi = self.hi_head(features).squeeze(-1)
-        pred_scale = F.softplus(self.scale_head(features)).squeeze(-1)
+        pred_rul, pred_hi, pred_scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
+        )
 
         return pred_rul, pred_hi, pred_scale
 

@@ -14,13 +14,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-VALID_ACTIONS = {
-    "CONTINUE_OPERATION",
-    "MONITOR",
-    "INSPECT",
-    "SCHEDULE_MAINTENANCE",
-    "URGENT_MAINTENANCE",
-}
+from src.utils.config import VALID_ACTIONS
 
 
 @dataclass

@@ -2,15 +2,15 @@
 #
 # FD002 has 260 training engines across six operating conditions, so it can
 # support a slightly wider model and stronger regularisation than FD001.
-
-dataset: FD002
+#
+# The subset and the architecture are not configured here: the subset comes
+# from the file name, the architecture from ``scripts/train.py --model``.
 
 # ------------------------------------------------------------------ data
 window_size: 40
 max_rul: 125
 
 # ------------------------------------------------------------------ model
-model: gru_att_deg_v2
 hidden_size: 160
 num_layers: 2
 dropout: 0.35

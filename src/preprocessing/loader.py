@@ -9,6 +9,7 @@ Responsibilities
 2. Validate dataset files.
 3. Assign proper column names.
 4. Return clean pandas DataFrames.
+5. Name the feature columns (operational settings + sensors).
 
 Author: me-intenzo
 """
@@ -21,13 +22,14 @@ from typing import Tuple
 
 import pandas as pd
 
+from src.utils.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------
 # Project Paths
 # -----------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "raw"
 
 # -----------------------------------------------------
@@ -39,6 +41,28 @@ COLUMN_NAMES = (
     + [f"operational_setting_{i}" for i in range(1, 4)]
     + [f"sensor_{i}" for i in range(1, 22)]
 )
+
+#: Prefixes of the columns that are used as model features.
+FEATURE_PREFIXES: tuple[str, ...] = ("operational_setting", "sensor_")
+
+
+def get_feature_columns(df: pd.DataFrame) -> list[str]:
+    """Return the feature columns of *df*.
+
+    The feature columns are the operational settings and the sensor
+    readings; the identifiers (``unit_number``, ``time_in_cycles``) and
+    the labels (``RUL``, ``HI``) are not features.
+
+    This function is the **single definition** of that selection.  The
+    window generator, the feature selector and the feature scaler each
+    used to carry their own copy of the same list comprehension.
+    """
+
+    return [
+        col
+        for col in df.columns
+        if any(col.startswith(prefix) for prefix in FEATURE_PREFIXES)
+    ]
 
 
 class CMAPSSLoader:

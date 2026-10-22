@@ -78,7 +78,7 @@ skipped rather than aborting the whole run.
 | `scripts/preprocess.py` | Raw text → windows, labels, scaler | `--subset`, `--config`, `--window-size`, `--max-rul` | `data/raw/` | `data/processed/`, `outputs/models/`, `outputs/figures/` |
 | `scripts/train.py` | Train one (model, subset) pair | `--model`, `--subset`, `--config`, `--seed`, `--tag`, `--epochs`, `--lr`, `--overrides`, `--no-augment`, `--no-ema`, `--no-deterministic` | `data/processed/` | `outputs/checkpoints/<arch>[_tag]/<subset>/best_model.pt`, `outputs/results/<subset>_<arch>[_tag]_history.npz` |
 | `scripts/evaluate.py` | Point-prediction metrics for a checkpoint | `--model`, `--subset`, `--tag` | checkpoint, `data/processed/` | `outputs/results/<subset>_<model>[_tag]_predictions.npz`, `..._metrics.json` |
-| `scripts/uncertainty.py` | Conformal prediction intervals | `--model`, `--subset`, `--method`, `--tag` | checkpoint, `data/processed/` | `outputs/results/<subset>_<model>_<variant>.npz` (**untagged** — see §7.13) |
+| `scripts/uncertainty.py` | Conformal prediction intervals | `--model`, `--subset`, `--method`, `--tag` | checkpoint, `data/processed/` | `outputs/results/<subset>_<model>_<variant>.npz` (tag-aware — see §7.13) |
 | `scripts/explain.py` | IG + SHAP + temporal relevance + ERI | `--subset`, `--model`, `--target`, `--samples`, `--ig-steps`, `--shap-nsamples`, `--engine-id` | checkpoint, `data/processed/` | `outputs/xai/<subset>/<model>/` |
 | `scripts/decision.py` | Rules + constraints → recommendation | `--subset`, `--model`, `--uncertainty-variant`, `--xai-context`, constraint flags | predictions, intervals, `eri_rul.json`, `data/external/decision_input*.json` | `outputs/results/decision_<stem>.json`, `outputs/reports/decision_<stem>.html` |
 | `scripts/hitl.py` | Review queue, resolution, policy refinement | `--subset`, `--model`, `--input`, `--review-id`, `--reviewer`, `--action`, `--override-action`, `--confidence`, `--reason` | decision JSON | `outputs/hitl/feedback.jsonl`, HTML report, review log |
@@ -88,6 +88,7 @@ skipped rather than aborting the whole run.
 | `scripts/summarize.py` | Scans prediction files → accuracy table | `--models`, `--threshold` | `outputs/results/*_predictions.npz` | `outputs/reports/accuracy_summary.csv` |
 | `scripts/sota_benchmark.py` | RMSE benchmark, bootstrap CI, significance | `--models`, `--reference`, `--resamples`, `--seed` | `outputs/results/*_predictions.npz` | `outputs/reports/sota_*.csv` |
 | `scripts/multiseed_conformal_benchmark.py` | 5 methods × 4 subsets × 5 seeds | `--subsets`, `--seeds`, `--epochs`, `--batch-size`, `--n-regimes`, `--aci-gamma` | `data/processed/` | `results/conformal_benchmark/` (tracked) |
+| `scripts/decision_sensitivity.py` | Risk-score weight sensitivity + constraint-scenario comparison | `--subsets`, `--seeds`, `--model`, `--dirichlet-samples` | `outputs/results/decision_*.json` | `outputs/reports/decision_sensitivity.*`, `decision_weight_sweep.csv`, `decision_constraint_scenarios.csv` |
 | `scripts/regime_sweep.py` | Validates the k-means regime count | — | `data/processed/` | `outputs/results/regime_sweep.json` |
 
 `scripts/demo.py` only wires the four architectures that the decision engine
@@ -116,7 +117,10 @@ Four properties hold at every stage and are asserted before a run continues.
    can therefore never be evaluated with a configuration it was not trained
    with.
 4. **Constraints escalate, never de-escalate.** The constraint layer may make
-   an action more conservative; it can never make it less so.
+   an action more conservative; it can never make it less so. The single
+   documented exception is the maintenance-window rule, which *substitutes*
+   an infeasible commitment (SCHEDULE_MAINTENANCE) with the nearest feasible
+   one (INSPECT) and always flags the record for human review — see §5.4.
 
 ---
 
@@ -150,20 +154,70 @@ Rules that the code actually follows:
 |---|---|
 | `loader.py` | Reads the raw `train_FD00X.txt` / `test_FD00X.txt` / `RUL_FD00X.txt` files into tidy DataFrames. |
 | `validator.py` | Schema and value-range checks (monotonic `time_in_cycles`, no gaps, sane sensor values). Writes a validation report. |
-| `labeling.py` | Piecewise-linear RUL label and the HI label derived from it. |
+| `labeling.py` | Piecewise-linear RUL label and the *legacy* HI label (`HI = RUL / max_rul`, kept for comparison only — see §4.5). |
+| `health_index.py` | The sensor-derived health index (SDHI) and the calibration of the decision policy's HI breakpoints. |
 | `feature_selection.py` | Variance / correlation / mutual-information selection down to the 14 operating sensors (more on the multi-condition subsets). |
 | `scaling.py` | Per-engine z-score normalisation; the fitted scaler is persisted to `outputs/models/`. |
 | `windowing.py` | Sliding-window construction, engine-wise train/test split, `.npy` persistence, metadata sidecar. |
 | `visualization.py` | EDA and per-subset diagnostic plots. |
+
+### 2.2a The sensor-derived health index
+
+The health index used to be `HI = RUL / max_rul` — a deterministic affine
+function of the RUL label, so the two correlated at `1.000000` and the HI
+head had nothing to learn that the RUL head had not already learned
+(§7.2).  The pipeline now builds the index from the **sensor signal**
+instead (`src/preprocessing/health_index.py`):
+
+1. **Condition removal.**  Each sensor is regressed on the three
+   operational settings (least squares, fitted on the *training* split
+   only) and the residual is kept.  On FD002/FD004 this step is what makes
+   the index usable at all: without it the dominant variance direction of
+   the sensors is the operating condition rather than the degradation.
+2. **Per-engine baseline.**  Each engine's first `hi_baseline_cycles`
+   (30) cycles define its own healthy reference.  Subtracting it removes
+   the engine-to-engine offset without ever looking at the engine's end of
+   life.
+3. **Degradation direction.**  A one-component **PLS** direction is fitted
+   on the training windows against the training RUL label.  PLS is used
+   instead of PCA because the wanted direction is the one that tracks
+   degradation, not the one that explains the most variance.  On FD002 the
+   two differ sharply: PCA-1 gives `corr(HI, RUL) = 0.04` (the condition
+   direction), PLS-1 gives `0.69`.
+4. **Projection and mapping.**  The projection of a window's centred
+   feature vector is mapped onto `[0, 1]` with reference quantiles taken
+   from the training windows:
+   `HI = 1 - clip((d - lo) / (hi - lo), 0, 1)`.
+
+**Window alignment.**  The index of a row is computed from the *same
+trailing window the model sees* (left-padded with the engine's first cycle
+when the engine is shorter than `window_size`, matching
+`WindowGenerator.create_test_windows`).  The label attached to a training
+window is therefore a function of exactly that window's features.
+
+**Breakpoint calibration.**  The decision policy decides a health state
+from *either* the RUL or the HI criterion.  With the legacy label the two
+were consistent by construction; with the sensor-derived index they are
+not, because the index has its own scale.  Preprocessing therefore
+calibrates the three HI breakpoints on the training split — each is the
+median index of the training windows in the corresponding RUL band — and
+stores them in the dataset metadata as `hi_thresholds`.
+`scripts/decision.py` merges them into the policy thresholds.
+
+The legacy label is still reachable (`--hi-mode rul`) so the two can be
+compared; it is not the default any more.
 
 ### 2.3 `src/models/`
 
 | Module | Responsibility |
 |---|---|
 | `lstm.py`, `gru.py`, `transformer.py`, `hybrid.py`, `gru_att_deg.py`, `gru_att_deg_v2.py` | Architectures. Each returns the triple `(pred_rul, pred_hi, pred_scale)`. |
-| `registry.py` | **Single source of truth** for building a model: `ARCHS`, `ALL_MODELS`, `build_model()`, `model_config()`. |
+| `registry.py` | **Single source of truth** for building *and loading* a model: `ARCHS`, `ALL_MODELS`, `build_model()`, `model_config()`, `resolve_checkpoint_path()`, `load_model_from_checkpoint()`. The scripts no longer carry their own `load_model`. |
+| `heads.py` | The shared multi-task heads (`rul_head` / `hi_head` / `scale_head`). The architectures import them, so the head layout is defined once; the attribute names are unchanged, so existing checkpoints still load. |
+| `layers.py` | The shared sinusoidal `PositionalEncoding` (used by the Transformer and the Hybrid). |
+| `outputs.py` | `unpack_model_output()` — the single place that knows how to read a model output. |
 | `losses.py` | Multi-task loss (RUL + HI + heteroscedastic scale). |
-| `trainer.py` | Training loop: warm-up, cosine/plateau LR, gradient clipping, weight EMA, early stopping. Stores run provenance in the checkpoint. |
+| `trainer.py` | Training loop: warm-up, cosine/plateau LR, gradient clipping, weight EMA, early stopping. Stores run provenance in the checkpoint. The train and the validation pass share one `_run_epoch()` implementation. |
 | `checkpoint.py` | Save / load, including `load_state_dict_compat()` for tolerant loading. |
 | `uncertainty_heads.py` | `QuantileHead` and `ScaleHead` used by the CQR and adaptive-scale paths. |
 | `augmentation.py` | Sensor-physical window augmentation (noise, bias, gain, sensor dropout, time mask, history crop). |
@@ -172,11 +226,14 @@ Rules that the code actually follows:
 
 | Module | Responsibility |
 |---|---|
-| `conformal.py` | Split-conformal baseline, regime detection, EARA-Conformal, and the named interval variants. `conformal_rank()` and `conformal_quantile()` implement the finite-sample rank correctly — an unattainable rank yields `+inf`, not a clamped value (see §7.1). |
-| `calibration.py` | EARA regime levels and calibration helpers. |
+| `conformal.py` | Split-conformal baseline, regime detection, EARA-Conformal, the named interval variants **and the calibration entry points** (`calibrate_eara_levels`, `calibrate_multiple_levels`). It is the single source of truth for the finite-sample quantile (`conformal_quantile()` / `signed_conformal_quantile()`), the shared scale floor (`SCALE_FLOOR`, applied as a bound with `max`, never as an addition) and the interval builder (`clip_interval()`). An unattainable rank yields `+inf`, not a clamped value (see §7.1). |
 | `pipeline.py` | The model-agnostic interval engine shared by the CLI and the certification benchmark: window/engine calibration units, scale and quantile heads, EARA engine profiles, prequential ACI, and the interval metrics (§7.14). |
-| `coverage.py` | Empirical coverage, coverage error, MPIW, PINAW, Winkler score. Every public metric routes through the single `_validate_interval_inputs` validator. |
-| `adaptive.py` | Adaptive-scale machinery. |
+| `coverage.py` | Empirical coverage, coverage error, MPIW, PINAW, Winkler score. Every public metric routes through the single `_validate_interval_inputs` validator. The evaluation layer calls these functions instead of re-implementing them. |
+
+There is deliberately **no** `calibration.py` or `adaptive.py`: both were
+pass-through modules whose logic now lives in `conformal.py`, which is the
+only place that declares a scale floor, a conformal quantile or an interval
+builder.
 
 ### 2.5 `src/explainability/`
 
@@ -195,8 +252,9 @@ separate module could not guarantee that.
 
 | Module | Responsibility |
 |---|---|
-| `rules.py` | Health state, uncertainty class, explanation reliability, risk score, urgency index, candidate action. |
+| `rules.py` | Health state, uncertainty class, explanation reliability, risk score, urgency index, candidate action, and the severity ladder. |
 | `constraints.py` | Operational constraint layer applied after the rules. |
+| `scenarios.py` | Named operational-constraint scenarios (`unconstrained` … `degraded_operations`). |
 | `recommender.py` | Public entry point `recommend_action(state, constraints, thresholds)`. |
 
 ### 2.7 `src/hitl/`
@@ -215,6 +273,7 @@ separate module could not guarantee that.
 | `metrics.py` | Six evaluation dimensions (predictive accuracy, uncertainty reliability, explainability quality, decision effectiveness, robustness, user trust) plus `full_evaluation_report`, which assembles all six. |
 | `benchmark.py` | Comparative benchmark helpers. |
 | `ablation.py` | Ablation runner. Re-runs the decision engine on patched inputs — see §9.3. |
+| `decision_sensitivity.py` | Risk-score weight sensitivity and the constraint-scenario comparison — see §9.4. |
 | `robustness.py` | Noise and sensor-dropout sweeps, cross-subset consistency. |
 
 ### 2.9 `src/utils/`
@@ -226,6 +285,7 @@ separate module could not guarantee that.
 | `logger.py` | Per-script loggers writing to `outputs/logs/`. |
 | `io.py` | Small IO helpers. |
 | `seed.py` | `set_seed()` — seeds `random`, `numpy`, `torch` and `torch.cuda`, and enables the deterministic torch/CUDA kernels (see §7.7 for the remaining caveat). |
+| `provenance.py` | The run identity carried by every generated artifact: `sha256_file()`, `git_commit()`, `build_provenance()`, `pack_provenance()`, `unpack_provenance()`, `compare_provenance()`. The stamp is embedded in the `.npz` (see § 8.1a). |
 
 ---
 
@@ -253,11 +313,11 @@ subset-specific ones.
 
 | Group | Keys | Default | Notes |
 |---|---|---|---|
-| Dataset | `dataset`, `window_size`, `random_seed`, `device` | `FD001`, `40`, `42`, `cuda` | `device: cuda` falls back to CPU when no GPU is present. |
-| Labelling | `max_rul` | `125` | The piecewise-linear RUL cap. See §3.4. |
-| Model | `model`, `hidden_size`, `num_layers`, `dropout`, `num_heads`, `use_layer_norm` | `gru_att_deg_v2`, `128`, `2`, `0.3`, `4`, `true` | `hidden_size` is 160 on FD002/FD004. |
+| Data | `window_size`, `random_seed`, `device` | `40`, `42`, `cuda` | `device: cuda` falls back to CPU when no GPU is present. |
+| Labelling | `max_rul`, `hi_mode`, `hi_baseline_cycles` | `125`, `sensor`, `30` | `max_rul` is the piecewise-linear RUL cap (§3.4); `hi_mode` selects the health-index construction (§2.2a); `hi_baseline_cycles` is the per-engine healthy reference length. |
+| Model | `hidden_size`, `num_layers`, `dropout`, `num_heads`, `use_layer_norm` | `128`, `2`, `0.3`, `4`, `true` | `hidden_size` is 160 on FD002/FD004. The architecture itself is **not** a config key — it comes from `--model` and is stored in the checkpoint (see §3.3). |
 | Optimisation | `batch_size`, `epochs`, `learning_rate`, `optimizer`, `weight_decay`, `scheduler`, `warmup_epochs`, `min_lr`, `patience`, `grad_clip`, `ema_decay` | `256`, `300`, `3e-4`, `AdamW`, `1e-4`, `cosine`, `5`, `1e-6`, `40`, `1.0`, `0.995` | The shipped YAMLs use `epochs: 150`, `patience: 30`. |
-| Loss | `rul_loss_type`, `huber_delta`, `rul_loss_weight`, `hi_loss_weight`, `scale_loss_weight` | `mse`, `10.0`, `1.0`, `0.4`, `0.1` | See §7.3 for why `hi_loss_weight` barely matters. |
+| Loss | `rul_loss_type`, `huber_delta`, `rul_loss_weight`, `hi_loss_weight`, `scale_loss_weight`, `hi_loss_scale` | `mse`, `10.0`, `1.0`, `0.4`, `0.1`, `rul_max` | `hi_loss_scale` puts the HI term on the RUL scale (§7.3); `rul_max` means "multiply the HI loss by `max_rul²`". |
 | Augmentation | `augment`, `aug_noise_std`, `aug_bias_std`, `aug_gain_std`, `aug_sensor_dropout`, `aug_time_mask_prob`, `aug_time_mask_len`, `aug_history_crop` | `true`, `0.02`, `0.05`, `0.02`, `0.05`, `0.15`, `8`, `8` | All magnitudes are on the *standardised* feature scale. Augmentation is **off** in the FD001/FD002/FD003 YAMLs — see §7.12. |
 
 `DEFAULT_CONFIG["epochs"]` is 300 while the shipped subset YAMLs say 150. The
@@ -268,7 +328,7 @@ YAML wins, so the effective value for all four subsets is 150.
 | Consumer | Reads from config |
 |---|---|
 | `scripts/train.py` | Everything: architecture, optimiser, scheduler, loss weights, augmentation, seed, device. `--overrides key=value,...` patches individual keys. |
-| `scripts/preprocess.py` | `window_size`, `max_rul`. Both can be overridden on the CLI. |
+| `scripts/preprocess.py` | `window_size`, `max_rul`, `hi_mode`, `hi_baseline_cycles`. All four can be overridden on the CLI. |
 | `scripts/evaluate.py` | The architecture recorded in the **checkpoint** (`model_config`), not the YAML. |
 | `scripts/uncertainty.py` | The architecture recorded in the checkpoint. |
 | `scripts/explain.py` | `window_size` / `max_rul` from the **processed-data metadata**; the architecture from the checkpoint. |
@@ -342,22 +402,26 @@ costs only the score reduction.
    of the training engines (post hoc, on training-engine residuals).
 2. **Regimes.** K-means over the training-engine latent features produces `K`
    degradation regimes.
-3. **Normalised scores.** `s_i = |y_i - ŷ_i| / (scale(x_i) + ε)` with a
-   shared floor `ε = 1e-6` so calibration and prediction cannot disagree on
-   near-zero scales.
+3. **Normalised scores.** `s_i = |y_i - ŷ_i| / max(scale(x_i), ε)` with a
+   shared floor `ε = 1e-3` (`SCALE_FLOOR` in `src/uncertainty/conformal.py`)
+   so calibration and prediction cannot disagree on near-zero scales. The
+   floor is a *bound*, not an addition: an additive floor would change the
+   scale the score was built from and desynchronise the quantile from the
+   radius.
 4. **Quantile.** `q̂` is computed on the calibration scores. The library
    `calibrate_eara_levels` computes one `q̂_k` per regime; the CLI
    `engine_joint` path and the multi-seed benchmark compute a single global
    `q̂` and let the regime enter only through the retrieved *scale*.
-5. **Interval.** `C(x) = [ŷ - q̂ · s(x), ŷ + q̂ · s(x)]`, clipped to the
-   RUL domain `[0, max_rul]`.
+5. **Interval.** `C(x) = [ŷ - q̂ · max(s(x), ε), ŷ + q̂ · max(s(x), ε)]`, clipped
+   to the RUL domain `[0, max_rul]` and ordered by the single interval builder
+   (`clip_interval`).
 
 Steps 1–3 and 5 are shared. Step 4 is where the producers differ, and the
 difference is easy to miss:
 
 | Producer | Step 4 — the quantile | `min_regime_size` |
 |---|---|---|
-| `src/uncertainty/calibration.py::calibrate_eara_levels` (the library) | One `q̂_k` per regime, on the calibration windows of that regime. | 30 windows |
+| `src/uncertainty/conformal.py::calibrate_eara_levels` (the library) | One `q̂_k` per regime, on the calibration windows of that regime. | 30 windows |
 | `scripts/uncertainty.py::run_engine_joint_conformal` (the CLI `engine_joint`) | A **single global** `q̂` on all scale-normalised calibration scores. | — |
 | `scripts/multiseed_conformal_benchmark.py` (`eara_conformal`) | A **single global** `q̂` on the scale-normalised scores of the selected calibration unit. Identical to the CLI path, so the benchmark measures the method the repository actually ships. | — |
 
@@ -397,7 +461,23 @@ rank; the floor means the adaptor never targets more than 99 % coverage.
 
 The engine is a pure function of a flat state dict. It has no dependency on
 torch, on the model, or on any artifact — which is what makes the ablation
-(§9.3) and the HITL refinement (§5.5) possible.
+(§9.3), the sensitivity analysis (§9.4) and the HITL refinement (§5.5)
+possible.
+
+### 5.0 The severity ladder
+
+Every action sits on one explicit ladder:
+
+```text
+CONTINUE_OPERATION  <  MONITOR  <  INSPECT  <  SCHEDULE_MAINTENANCE  <  URGENT_MAINTENANCE
+   0                    1           2               3                        4
+```
+
+It is the *commitment* ordering: the further right, the more of the
+maintenance action is committed to and the sooner the operator has to act.
+The ladder is defined once, in `src/decision_engine/rules.py::SEVERITY_LADDER`,
+and is used by the rule layer, by the constraint layer and by the
+sensitivity analysis, so "more severe" means the same thing everywhere.
 
 ### 5.1 Health state
 
@@ -409,6 +489,17 @@ From RUL and HI, using `DEFAULT_THRESHOLDS`:
 | `AT_RISK` | `rul <= 25` **or** `hi <= 0.40` |
 | `DEGRADING` | `rul <= 50` **or** `hi <= 0.70` |
 | `HEALTHY` | otherwise |
+
+The three HI breakpoints above are the defaults of the *legacy*
+`HI = RUL / max_rul` label.  With the sensor-derived index they are
+recalibrated on the training split so that the HI criterion fires at the
+same degradation levels as the RUL criterion (§2.2a); the calibrated values
+are stored in the dataset metadata and merged into the thresholds by
+`scripts/decision.py`.
+
+The engine evaluates this classification twice: once on the **point
+estimate** (reported as `health_state`) and once on the **conservative end
+of the calibrated interval** (reported as `planning_state`, §5.3).
 
 ### 5.2 Risk score
 
@@ -424,26 +515,76 @@ w_rul = 0.40,  w_hi = 0.30,  w_u = 0.15,  w_eri = 0.15
 U     = min(R · (1 + uncertainty_amplifier · r_u), 1.0)
 ```
 
+The sensitivity of the decision mix to these four weights is measured in
+§9.4 rather than assumed.
+
 ### 5.3 Candidate action
 
-Uncertainty is classified by the **relative** interval width
-`(upper − lower) / max(|prediction|, ε)`: `HIGH` at ≥ 0.50, `MODERATE` at
-≥ 0.25, `LOW` otherwise. Explanation reliability is `HIGH` at
-`eri >= 0.80`, `MODERATE` at `eri >= 0.60`, `LOW` below.
+The action is **not** read off a hand-written table.  It is computed from
+the ladder:
 
-| Health state | Uncertainty / ERI | Action | Human review |
-|---|---|---|---|
-| any | `risk_score > 0.85` | `URGENT_MAINTENANCE` | yes |
-| `HEALTHY` | `HIGH` uncertainty | `MONITOR` | only if ERI is `LOW` |
-| `HEALTHY` | `MODERATE` uncertainty **and** `LOW` ERI | `MONITOR` | yes |
-| `HEALTHY` | otherwise | `CONTINUE_OPERATION` | no |
-| `DEGRADING` | `HIGH` uncertainty **or** `LOW` ERI | `INSPECT` | yes |
-| `DEGRADING` | `MODERATE` uncertainty | `MONITOR` | no |
-| `DEGRADING` | otherwise | `MONITOR` | no |
-| `AT_RISK` | `HIGH` uncertainty **or** `LOW` ERI | `INSPECT` | yes |
-| `AT_RISK` | otherwise | `SCHEDULE_MAINTENANCE` | no |
-| `CRITICAL` | `LOW` ERI **or** `HIGH` uncertainty | `URGENT_MAINTENANCE` | yes |
-| `CRITICAL` | otherwise | `URGENT_MAINTENANCE` | no |
+```text
+severity = min(base(planning_state) + eri_step, 4)
+```
+
+where the **planning state** is the health state the engine would be in if
+the prediction were at the *conservative end* of its calibrated interval —
+i.e. `determine_health_state(rul_lower, hi)`.
+
+| Planning state | base severity | base action |
+|---|---|---|
+| `HEALTHY` | 0 | `CONTINUE_OPERATION` |
+| `DEGRADING` | 1 | `MONITOR` |
+| `AT_RISK` | 3 | `SCHEDULE_MAINTENANCE` |
+| `CRITICAL` | 4 | `URGENT_MAINTENANCE` |
+
+| Confidence signal | escalation step |
+|---|---|
+| explanation reliability `HIGH` / `MODERATE` | 0 |
+| explanation reliability `LOW` | +1 |
+
+The point estimate's state is reported as `health_state`; the state the
+action is planned for is reported as `planning_state`.  The two differ
+whenever the interval is wide enough to cross a threshold, and the
+decision record then says so in its `reasons`.
+
+**Why the planning state.**  A maintenance work order has to be scheduled
+so that it is carried out *before the worst credible case*, not before the
+most likely one.  The calibrated interval is exactly the statement of what
+is credible, so the decision is planned on its lower bound.  The
+consequences are:
+
+* the action is monotone in the uncertainty **by construction** — widening
+  the interval downwards can only make the planning state more severe, so
+  it can only make the action more severe;
+* the uncertainty is *not* a second escalation step on top of that, which
+  would count the same evidence twice (and, because the ladder has only
+  one step above `SCHEDULE_MAINTENANCE`, would push every at-risk engine
+  straight to `URGENT_MAINTENANCE`);
+* the *width* of the interval is handled where it belongs: the
+  human-review flag below, and the operational constraints of §5.4, which
+  turn "how much time is left" into a timing escalation
+  (`maintenance_lead_time`).
+
+**Why it is written this way.**  The policy is *monotone by construction*:
+a less reliable explanation, or a wider interval, can never produce a less
+severe action than the same evidence with better support.  The previous
+hand-written table violated that: for `AT_RISK` it produced `INSPECT` for
+`HIGH` uncertainty and `SCHEDULE_MAINTENANCE` for `MODERATE` uncertainty,
+so more uncertainty produced a *less* committed action (§7.4).  Under the
+severity ladder that inconsistency is structurally impossible — `INSPECT`
+sits *below* `SCHEDULE_MAINTENANCE` and is only reachable from the
+`DEGRADING` band or from a low-ERI escalation.
+
+**Human review.** A degraded confidence signal always requires a human to
+look at the record, even when the action itself did not change:
+
+| Condition | Human review |
+|---|---|
+| uncertainty `HIGH` (relative interval width ≥ 0.50) | yes |
+| explanation reliability `LOW` | yes |
+| risk score > 0.85 (hard override to `URGENT_MAINTENANCE`) | yes |
+| otherwise | no |
 
 ### 5.4 Constraints
 
@@ -452,7 +593,7 @@ severity, except the maintenance-window rule.
 
 | # | Constraint | Effect |
 |---|---|---|
-| 1 | `maintenance_window_available = False` | `SCHEDULE_MAINTENANCE` → `INSPECT`, human review. |
+| 1 | `maintenance_window_available = False` | `SCHEDULE_MAINTENANCE` → `INSPECT`, human review. **Substitution**, not escalation: the plan is infeasible, so the nearest feasible action is used. Recorded separately in `constraint_substitutions`. |
 | 2 | `minimum_safe_rul` | Passive action with `rul <= minimum_safe_rul` → `URGENT_MAINTENANCE`. |
 | 3 | `maintenance_lead_time` | `SCHEDULE_MAINTENANCE` with `rul <= maintenance_lead_time` → `URGENT_MAINTENANCE`. |
 | 4 | `max_allowable_delay` | Passive action with `rul <= max_allowable_delay` → `INSPECT`. |
@@ -465,8 +606,20 @@ action to `URGENT_MAINTENANCE`, which is no longer passive, so rule 4 will not
 fire either.
 
 The constraint layer records `constraint_status`
-(`SATISFIED` / `VIOLATION`), the list of `constraint_violations`, and the
-list of `constraint_adjustments`, so every escalation is auditable.
+(`SATISFIED` / `VIOLATION`), the list of `constraint_violations`, the
+list of `constraint_adjustments`, the list of `constraint_substitutions`,
+and the severity of the final action together with its delta against the
+unconstrained action, so every escalation is auditable.
+
+**Named scenarios.** `src/decision_engine/scenarios.py` defines the
+operational contexts the decision engine is evaluated under:
+`unconstrained`, `no_maintenance_window`, `tight_safety_margin`,
+`lead_time_pressure`, `resource_shortage` and `degraded_operations`.
+`scripts/decision.py --constraint-scenario <name>` applies one, and
+`scripts/multiseed_pipeline.py` records the scenario that produced each
+decision artifact.  The certified runs use `degraded_operations`, so the
+constraint layer is exercised by the published results instead of only by
+unit tests (§9.4).
 
 ### 5.5 HITL
 
@@ -498,12 +651,14 @@ ERI = 0.4 · (ρ_spearman(IG, Attention) + 1) / 2
 ERI is bounded in `[0, 1]`. The decision engine treats `eri < 0.60` as `LOW`
 reliability and `eri >= 0.80` as `HIGH`.
 
-> **Band-boundary caveat.** `src/decision_engine/rules.py` classifies ERI with
-> `eri >= eri_high` / `eri >= eri_low` (the thresholds are configurable),
-> while `src/explainability/eri.py` uses the hard-coded strict comparisons
-> `eri > 0.8` / `eri > 0.6`. An ERI exactly equal to `0.60` or `0.80`
-> therefore lands in different bands in the two modules, and the two also
-> disagree if the thresholds are retuned.
+> **Band boundaries.** The two band thresholds live in
+> `src/utils/config.py` (`ERI_LOW_THRESHOLD`, `ERI_HIGH_THRESHOLD`) and are
+> used by **both** `src/explainability/eri.py` and
+> `src/decision_engine/rules.py`, with the same inclusive comparison. The
+> two modules used to disagree on the boundary values 0.60 and 0.80 — the
+> report used `>` and the policy `>=` — so an ERI of exactly 0.80 was
+> `HIGH` for the policy and `MODERATE` for the report. The report and the
+> policy now classify every value identically.
 
 ---
 
@@ -587,29 +742,79 @@ not arise.
 coverage of intervals that carry a valid conformal guarantee, computed on the
 real deliverable checkpoints rather than on a proxy model, for both units.
 
-### 7.2 The HI label is a deterministic function of RUL
+### 7.2 The HI label is a deterministic function of RUL *(fixed)*
 
-`src/preprocessing/labeling.py` sets `HI = RUL / max_rul`. On FD001–FD004
-the correlation between the two labels is `1.000000` to machine precision.
-The HI head therefore has almost nothing to learn beyond the RUL head, and
-the strong HI numbers in the result tables are a by-product of the shared
+`src/preprocessing/labeling.py` used to set `HI = RUL / max_rul`. On FD001–FD004
+the correlation between the two labels was `1.000000` to machine precision.
+The HI head therefore had almost nothing to learn beyond the RUL head, and
+the strong HI numbers in the result tables were a by-product of the shared
 trunk, not evidence of a well-supervised HI task.
 
-### 7.3 The HI loss term is numerically negligible
+**The label is now derived from the sensor signal.**  See §2.2a for the
+construction.  The index is a genuine health indicator: it is strongly, but
+not perfectly, related to the degradation state, and it is *not* a
+deterministic function of the RUL label any more.  The measured
+`corr(HI, RUL)` on the training split is 0.890 (FD001), 0.674 (FD002),
+0.797 (FD003) and 0.705 (FD004) — the spread between subsets is itself the
+evidence that the index is a *measurement* and not a re-scaling: the
+multi-condition subsets have a weaker sensor-to-health relation, exactly as
+one would expect.
+
+The legacy label is still reachable through `--hi-mode rul`, so the two
+constructions can be compared on the same pipeline.
+
+### 7.3 The HI loss term is numerically negligible *(fixed)*
 
 In `src/models/losses.py` the RUL MSE is on the order of `10³` while the
 bounded HI MSE is on the order of `10⁻¹`. `hi_loss_weight = 0.4` therefore
-changes the total loss by roughly `1e-5` in relative terms, and there is no
-gradient balancing (no `GradNorm`, no uncertainty weighting). Changing
-`hi_loss_weight` in the config has almost no effect.
+changed the total loss by roughly `1e-5` in relative terms, and there was
+no gradient balancing (no `GradNorm`, no uncertainty weighting). Changing
+`hi_loss_weight` in the config had almost no effect.
 
-### 7.4 The AT_RISK action table is not monotonic in uncertainty
+**The HI term is now put on the RUL scale.**  `MultiTaskLoss` takes a
+`hi_scale` factor; the pipeline passes `max_rul ** 2`, which expresses the
+bounded HI loss in cycle-equivalent units.  The two terms are then of the
+same order of magnitude and `hi_loss_weight` is a real dial: with the
+default `0.4` the HI term contributes a few percent of the RUL term's
+magnitude instead of `1e-5`.  `hi_loss_scale: none` restores the old
+behaviour, and `tests/test_losses.py` pins both.
 
-For `AT_RISK`, `HIGH` uncertainty yields `INSPECT` while `MODERATE`
-uncertainty yields `SCHEDULE_MAINTENANCE` — i.e. *more* uncertainty produces
-a *less* severe action. Every other health state escalates with
-uncertainty. This is a policy inconsistency, not a code error; it needs a
+The RUL term itself is deliberately *not* rescaled: dividing it by
+`max_rul²` would shrink the gradients by four orders of magnitude and
+push them towards Adam's epsilon, which changes the optimisation far more
+than the HI weighting does.
+
+### 7.4 The AT_RISK action table is not monotonic in uncertainty *(fixed)*
+
+For `AT_RISK`, `HIGH` uncertainty yielded `INSPECT` while `MODERATE`
+uncertainty yielded `SCHEDULE_MAINTENANCE` — i.e. *more* uncertainty produced
+a *less* severe action. Every other health state escalated with
+uncertainty. This was a policy inconsistency, not a code error; it needed a
 policy decision, not a patch.
+
+**The policy decision was made and the table was replaced.**  The
+repository now defines an explicit severity ladder (§5.0) and computes the
+action from it (§5.3) instead of reading it off a hand-written table.  The
+policy is monotone *by construction*: a wider interval can only make the
+planning state more severe, and a less reliable explanation can only
+escalate the action.  `tests/test_decision_policy.py` verifies both
+properties — the severity never falls as the interval widens, and an
+at-risk engine is never given a less committed action than
+`SCHEDULE_MAINTENANCE`.
+
+The behavioural consequences are:
+
+* the action is planned on the **conservative end of the calibrated
+  interval** rather than on the point estimate.  An at-risk engine whose
+  interval still reaches into the at-risk band is `SCHEDULE_MAINTENANCE`;
+  one whose interval reaches into the critical band is
+  `URGENT_MAINTENANCE`.  Both `health_state` (the point estimate) and
+  `planning_state` (the conservative end) are reported.
+* `INSPECT` is no longer reachable from the `AT_RISK` band, so the
+  inconsistency is structurally impossible.
+* the `HEALTHY` and `DEGRADING` bands keep their old base actions.
+
+The published action mix moved accordingly; see `RESULTS.md`.
 
 ### 7.5 The ERI's IG-vs-Attention term is high by construction
 
@@ -730,16 +935,15 @@ are real and run without the dataset. Three areas are still uncovered:
   (`src/decision_engine`, `src/hitl`), not through `scripts/decision.py` and
   `scripts/hitl.py` end-to-end.
 
-### 7.11 The ERI Spearman correlation ignores ties
+### 7.11 The ERI Spearman correlation handles tied ranks
 
-`src/explainability/eri.py::_spearman` uses the rank-difference shortcut
-`1 − 6·Σd² / (n(n²−1))`, which is only exact for tie-free data. Tied
-importances receive arbitrary but distinct ranks from the double
-`argsort`, so the reported `ρ` is biased towards 1. By contrast,
-`src/evaluation/metrics.py` uses `scipy.stats.spearmanr`, which handles ties
-correctly. The two modules can therefore disagree on the same pair of
-vectors. Sensor importances are continuous floats, so ties are rare in
-practice — but the top-K consensus score is tie-sensitive by construction.
+`src/explainability/eri.py::_spearman` now uses `scipy.stats.spearmanr`, the
+same implementation as `src/evaluation/metrics.py`, so the two modules can no
+longer disagree on the same pair of vectors. The previous rank-difference
+shortcut `1 − 6·Σd² / (n(n²−1))` is only exact for tie-free data: tied
+importances received arbitrary but distinct ranks from the double `argsort`,
+which biased the reported `ρ` towards 1. The top-K consensus score remains
+tie-sensitive by construction, because it is a set intersection.
 
 ### 7.12 Augmentation is disabled in three of the four subset configs
 
@@ -756,14 +960,23 @@ FD002 13.61 → 14.72). Only FD004 keeps it on. Two consequences:
 
 ### 7.13 The uncertainty artifact layout is legacy and not tag-aware *(fixed)*
 
-`scripts/decision.py` reads intervals from
-`outputs/results/uncertainty/<variant>/<subset>/<model>[_<tag>].npz` first and
-falls back to the flat
-`outputs/results/<subset>_<model>[_<tag>]_<variant>.npz`. No current script
-*writes* the structured layout — `scripts/uncertainty.py` writes only the flat
-files — so the structured tree remains a read-path fallback. The four variants
-the CLI produces (`conformal`, `cqr`, `adaptive_conformal`,
-`engine_joint_conformal`) are all flat.
+`scripts/decision.py` reads intervals from the **flat**
+`outputs/results/<subset>_<model>[_<tag>]_<variant>.npz` and falls back to
+the legacy structured
+`outputs/results/uncertainty/<variant>/<subset>/<model>[_<tag>].npz`. No
+current script *writes* the structured layout — `scripts/uncertainty.py`
+writes only the flat files — so the structured tree is a read-path
+fallback. The four variants the CLI produces (`conformal`, `cqr`,
+`adaptive_conformal`, `engine_joint_conformal`) are all flat.
+
+The flat file must be preferred, and it used not to be: the resolver took
+the structured path whenever it existed. The five FD001/`gru` files left in
+that tree were four weeks old and disagreed with the flat artifacts by up
+to 16 RUL cycles in their point predictions, so a maintenance decision
+could have been produced from a different model's intervals than the ones on
+disk. The resolver now takes the flat file first, keeps the structured tree
+as a fallback for when it is absent, and logs which layout it used. The
+stale files were deleted.
 
 Every downstream stage now accepts a `--tag` and spells it through
 `src/utils/paths.py::run_dir_name`:
@@ -817,6 +1030,32 @@ pass is not bit-identical) and that the two correlate above 0.9999.
 
 ---
 
+<a id="715-artifacts-do-not-record-which-checkpoint-produced-them-fixed"></a>
+### 7.15 Artifacts do not record which checkpoint produced them *(fixed)*
+
+`scripts/evaluate.py` and `scripts/uncertainty.py` write their artifacts
+under names derived from the (subset, model, tag) triple, and nothing inside
+the artifact said which checkpoint had produced it. `comparative_benchmark`
+pairs the two by *filename* and compares the predictions against the
+intervals, so regenerating one side and not the other silently produced a
+comparison between **two different models** that still looked entirely
+valid.
+
+The multi-seed harness never had this problem — `results/multiseed/training_manifest.json`
+records the seed, the git commit and the checkpoint SHA-256 for every run —
+but the single-run chain in `outputs/results/` did.
+
+Every `.npz` now carries a provenance stamp (see § 8.1a) and
+`comparative_benchmark` compares the two stamps of each pair, reporting
+`ok` / `mismatch` / `unknown` and warning when the two sides disagree.
+
+The same gap existed in `comparative_benchmark`'s **summary** block, which
+looked the model up under the untagged key while the report was written
+under the tagged one — so every tagged run reported
+`best_model_by_rul_mae: None` and `best_rul_mae: inf`. Fixed.
+
+---
+
 ## 8. Artifact contracts
 
 ### 8.0 Naming rules
@@ -845,18 +1084,63 @@ uses `--tag-prefix` to build the `ms<seed>` family.
 | `data/processed/<subset>_<split>_y_rul.npy` | `float32 (n_windows,)` |
 | `data/processed/<subset>_<split>_y_hi.npy` | `float32 (n_windows,)` in `[0, 1]` |
 | `data/processed/<subset>_<split>_engine_ids.npy` | `int (n_windows,)` — the source engine of each window |
-| `data/processed/<subset>_<split>_metadata.json` | `window_size`, `stride`, `samples`, `features`, `engines`, `has_engine_ids`, `max_rul`, `subset` |
+| `data/processed/<subset>_<split>_metadata.json` | `window_size`, `stride`, `samples`, `features`, `engines`, `has_engine_ids`, `max_rul`, `subset`, `hi_mode`, `hi_baseline_cycles`, `health_index`, `hi_thresholds` |
 | `outputs/checkpoints/<arch>[_tag]/<subset>/best_model.pt` | `model_state_dict` (EMA weights), `raw_model_state_dict`, `model_config` (incl. `arch`), `input_size`, `window_size`, `subset`, `history`, `metrics`, `seed`, `run_metadata`, `ema_decay` |
-| `outputs/results/<subset>_<model>_predictions.npz` | `y_rul_true`, `y_rul_pred`, `y_hi_true`, `y_hi_pred` |
-| `outputs/results/<subset>_<model>_metrics.json` | `{"metrics": {"rul": {"MAE","RMSE","R2","NASA_Score"}, "hi": {"MAE","RMSE","R2"}}}`. The keys are lower-case; an earlier revision wrote `{"RUL","HI"}`. |
-| `outputs/results/<subset>_<model>_<variant>.npz` | `y_rul_test`, `y_hi_test`, `y_rul_pred`, plus per-coverage-level `lower_<pct>`, `upper_<pct>`, `q_hat_<pct>`, and the method-specific arrays (`test_scales`, `test_regimes`, `calibration_scales`, `calibration_regimes`, `normalized_calibration_scores`). `<variant>` is `conformal`, `cqr`, `adaptive_conformal` or `engine_joint_conformal`. |
+| `outputs/results/<subset>_<model>_predictions.npz` | `y_rul_true`, `y_rul_pred`, `y_hi_true`, `y_hi_pred`, `meta_json` (provenance stamp — see § 8.1a) |
+| `outputs/results/<subset>_<model>_metrics.json` | `{"metrics": {"rul": {"MAE","RMSE","R2","NASA_Score"}, "hi": {"MAE","RMSE","R2"}}}`. The keys are lower-case; an earlier revision wrote `{"RUL","HI"}`. Also carries `provenance`. |
+| `outputs/results/<subset>_<model>_<variant>.npz` | `y_rul_test`, `y_hi_test`, `y_rul_pred`, plus per-coverage-level `lower_<pct>`, `upper_<pct>`, `q_hat_<pct>`, the method-specific arrays (`test_scales`, `test_regimes`, `calibration_scales`, `calibration_regimes`, `normalized_calibration_scores`) and `meta_json` (provenance stamp). `<variant>` is `conformal`, `cqr`, `adaptive_conformal` or `engine_joint_conformal`. |
 | `outputs/xai/<subset>/<model>/xai_<target>.npz` | `ig_attributions`, `shap_sensor_values`, `attention_temporal_relevance`, `eri`, `rho_ig_attn`, `rho_ig_shap`, `consensus_k` |
 | `outputs/xai/<subset>/<model>/eri_<target>.json` | `eri`, `rho_ig_attn`, `rho_ig_shap`, `consensus_k`, `top_k`, `sensor_importance` (`ig` / `shap` / `temporal_relevance`), `sensor_ranks`, `interpretation` |
-| `outputs/results/decision_<stem>.json` | Top level: `objective`, `description`, `subset`, `model`, `inputs`, `summary`, `decisions` (list), `xai_context`, `operational_constraints` (dict). Each decision record: `index`, `engine_id`, `inputs` (`rul`, `hi`, `rul_lower`, `rul_upper`, `eri`), `health_state`, `uncertainty_level`, `explanation_reliability`, `risk_score`, `urgency_index`, `risk_components`, `recommended_action`, `human_review`, `reasons`, `constraint_status`, `constraint_violations`, `constraint_adjustments`, `top_k_sensors` |
+| `outputs/results/decision_<stem>.json` | Top level: `objective`, `description`, `subset`, `model`, `tag`, `constraint_scenario`, `thresholds`, `inputs`, `summary`, `decisions` (list), `xai_context`, `operational_constraints` (dict). Each decision record: `index`, `engine_id`, `inputs` (`rul`, `hi`, `rul_lower`, `rul_upper`, `eri`), `health_state`, `uncertainty_level`, `explanation_reliability`, `risk_score`, `urgency_index`, `risk_components`, `recommended_action`, `action_severity`, `human_review`, `reasons`, `constraint_status`, `constraint_violations`, `constraint_adjustments`, `constraint_substitutions`, `severity_delta`, `top_k_sensors` |
+| `outputs/models/health_index_<subset>.pkl` | The fitted health-index model: the per-sensor condition-regression coefficients, the PLS direction and the two reference quantiles. Written by `scripts/preprocess.py`. |
 | `outputs/hitl/feedback.jsonl` | Append-only. One JSON object per line. |
 | `outputs/reports/accuracy_summary.csv` | `subset,model,n,rul_mae,rul_rmse,rul_r2,nasa,hi_mae,hi_rmse,hi_r2` — written by `scripts/summarize.py` |
+| `outputs/reports/decision_sensitivity.{json,csv}` | The risk-score weight sensitivity report — see § 9.4. |
+| `outputs/reports/decision_weight_sweep.csv` | One row per swept weight vector — see § 9.4. |
+| `outputs/reports/decision_constraint_scenarios.csv` | One row per (run, scenario) — see § 9.4. |
 | `results/conformal_benchmark/summary_mean_std.csv` | `subset,method,nominal_coverage,n_seeds,empirical_coverage_mean,…` — tracked in git, written by the multi-seed benchmark |
 | `results/multiseed/training_manifest.json` | One entry per (model, subset, seed) run: the seed, the resolved config, the git commit, the SHA-256 of the checkpoint, and the determinism configuration that was active. Written by `scripts/multiseed_train.py`. |
+
+### 8.1a Artifact provenance
+
+Every artifact this repository writes is derived from a **checkpoint**, and
+two artifacts are routinely compared against each other — the predictions
+from `scripts/evaluate.py` and the intervals from `scripts/uncertainty.py`.
+Such a comparison is only meaningful if both sides came from the same
+weights.
+
+`src/utils/provenance.py` writes a stamp into every `.npz` under the
+`meta_json` key:
+
+| Field | Meaning |
+|---|---|
+| `checkpoint_sha256` | SHA-256 of the checkpoint file. **This is the artifact's identity.** |
+| `checkpoint_path` | Where that checkpoint was read from. |
+| `seed`, `epoch`, `arch` | The run's coordinates, read out of the checkpoint. |
+| `subset`, `model`, `tag` | The run's coordinates, as spelled on the command line. |
+| `git_commit` | The commit the artifact was produced at. |
+| `written_utc` | When the artifact was written. |
+
+Two implementation details matter:
+
+* **The stamp lives inside the `.npz`, not in a sidecar.** A sidecar can be
+  deleted, or survive the artifact it describes; an embedded stamp is written
+  and moved together with the data.
+* **It is a 0-d numpy *unicode* array, not an object array.** `np.load` can
+  therefore read it with the default `allow_pickle=False` — a pickled stamp
+  would make every consumer of the artifact opt into pickle.
+
+`src/evaluation/benchmark.py::comparative_benchmark` compares the two stamps
+of every (subset, model) pair and reports:
+
+| `provenance.status` | Meaning |
+|---|---|
+| `ok` | Both artifacts declare the same checkpoint. |
+| `mismatch` | Both declare a checkpoint, but different ones. The comparison is not trustworthy; the report carries a `warning`. |
+| `unknown` | At least one artifact predates the stamp (or the checkpoint was missing). Nothing is asserted. |
+
+`strict_provenance=True` turns a `mismatch` into a `ValueError` instead of a
+warning, for pipelines that must never compare mismatched artifacts.
 
 ### 8.2 Decision input format
 
@@ -934,6 +1218,56 @@ The report carries `delta_human_review_rate`,
 `delta_constraint_violation_rate`, `delta_mean_risk_score` and
 `delta_action_counts`, plus a `matches_stored_decisions` flag that asserts the
 `full` variant reproduces the decisions that were recorded in the JSON.
+
+The ablation re-runs the engine with the **thresholds recorded in the
+decision JSON**, not with the library defaults, so the re-run is the same
+policy — including the calibrated HI breakpoints of the sensor-derived
+index.
+
+### 9.4 Decision-policy sensitivity and operational scenarios
+
+`src/evaluation/decision_sensitivity.py` asks a question the published
+results did not answer before: **how much of the decision mix is an
+artefact of the hand-set risk-score weights?**
+
+It re-runs the decision engine over a weight space and measures how far the
+decisions move.  Two sweeps are used, because they answer different
+questions:
+
+| Sweep | What it varies | What it answers |
+|---|---|---|
+| one-at-a-time | each weight in turn over a grid, the remaining mass redistributed proportionally | "how sensitive is the policy to *this* weight?" |
+| Dirichlet | random draws over the simplex | "how much does the decision mix move under a plausible re-weighting?" |
+
+For every perturbation the module reports:
+
+| Metric | Meaning |
+|---|---|
+| `action_tv` | total-variation distance between the action distribution and the baseline one (0 = identical mix) |
+| `action_switch_rate` | fraction of records whose recommended action changed |
+| `mean_severity_delta` | mean change of the action's position on the severity ladder (§5.0) |
+| `review_rate_delta` | change of the human-review rate |
+| `risk_rank_spearman` | Spearman correlation of the baseline and perturbed risk *ranking* of the records |
+| `mean_abs_risk_delta` | mean absolute change of the risk score |
+
+The headline of the report is `influence_by_weight`: the largest
+`action_tv` each weight can reach on its own.
+
+**Operational scenarios.**  The same script compares the decision mix under
+every named scenario of `src/decision_engine/scenarios.py`.  This is also
+what makes the constraint layer produce non-zero violation counts in a
+recorded run: the certified multi-seed decisions are produced under the
+`degraded_operations` scenario (§5.4), so `constraint_violation_count` in
+`results/multiseed/downstream_summary.csv` is a real measurement.
+
+Artifacts:
+
+| File | Contents |
+|---|---|
+| `outputs/reports/decision_sensitivity.json` | the full report: one block per analysed run plus the aggregate |
+| `outputs/reports/decision_sensitivity.csv` | one summary row per analysed run |
+| `outputs/reports/decision_weight_sweep.csv` | one row per swept weight vector |
+| `outputs/reports/decision_constraint_scenarios.csv` | one row per (run, scenario) |
 
 ---
 

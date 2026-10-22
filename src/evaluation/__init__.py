@@ -30,14 +30,24 @@ from src.evaluation.metrics import (
     decision_effectiveness_from_records,
     explainability_quality,
     full_evaluation_report,
+    mae,
+    nasa_score,
     predictive_accuracy,
+    r2,
+    rmse,
     uncertainty_reliability,
     user_trust_proxies,
+    winkler_score,
 )
 from src.evaluation.robustness import cross_subset_consistency, evaluate_robustness
 
 __all__ = [
     "predictive_accuracy",
+    "mae",
+    "rmse",
+    "r2",
+    "nasa_score",
+    "winkler_score",
     "uncertainty_reliability",
     "explainability_quality",
     "decision_effectiveness",

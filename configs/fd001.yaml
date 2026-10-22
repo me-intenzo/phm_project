@@ -3,15 +3,15 @@
 # Every key is optional: src/utils/config.py merges this file over
 # DEFAULT_CONFIG, so only the subset-specific deviations need to be listed.
 # See docs/RMSE_TARGET_PLAN.md for the rationale behind each group.
-
-dataset: FD001
+#
+# The subset and the architecture are not configured here: the subset comes
+# from the file name, the architecture from ``scripts/train.py --model``.
 
 # ------------------------------------------------------------------ data
 window_size: 40
 max_rul: 125              # must match the value used by preprocess.py
 
 # ------------------------------------------------------------------ model
-model: gru_att_deg_v2
 hidden_size: 128
 num_layers: 2
 dropout: 0.30

@@ -26,6 +26,7 @@ from torch.utils.data import (
 )
 
 from .checkpoint import load_state_dict_compat
+from .outputs import unpack_model_output
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,135 @@ class ModelTrainer:
         return checkpoint["epoch"]
 
     # ----------------------------------------------------
+    # One epoch (train / validate)
+    # ----------------------------------------------------
+
+    def _run_epoch(
+        self,
+        loader,
+        *,
+        training: bool,
+    ) -> dict[str, float]:
+        """
+        Run one epoch over *loader*.
+
+        The training and the validation pass used to be two copies of the
+        same block — the forward pass, the loss computation and the
+        accumulation of the four running sums were written out twice and
+        had to be kept in sync by hand.  There is one implementation now;
+        the *mode* selects the differences:
+
+        * ``training=True``  — augmentation, gradient clipping, the
+          optimiser step and the EMA update;
+        * ``training=False`` — no gradients, and the EMA weights are
+          evaluated when the EMA is enabled, so the checkpoint that is
+          selected is the one that is actually deployed.
+        """
+
+        if training:
+            self.model.train()
+            evaluated_model = self.model
+        else:
+            # The live model is switched to eval as well, so that a caller
+            # that only validates does not leave the model in train mode.
+            self.model.eval()
+
+            # The EMA copy is created while the live model is still in
+            # train mode, so it must be switched to eval explicitly —
+            # otherwise dropout stays active and inflates the validation
+            # loss.
+            evaluated_model = self.ema_model or self.model
+            evaluated_model.eval()
+
+        running_loss = 0.0
+        running_rul = 0.0
+        running_hi = 0.0
+        running_scale = 0.0
+
+        with torch.set_grad_enabled(training):
+
+            for x, rul, hi in loader:
+
+                # --------------------------------------------------
+                # Augmentation (CPU, on the standardised features)
+                # --------------------------------------------------
+
+                if training and self.augmenter is not None:
+                    x_aug = self.augmenter(x.numpy())
+                    x = torch.from_numpy(
+                        np.ascontiguousarray(x_aug)
+                    ).float()
+                else:
+                    x = x.float()
+
+                x = x.to(self.device)
+
+                rul = rul.to(self.device)
+
+                hi = hi.to(self.device)
+
+                if training:
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                pred_rul, pred_hi, pred_scale = unpack_model_output(
+                    evaluated_model(x)
+                )
+
+                losses = self.criterion(
+                    pred_rul,
+                    pred_hi,
+                    rul,
+                    hi,
+                    pred_scale,
+                )
+
+                loss = losses["total_loss"]
+
+                if training:
+
+                    loss.backward()
+
+                    # --------------------------------------------------
+                    # Gradient clipping
+                    # --------------------------------------------------
+
+                    if self.grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.grad_clip,
+                        )
+
+                    self.optimizer.step()
+
+                    # --------------------------------------------------
+                    # EMA update
+                    # --------------------------------------------------
+
+                    self.update_ema()
+
+                running_loss += loss.item()
+
+                running_rul += losses["rul_loss"].item()
+
+                running_hi += losses["hi_loss"].item()
+
+                running_scale += losses["scale_loss"].item()
+
+        n_batches = len(loader)
+
+        return {
+
+            "loss": running_loss / n_batches,
+
+            "rul_loss": running_rul / n_batches,
+
+            "hi_loss": running_hi / n_batches,
+
+            "scale_loss": running_scale / n_batches,
+
+        }
+
+    # ----------------------------------------------------
     # Train One Epoch
     # ----------------------------------------------------
 
@@ -317,164 +447,18 @@ class ModelTrainer:
         train_loader,
     ):
 
-        self.model.train()
-
-        running_loss = 0.0
-        running_rul = 0.0
-        running_hi = 0.0
-        running_scale = 0.0
-
-        for x, rul, hi in train_loader:
-
-            # --------------------------------------------------
-            # Augmentation (CPU, on the standardised features)
-            # --------------------------------------------------
-
-            if self.augmenter is not None:
-                x_aug = self.augmenter(x.numpy())
-                x = torch.from_numpy(
-                    np.ascontiguousarray(x_aug)
-                ).float()
-            else:
-                x = x.float()
-
-            x = x.to(self.device)
-
-            rul = rul.to(self.device)
-
-            hi = hi.to(self.device)
-
-            self.optimizer.zero_grad(set_to_none=True)
-
-            pred = self.model(x)
-            if isinstance(pred, tuple) and len(pred) >= 3:
-                pred_rul, pred_hi, pred_scale = pred[0], pred[1], pred[2]
-            else:
-                pred_rul, pred_hi = pred[0], pred[1]
-                pred_scale = None
-
-            losses = self.criterion(
-                pred_rul,
-                pred_hi,
-                rul,
-                hi,
-                pred_scale,
-            )
-
-            loss = losses["total_loss"]
-
-            loss.backward()
-
-            # --------------------------------------------------
-            # Gradient clipping
-            # --------------------------------------------------
-
-            if self.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.grad_clip,
-                )
-
-            self.optimizer.step()
-
-            # --------------------------------------------------
-            # EMA update
-            # --------------------------------------------------
-
-            self.update_ema()
-
-            running_loss += loss.item()
-
-            running_rul += losses["rul_loss"].item()
-
-            running_hi += losses["hi_loss"].item()
-
-            running_scale += losses["scale_loss"].item()
-
-        n_batches = len(train_loader)
-
-        return {
-
-            "loss": running_loss / n_batches,
-
-            "rul_loss": running_rul / n_batches,
-
-            "hi_loss": running_hi / n_batches,
-
-            "scale_loss": running_scale / n_batches,
-
-        }
+        return self._run_epoch(train_loader, training=True)
 
     # ----------------------------------------------------
     # Validate One Epoch
     # ----------------------------------------------------
-
-    @torch.no_grad()
 
     def validate_epoch(
         self,
         val_loader,
     ):
 
-        self.model.eval()
-
-        # Validation runs on the EMA weights when the EMA is enabled, so
-        # the checkpoint we select is the one that is actually deployed.
-        # The EMA copy is created while the live model is still in train
-        # mode, so it must be switched to eval explicitly — otherwise
-        # dropout stays active and inflates the validation loss.
-        evaluated_model = self.ema_model or self.model
-        evaluated_model.eval()
-
-        running_loss = 0.0
-        running_rul = 0.0
-        running_hi = 0.0
-        running_scale = 0.0
-
-        for x, rul, hi in val_loader:
-
-            x = x.float().to(self.device)
-
-            rul = rul.to(self.device)
-
-            hi = hi.to(self.device)
-
-            pred = evaluated_model(x)
-            if isinstance(pred, tuple) and len(pred) >= 3:
-                pred_rul, pred_hi, pred_scale = pred[0], pred[1], pred[2]
-            else:
-                pred_rul, pred_hi = pred[0], pred[1]
-                pred_scale = None
-
-            losses = self.criterion(
-                pred_rul,
-                pred_hi,
-                rul,
-                hi,
-                pred_scale,
-            )
-
-            running_loss += losses["total_loss"].item()
-
-            running_rul += losses["rul_loss"].item()
-
-            running_hi += losses["hi_loss"].item()
-
-            running_scale += losses["scale_loss"].item()
-
-        n_batches = len(val_loader)
-
-        return {
-
-            "loss": running_loss / n_batches,
-
-            "rul_loss": running_rul / n_batches,
-
-            "hi_loss": running_hi / n_batches,
-
-            "scale_loss": running_scale / n_batches,
-
-        }
+        return self._run_epoch(val_loader, training=False)
 
     # ----------------------------------------------------
     # Complete Training Pipeline

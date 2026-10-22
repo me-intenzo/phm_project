@@ -39,6 +39,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -58,32 +59,29 @@ if str(PROJECT_ROOT) not in sys.path:
 # Project imports
 # ------------------------------------------------------------------
 
-from src.models.checkpoint import load_state_dict_compat
-from src.models.registry import ALL_MODELS
-from src.models.registry import build_model as build_model_from_registry
+from src.models.outputs import unpack_model_output
+from src.models.registry import ALL_MODELS, load_model_from_checkpoint
 from src.models.uncertainty_heads import QuantileHead, ScaleHead
 from src.uncertainty import pipeline
-from src.uncertainty.adaptive import (
-    adaptive_quantile,
-)
-from src.uncertainty.adaptive import (
-    prediction_interval as adaptive_prediction_interval,
-)
-from src.uncertainty.calibration import (
-    calibrate_multiple_levels,
-)
 from src.uncertainty.conformal import (
+    SCALE_FLOOR,
+    calibrate_multiple_levels,
     conformal_quantile,
+    floor_scale,
+    normalised_nonconformity,
     prediction_interval,
+    scale_adaptive_interval,
     signed_conformal_quantile,
 )
 from src.uncertainty.coverage import (
     evaluate_interval,
 )
+from src.utils.config import get_device
 from src.utils.paths import (
+    checkpoint_path,
     results_path,
-    run_dir_name,
 )
+from src.utils.provenance import build_provenance, pack_provenance
 
 # ------------------------------------------------------------------
 # Configuration
@@ -93,12 +91,6 @@ DATA_DIR = (
     PROJECT_ROOT
     / "data"
     / "processed"
-)
-
-CHECKPOINT_DIR = (
-    PROJECT_ROOT
-    / "outputs"
-    / "checkpoints"
 )
 
 RESULTS_DIR = (
@@ -137,11 +129,11 @@ COVERAGE_LEVELS = (
     0.95,
 )
 
-# Shared scale floor. The uncertainty pipeline must use the SAME constant
-# when a predicted scale is normalised into a calibration score and when it
-# is multiplied into an interval radius. Otherwise calibration quantiles and
-# prediction intervals silently disagree for near-zero scales.
-SCALE_FLOOR = 1e-3
+# NOTE: the scale floor is imported from ``src.uncertainty.conformal``
+# (``SCALE_FLOOR``).  It used to be declared a third time in this script
+# with a different value and a different bounding operator, so the
+# calibration score and the interval radius of the EARA path did not
+# use the same scale.
 
 
 # ------------------------------------------------------------------
@@ -247,12 +239,8 @@ def configure_logging(
 # Device
 # ------------------------------------------------------------------
 
-def get_device() -> torch.device:
-
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-
-    return torch.device("cpu")
+# ``get_device`` lives in ``src.utils.config`` — the single device
+# selection of the project.
 
 
 # ------------------------------------------------------------------
@@ -416,6 +404,8 @@ def build_model(
     same way.  Unknown keyword arguments are ignored by the registry, which
     lets a flat training config be splatted straight in.
     """
+    from src.models.registry import build_model as build_model_from_registry
+
     return build_model_from_registry(
         model_name,
         input_size=input_size,
@@ -436,76 +426,52 @@ def load_model(
     The checkpoint stores the seed it was trained with.  That seed is
     returned alongside the model because the conformal calibration must
     reproduce *this* checkpoint's training split.
+
+    The loader itself lives in ``src/models/registry.py``; three scripts
+    used to carry their own copy of it.
     """
 
-    checkpoint_path = (
-        CHECKPOINT_DIR
-        / run_dir_name(model_name, tag)
-        / subset
-        / "best_model.pt"
-    )
-
-    if not checkpoint_path.exists() and not tag:
-        legacy_checkpoint_path = (
-            CHECKPOINT_DIR
-            / model_name
-            / "best_model.pt"
-        )
-        if legacy_checkpoint_path.exists():
-            checkpoint_path = legacy_checkpoint_path
-
-    if not checkpoint_path.exists():
-
-        raise FileNotFoundError(
-            f"{model_name.upper()} checkpoint not found:\n"
-            f"{checkpoint_path}\n\n"
-            "Train the model first using:\n"
-            f"python scripts/train.py --model {model_name} --subset {subset}"
-            + (f" --tag {tag}" if tag else "")
-        )
-
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-    )
-
-    checkpoint_input_size = checkpoint.get("input_size", input_size)
-
-    if checkpoint_input_size != input_size:
-        raise RuntimeError(
-            f"Checkpoint input_size={checkpoint_input_size} does not match "
-            f"data input_size={input_size}. "
-            f"Re-train {model_name} for {subset} using:\n"
-            f"python scripts/train.py --model {model_name} --subset {subset}"
-        )
-
-    # Rebuild the architecture from the config the checkpoint was trained
-    # with.  The per-subset YAML configs override hyper-parameters (FD002
-    # and FD004 train with hidden_size=160), so rebuilding with hard-coded
-    # defaults would produce a mismatched state dict.
-    saved_config = dict(checkpoint.get("model_config") or {})
-    arch = saved_config.pop("arch", model_name)
-
-    model = build_model(
-        model_name=arch,
+    model, checkpoint, _arch = load_model_from_checkpoint(
+        model_name=model_name,
         input_size=input_size,
-        **saved_config,
+        device=device,
+        subset=subset,
+        tag=tag,
+        strict_input_size=True,
     )
-
-    state_dict = checkpoint["model_state_dict"]
-
-    # Load everything the checkpoint provides, including the trained
-    # ``scale_head`` when it has one.  ``load_state_dict_compat`` fills a
-    # missing scale head with a neutral scale, so checkpoints that predate
-    # the head still load.  (Dropping the head's weights here silently turned
-    # every scale-aware interval into a plain split-conformal interval.)
-    load_state_dict_compat(model, state_dict)
-
-    model.to(device)
-
-    model.eval()
 
     return model, checkpoint
+
+
+def build_artifact_provenance(
+    model_name: str,
+    subset: str,
+    tag: str = "",
+    variant: str = "",
+    seed: int | None = None,
+    checkpoint: dict | None = None,
+) -> dict[str, Any]:
+    """Provenance stamp for one uncertainty artifact.
+
+    The stamp records the SHA-256 digest of the checkpoint the intervals
+    were produced from.  It is embedded in the ``.npz`` so that a reader
+    can tell whether two artifacts came from the same weights — which is
+    what makes a comparison between predictions and intervals
+    trustworthy.
+    """
+
+    extra: dict[str, Any] = {"variant": variant}
+    if seed is not None:
+        extra["seed"] = int(seed)
+
+    return build_provenance(
+        checkpoint_path=checkpoint_path(model_name, subset, tag),
+        checkpoint=checkpoint,
+        subset=subset,
+        model=model_name,
+        tag=tag,
+        extra=extra,
+    )
 
 
 def checkpoint_seed(
@@ -572,12 +538,7 @@ def predict_rul(
                 ]
             ).float().to(device)
 
-            pred = model(batch)
-
-            if isinstance(pred, tuple) and len(pred) == 3:
-                pred_rul, pred_hi, _ = pred
-            else:
-                pred_rul, _ = pred
+            pred_rul, _, _ = unpack_model_output(model(batch))
 
             predictions.append(
                 pred_rul
@@ -601,12 +562,8 @@ def predict_rul_hi(
     with torch.no_grad():
         for start in range(0, len(X), BATCH_SIZE):
             batch = torch.from_numpy(X[start:start + BATCH_SIZE]).float().to(device)
-            # Handle variable return counts from hybrid model
-            outputs = model(batch)
-            if isinstance(outputs, (tuple, list)):
-                pred_rul, pred_hi = outputs[0], outputs[1]
-            else:
-                pred_rul = outputs
+            pred_rul, pred_hi, _ = unpack_model_output(model(batch))
+            if pred_hi is None:
                 pred_hi = torch.zeros_like(pred_rul)
             rul_predictions.append(pred_rul.cpu().numpy().reshape(-1))
             hi_predictions.append(pred_hi.cpu().numpy().reshape(-1))
@@ -622,27 +579,25 @@ def predict(
     Predict RUL together with the model's own scale estimate.
 
     Compatibility entry point used by ``scripts/regime_sweep.py``. The
-    returned scale is floored with ``SCALE_FLOOR`` so callers that build
-    EARA intervals from it stay consistent with the calibration path.
+    returned scale is floored with the shared ``SCALE_FLOOR`` so callers
+    that build EARA intervals from it stay consistent with the
+    calibration path.
     """
     rul_predictions, scale_predictions = [], []
     with torch.no_grad():
         for start in range(0, len(X), BATCH_SIZE):
             batch = torch.from_numpy(X[start:start + BATCH_SIZE]).float().to(device)
-            outputs = model(batch)
-            if isinstance(outputs, (tuple, list)) and len(outputs) >= 3:
-                pred_rul, pred_scale = outputs[0], outputs[2]
-            else:
-                pred_rul = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
+            pred_rul, _, pred_scale = unpack_model_output(model(batch))
+            if pred_scale is None:
                 pred_scale = torch.ones_like(pred_rul)
             rul_predictions.append(pred_rul.cpu().numpy().reshape(-1))
             scale_predictions.append(pred_scale.cpu().numpy().reshape(-1))
     rul = np.concatenate(rul_predictions)
-    scale = np.maximum(np.concatenate(scale_predictions), SCALE_FLOOR)
+    scale = floor_scale(np.concatenate(scale_predictions))
     return rul, scale
 
 
-def _robust_scale(values: np.ndarray, floor: float = 1e-6) -> float:
+def _robust_scale(values: np.ndarray, floor: float = SCALE_FLOOR) -> float:
     """Robust residual scale estimate."""
 
     return pipeline._robust_scale(values, floor)
@@ -703,6 +658,7 @@ def run_engine_joint_conformal(
     training_engine_ids: np.ndarray | None = None,
     tag: str = "",
     seed: int = DEFAULT_SEED,
+    checkpoint: dict | None = None,
 ) -> None:
     """
     Engine-Aware Regime-Adaptive Conformal Prediction (EARA-Conformal).
@@ -774,9 +730,8 @@ def run_engine_joint_conformal(
         calibration_scales[i] = scale
         calibration_regimes[i] = regime
 
-    normalized_scores = calibration_residuals / np.maximum(
+    normalized_scores = calibration_residuals / floor_scale(
         calibration_scales,
-        SCALE_FLOOR,
     )
 
     log.info(
@@ -844,7 +799,7 @@ def run_engine_joint_conformal(
             alpha,
         )
 
-        radius = q_hat * np.maximum(test_scales, SCALE_FLOOR)
+        radius = q_hat * floor_scale(test_scales)
         lower = test_predictions - radius
         upper = test_predictions + radius
 
@@ -878,6 +833,16 @@ def run_engine_joint_conformal(
         model_name,
         tag,
         suffix="engine_joint_conformal",
+    )
+    save_data["meta_json"] = pack_provenance(
+        build_artifact_provenance(
+            model_name,
+            subset,
+            tag,
+            variant="engine_joint_conformal",
+            seed=seed,
+            checkpoint=checkpoint,
+        )
     )
     np.savez(output_path, **save_data)
     log.info("EARA-Conformal results saved to: %s", output_path)
@@ -955,16 +920,11 @@ def predict_quantiles(
 def cqr_quantile(scores: np.ndarray, alpha: float) -> float:
     """Finite-sample conformal quantile for **signed** CQR scores.
 
-    The CQR nonconformity score ``max(q_lo(x) - y, y - q_hi(x))`` is
-    negative whenever the true value falls inside the predicted quantile
-    interval, so the signed variant of the conformal quantile must be used.
-    The rank is never clamped: when the calibration set is too small for the
-    requested coverage the correct answer is ``+inf`` (an unbounded
-    interval), not the largest observed score.
+    Thin wrapper around :func:`src.uncertainty.conformal.signed_conformal_quantile`
+    — the canonical implementation.  This script used to carry its own
+    copy of the finite-sample quantile, which accepted non-finite scores
+    and clamped the rank.
     """
-    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
-    if scores.size == 0 or not np.all(np.isfinite(scores)):
-        raise ValueError("CQR calibration scores must be finite and non-empty.")
     return signed_conformal_quantile(scores, alpha)
 
 
@@ -1009,6 +969,7 @@ def run_adaptive_conformal(
     log: logging.Logger,
     tag: str = "",
     seed: int = DEFAULT_SEED,
+    checkpoint: dict | None = None,
 ) -> None:
     """Run normalized conformal prediction with a frozen-GRU scale head."""
     log.info("Extracting frozen GRU features for adaptive conformal...")
@@ -1036,13 +997,19 @@ def run_adaptive_conformal(
         "scales": test_scales,
     }
     for coverage in COVERAGE_LEVELS:
-        q_hat = adaptive_quantile(
-            y_calibration,
-            calibration_predictions,
-            calibration_scales,
+        q_hat = conformal_quantile(
+            normalised_nonconformity(
+                y_calibration,
+                calibration_predictions,
+                calibration_scales,
+            ),
             1.0 - coverage,
         )
-        lower, upper = adaptive_prediction_interval(test_predictions, q_hat, test_scales)
+        lower, upper = scale_adaptive_interval(
+            test_predictions,
+            q_hat,
+            test_scales,
+        )
         metrics = evaluate_interval(y_test, lower, upper, coverage)
         suffix = int(coverage * 100)
         save_data[f"lower_{suffix}"] = lower
@@ -1063,6 +1030,16 @@ def run_adaptive_conformal(
         tag,
         suffix="adaptive_conformal",
     )
+    save_data["meta_json"] = pack_provenance(
+        build_artifact_provenance(
+            model_name,
+            subset,
+            tag,
+            variant="adaptive_conformal",
+            seed=seed,
+            checkpoint=checkpoint,
+        )
+    )
     np.savez(output_path, **save_data)
     log.info("Adaptive results saved to: %s", output_path)
 
@@ -1079,6 +1056,7 @@ def run_cqr(
     log: logging.Logger,
     tag: str = "",
     seed: int = DEFAULT_SEED,
+    checkpoint: dict | None = None,
 ) -> None:
     """Run CQR with quantile-head fitting and conformal calibration."""
     log.info("Extracting frozen model features for CQR...")
@@ -1147,6 +1125,16 @@ def run_cqr(
         model_name,
         tag,
         suffix="cqr",
+    )
+    save_data["meta_json"] = pack_provenance(
+        build_artifact_provenance(
+            model_name,
+            subset,
+            tag,
+            variant="cqr",
+            seed=seed,
+            checkpoint=checkpoint,
+        )
     )
     np.savez(output_path, **save_data)
     log.info("CQR results saved to: %s", output_path)
@@ -1354,6 +1342,7 @@ def main():
             log=log,
             tag=tag,
             seed=seed,
+            checkpoint=checkpoint,
         )
         return
 
@@ -1370,6 +1359,7 @@ def main():
             log=log,
             tag=tag,
             seed=seed,
+            checkpoint=checkpoint,
         )
         return
 
@@ -1390,6 +1380,7 @@ def main():
             log=log,
             tag=tag,
             seed=seed,
+            checkpoint=checkpoint,
         )
         return
 
@@ -1483,6 +1474,16 @@ def main():
         model_name,
         tag,
         suffix="conformal",
+    )
+    save_data["meta_json"] = pack_provenance(
+        build_artifact_provenance(
+            model_name,
+            subset,
+            tag,
+            variant="conformal",
+            seed=seed,
+            checkpoint=checkpoint,
+        )
     )
     np.savez(output_path, **save_data)
     log.info("Results saved to: %s", output_path)

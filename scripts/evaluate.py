@@ -34,18 +34,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.evaluation.metrics import predictive_accuracy
-from src.models.checkpoint import load_state_dict_compat
-from src.models.registry import ALL_MODELS, build_model
-from src.utils.config import ALL_SUBSETS
+from src.models.outputs import unpack_model_output
+from src.models.registry import ALL_MODELS, load_model_from_checkpoint, resolve_checkpoint_path
+from src.utils.config import ALL_SUBSETS, get_device
 from src.utils.logger import get_script_logger
+from src.utils.paths import (
+    RESULTS_DIR,
+)
+from src.utils.provenance import build_provenance, pack_provenance
 
 # ------------------------------------------------------------------
 # Paths
 # ------------------------------------------------------------------
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
-CHECKPOINT_DIR = PROJECT_ROOT / "outputs" / "checkpoints"
-RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 
 BATCH_SIZE = 64
 
@@ -83,23 +85,8 @@ def parse_args() -> argparse.Namespace:
 
 
 # ------------------------------------------------------------------
-# Device
-# ------------------------------------------------------------------
-
-def get_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
-# ------------------------------------------------------------------
 # Load model
 # ------------------------------------------------------------------
-
-def checkpoint_path(model_name: str, subset: str, tag: str = "") -> Path:
-    dir_name = model_name + (f"_{tag}" if tag else "")
-    return CHECKPOINT_DIR / dir_name / subset / "best_model.pt"
-
 
 def load_model(
     model_name: str,
@@ -108,42 +95,19 @@ def load_model(
     subset: str = "FD001",
     tag: str = "",
 ):
-    """Rebuild the model described by the checkpoint and load its weights."""
+    """Rebuild the model described by the checkpoint and load its weights.
 
-    path = checkpoint_path(model_name, subset, tag)
+    The implementation lives in ``src/models/registry.py`` so that every
+    script loads a checkpoint the same way.
+    """
 
-    if not path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {path}")
-
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
-
-    ckpt_input_size = checkpoint.get("input_size", input_size)
-    saved_config = dict(checkpoint.get("model_config") or {})
-
-    arch = saved_config.pop("arch", model_name)
-
-    if saved_config:
-        # Remove training-only keys; build_model ignores unknown kwargs
-        # anyway, but keeping the call explicit documents the contract.
-        model = build_model(
-            arch,
-            input_size=ckpt_input_size,
-            **saved_config,
-        )
-    else:
-        # Legacy checkpoint: no architecture metadata was stored.
-        model = build_model(arch, input_size=ckpt_input_size)
-
-    load_state_dict_compat(
-        model,
-        checkpoint["model_state_dict"],
+    return load_model_from_checkpoint(
+        model_name=model_name,
+        input_size=input_size,
         device=device,
+        subset=subset,
+        tag=tag,
     )
-
-    model.to(device)
-    model.eval()
-
-    return model, checkpoint, arch
 
 
 # ------------------------------------------------------------------
@@ -176,11 +140,7 @@ def predict(model, X: np.ndarray, device: torch.device):
                 X[start:start + BATCH_SIZE]
             ).float().to(device)
 
-            pred = model(batch)
-            if isinstance(pred, tuple) and len(pred) >= 2:
-                pred_rul, pred_hi = pred[0], pred[1]
-            else:
-                pred_rul, pred_hi = pred
+            pred_rul, pred_hi, _ = unpack_model_output(model(batch))
 
             predictions_rul.append(pred_rul.cpu().numpy())
             predictions_hi.append(pred_hi.cpu().numpy())
@@ -286,12 +246,26 @@ def run(model_name: str, subset: str, tag: str = "") -> None:
 
     prediction_path = RESULTS_DIR / f"{subset}_{dir_name}_predictions.npz"
 
+    # The provenance stamp travels *inside* the artifact so it can never
+    # drift away from the predictions it describes.  Without it, a
+    # regenerated predictions file could be paired with stale intervals
+    # and the comparison would look valid.
+    provenance = build_provenance(
+        checkpoint_path=resolve_checkpoint_path(model_name, subset, tag),
+        checkpoint=checkpoint,
+        subset=subset,
+        model=model_name,
+        tag=tag,
+        extra={"arch": arch},
+    )
+
     np.savez(
         prediction_path,
         y_rul_true=y_rul_test,
         y_rul_pred=pred_rul,
         y_hi_true=y_hi_test,
         y_hi_pred=pred_hi,
+        meta_json=pack_provenance(provenance),
     )
 
     metrics_path = RESULTS_DIR / f"{subset}_{dir_name}_metrics.json"
@@ -305,6 +279,7 @@ def run(model_name: str, subset: str, tag: str = "") -> None:
                 "arch": arch,
                 "epoch": checkpoint.get("epoch"),
                 "metrics": results,
+                "provenance": provenance,
             },
             f,
             indent=2,

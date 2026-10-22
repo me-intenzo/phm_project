@@ -197,7 +197,6 @@ When adding a new step:
 Experiment parameters belong in `configs/`:
 
 ```yaml
-dataset: FD001
 window_size: 30
 batch_size: 64
 epochs: 50
@@ -205,6 +204,10 @@ learning_rate: 0.001
 random_seed: 42
 device: cuda
 ```
+
+The subset comes from the file name (`configs/fd001.yaml` → FD001) and the
+architecture from the command line (`scripts/train.py --model`); neither is a
+config key.
 
 Avoid hard-coding experiment-specific values in source files when they can be configured externally.
 

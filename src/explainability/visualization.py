@@ -22,39 +22,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from src.utils.math_utils import normalize_importance, to_numpy
+
 # ---------------------------------------------------------------------
 # Generic utilities
 # ---------------------------------------------------------------------
-
-def _to_numpy(value) -> np.ndarray:
-    """Convert PyTorch tensors or array-like values to NumPy."""
-
-    if hasattr(value, "detach"):
-        value = value.detach().cpu().numpy()
-
-    return np.asarray(value)
-
-
-def normalize_importance(
-    values,
-) -> np.ndarray:
-    """
-    Normalize absolute importance values to sum to one.
-    """
-
-    values = _to_numpy(values).astype(
-        np.float64
-    )
-
-    values = np.abs(values)
-
-    total = values.sum()
-
-    if total <= 1e-12:
-        return np.zeros_like(values)
-
-    return values / total
-
 
 def _ensure_output_dir(
     output_dir,
@@ -88,7 +60,7 @@ def aggregate_ig_sensor_importance(
         (features,)
     """
 
-    attributions = _to_numpy(
+    attributions = to_numpy(
         explanation["attributions"]
     )
 
@@ -117,7 +89,7 @@ def aggregate_ig_temporal_importance(
         (timesteps,)
     """
 
-    attributions = _to_numpy(
+    attributions = to_numpy(
         explanation["attributions"]
     )
 
@@ -150,7 +122,7 @@ def aggregate_shap_sensor_importance(
         (batch, features)
     """
 
-    values = _to_numpy(
+    values = to_numpy(
         explanation["sensor_shap_values"]
     )
 
@@ -187,7 +159,7 @@ def aggregate_shap_temporal_importance(
     if raw is None:
         return None
 
-    values = _to_numpy(raw)
+    values = to_numpy(raw)
 
     if values.ndim != 3:
         raise ValueError(
@@ -214,7 +186,7 @@ def aggregate_attention_temporal_importance(
         (batch, timesteps)
     """
 
-    relevance = _to_numpy(
+    relevance = to_numpy(
         explanation["temporal_relevance"]
     )
 
@@ -531,7 +503,7 @@ def plot_ig_heatmap(
     produced by Integrated Gradients.
     """
 
-    attributions = _to_numpy(
+    attributions = to_numpy(
         ig_explanation["attributions"]
     )
 

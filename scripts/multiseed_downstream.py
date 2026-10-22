@@ -72,6 +72,8 @@ SUMMARY_METRICS = (
     "risk_score_mean",
     "urgency_index_mean",
     "constraint_violation_count",
+    "constraint_violated_record_rate",
+    "mean_action_severity",
     "n_decisions",
 )
 
@@ -136,6 +138,9 @@ def collect_run(
         "human_review_count": 0,
         "review_rate": float("nan"),
         "constraint_violation_count": 0,
+        "constraint_violated_record_rate": float("nan"),
+        "constraint_scenario": "",
+        "mean_action_severity": float("nan"),
         "risk_score_mean": float("nan"),
         "urgency_index_mean": float("nan"),
         "mean_interval_width": float("nan"),
@@ -184,6 +189,9 @@ def collect_run(
         missing.append(decision_path.name)
     else:
         summary = decision.get("summary") or {}
+        row["constraint_scenario"] = str(
+            decision.get("constraint_scenario", "") or ""
+        )
         row["n_decisions"] = int(summary.get("num_decisions", 0) or 0)
         row["human_review_count"] = int(summary.get("human_review_count", 0) or 0)
         row["constraint_violation_count"] = int(
@@ -195,6 +203,8 @@ def collect_run(
         )
         if row["n_decisions"]:
             row["review_rate"] = row["human_review_count"] / row["n_decisions"]
+            violated = int(summary.get("constraint_violated_records", 0) or 0)
+            row["constraint_violated_record_rate"] = violated / row["n_decisions"]
 
         for action in ACTIONS:
             row[f"action_{action}"] = int(
@@ -211,6 +221,7 @@ def collect_run(
 
         # The interval the decision engine actually consumed.
         widths = []
+        severities = []
         for decision_record in decision.get("decisions") or []:
             inputs = decision_record.get("inputs") or {}
             lower = inputs.get("rul_lower")
@@ -218,8 +229,13 @@ def collect_run(
             if lower is None or upper is None:
                 continue
             widths.append(float(upper) - float(lower))
+            severity = decision_record.get("action_severity")
+            if severity is not None:
+                severities.append(float(severity))
         if widths:
             row["mean_interval_width"] = float(statistics.fmean(widths))
+        if severities:
+            row["mean_action_severity"] = float(statistics.fmean(severities))
 
     # ---- HITL ------------------------------------------------------
     hitl_path = RESULTS_DIR / f"hitl_{subset}_{run_name}.json"

@@ -9,6 +9,196 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sensor-derived health index** — `src/preprocessing/health_index.py` builds
+  the HI label from the *sensor signal* instead of from the RUL label. The
+  construction removes the operating conditions (per-sensor least squares on
+  the three operational settings, fitted on the training split only),
+  subtracts each engine's own healthy reference (its first 30 cycles), fits a
+  one-component PLS direction against the training RUL label, and maps the
+  projection onto `[0, 1]` with reference quantiles from the training windows.
+  The index of a row is computed from the *same trailing window the model
+  sees*, so a window's label is a function of exactly that window's features.
+  `corr(HI, RUL)` on the training split is 0.890 / 0.674 / 0.797 / 0.705 on
+  FD001–FD004 — strongly related to the degradation state, but no longer a
+  deterministic function of the RUL label. The legacy `HI = RUL / max_rul`
+  label is still reachable with `scripts/preprocess.py --hi-mode rul`.
+- **Calibrated HI breakpoints** — `calibrate_hi_thresholds()` derives the
+  decision policy's three HI breakpoints from the training split (each is the
+  median index of the windows in the corresponding RUL band). They are stored
+  in the dataset metadata as `hi_thresholds` and merged into the policy
+  thresholds by `scripts/decision.py`, so the HI criterion fires at the same
+  degradation levels as the RUL criterion.
+- **Severity ladder** — `src/decision_engine/rules.py` defines
+  `SEVERITY_LADDER` (`CONTINUE_OPERATION < MONITOR < INSPECT <
+  SCHEDULE_MAINTENANCE < URGENT_MAINTENANCE`) and computes the candidate
+  action from it instead of from a hand-written table:
+  `severity = min(base(planning_state) + eri_step, top)`. The policy is now
+  monotone **by construction**: a wider prediction interval can only make
+  the planning state more severe, and a less reliable explanation can only
+  escalate the action. This fixes the `AT_RISK` row that used to produce
+  `INSPECT` for `HIGH` uncertainty and `SCHEDULE_MAINTENANCE` for
+  `MODERATE` uncertainty. Every decision record now carries
+  `action_severity` and `planning_state`.
+- **The action is planned on the conservative end of the calibrated
+  interval.** The *planning state* is the health state the engine would be
+  in if the prediction were at the lower bound of its 90 % interval, and
+  the action is the base action of that state. The point estimate's state
+  is still reported as `health_state`. A maintenance work order has to be
+  scheduled so that it is carried out before the worst credible case, not
+  before the most likely one — and the interval's *width* is handled where
+  it belongs: the human-review flag and the operational constraints
+  (`maintenance_lead_time`).
+- **Named operational-constraint scenarios** —
+  `src/decision_engine/scenarios.py` defines `unconstrained`,
+  `no_maintenance_window`, `tight_safety_margin`, `lead_time_pressure`,
+  `resource_shortage` and `degraded_operations`.
+  `scripts/decision.py --constraint-scenario <name>` applies one (explicit
+  constraint flags still override individual values) and
+  `scripts/multiseed_pipeline.py --constraint-scenario` records the scenario
+  that produced each decision artifact. The certified runs use
+  `degraded_operations`, so the constraint layer is exercised by the
+  published results instead of only by unit tests.
+- **Decision-policy sensitivity analysis** —
+  `src/evaluation/decision_sensitivity.py` and
+  `scripts/decision_sensitivity.py` re-run the decision engine over a weight
+  space (one-at-a-time plus a Dirichlet sweep over the simplex) and report how
+  far the action mix, the review rate and the risk *ranking* move. The same
+  script compares the decision mix under every constraint scenario. Outputs:
+  `outputs/reports/decision_sensitivity.{json,csv}`,
+  `decision_weight_sweep.csv` and `decision_constraint_scenarios.csv`.
+- **Tests** — `tests/test_health_index.py` (construction, generalisation to
+  unseen engines, row-order preservation, save/load round trip, breakpoint
+  calibration), `tests/test_decision_policy.py` (severity ladder, exhaustive
+  monotonicity over 4 states × 3 uncertainty levels × 3 ERI levels, the
+  constraint scenarios), `tests/test_decision_sensitivity.py` (weight sweeps,
+  the report structure) and `tests/test_losses.py` (the HI scale factor).
+
+### Changed
+
+- **Tier 2 — duplicated infrastructure removed.** The conformal layer, the
+  model layer, the evaluation layer and the preprocessing layer each had
+  several copies of the same logic, with divergent values. What changed:
+
+  - **One conformal quantile.** `src/uncertainty/conformal.py` holds the only
+    implementation of the finite-sample quantile; `signed_conformal_quantile`
+    (CQR) is a wrapper over the same code, and the CLI/benchmark wrappers
+    delegate to it. `src/uncertainty/calibration.py` and
+    `src/uncertainty/adaptive.py` — pass-through modules whose logic now
+    lives in `conformal.py` — are **removed**; `calibrate_eara_levels` and
+    `calibrate_multiple_levels` moved into `conformal.py`.
+  - **One scale floor, applied as a bound.** `SCALE_FLOOR` (1e-3) is declared
+    once, in `src/uncertainty/conformal.py`, and is applied with `max(...)`
+    everywhere. The previous mix — an *additive* 1e-6 floor in the library
+    and a `max` 1e-3 floor in the pipeline — let the calibration score and
+    the interval radius use different scales.
+  - **One interval builder.** Every interval (split, adaptive, CQR, EARA,
+    engine-joint, prequential ACI) is clipped to the RUL domain and ordered
+    by `clip_interval()`.
+  - **One interval-metric implementation.** `src/evaluation/metrics.py` now
+    calls `src/uncertainty/coverage.py` instead of re-implementing coverage,
+    MPIW, PINAW, Winkler and engine-level coverage with a hard-coded 125.0
+    bound and its own key names. MAE/RMSE/R²/NASA live in
+    `src/evaluation/metrics.py`; `scripts/sota_benchmark.py` imports them
+    instead of carrying its own copies.
+  - **One model-output unpacking.** `src/models/outputs.py::unpack_model_output`
+    replaces the five ad-hoc unpacking patterns in the XAI modules, the
+    uncertainty pipeline, the trainer and the evaluation layer.
+  - **One model loader.** `src/models/registry.py::load_model_from_checkpoint`
+    replaces the divergent `load_model()` copies in `scripts/evaluate.py`,
+    `scripts/explain.py` and `scripts/uncertainty.py`.
+  - **Shared model building blocks.** `src/models/heads.py` holds the
+    multi-task heads and `src/models/layers.py` the sinusoidal positional
+    encoding (previously copy-pasted into six architectures and two files
+    respectively). The module and attribute names are unchanged, so existing
+    checkpoints still load.
+  - **One training loop.** `ModelTrainer.train_epoch` and
+    `ModelTrainer.validate_epoch` share a single `_run_epoch()`.
+  - **One HITL aggregation.** `src/hitl/updater.py::aggregate_expert_actions`
+    computes the action support, the weighted support and the consensus ratio
+    for both the policy profile and the recommendation refiner.
+  - **One feature-column definition.** `src/preprocessing/loader.py::get_feature_columns`
+    replaces the copies in the window generator, the scaler and the feature
+    selector.
+  - **One `to_numpy` and one importance normalisation.**
+    `src/utils/math_utils.py` holds both; the zero-total case is now defined
+    once (an all-zero vector) instead of returning the raw magnitudes in the
+    ERI module and zeros in the visualisation module.
+  - **One set of enums and utilities.** `ALL_MODELS` comes from
+    `src/models/registry.py` and `ALL_SUBSETS` from `src/utils/config.py`
+    (the demo used to reject the headline model `gru_att_deg_v2`);
+    `get_device()` lives in `src/utils/config.py`, `set_seed()` in
+    `src/utils/seed.py`, `PROJECT_ROOT` in `src/utils/paths.py` and
+    `VALID_ACTIONS` in `src/utils/config.py`.
+  - **The XAI stage reads the processed artifacts.** `scripts/preprocess.py`
+    writes the processed test frame to `data/processed/<subset>_test_frame.npz`
+    and `scripts/explain.py` builds its degradation windows from that
+    artifact, instead of re-running the whole preprocessing pipeline (which
+    produced a *different* health index than the one the model was trained
+    on).
+  - **The recommender passes the full payload.** `recommend_action()` no
+    longer projects the decision onto a hand-written list of twenty keys, so
+    a field added upstream is no longer silently dropped.
+- **The HI loss term is put on the RUL scale.** `MultiTaskLoss` takes a
+  `hi_scale` factor and the pipeline passes `max_rul ** 2`
+  (`hi_loss_scale: rul_max`), so the bounded HI loss enters the total in
+  cycle-equivalent units. Previously the HI term moved the total loss by
+  ~1e-5 in relative terms and `hi_loss_weight` was effectively inert.
+- **The decision engine reports its severity** and the constraint layer
+  records `constraint_substitutions` and `severity_delta` alongside the
+  existing violation and adjustment lists. The maintenance-window rule is now
+  documented as the single *substitution* (an infeasible commitment replaced
+  by the nearest feasible one) rather than an escalation.
+- **The decision JSON carries the effective thresholds** (`thresholds`) and
+  the `constraint_scenario` that produced it, so the ablation and the
+  sensitivity analysis re-run the *same* policy instead of the library
+  defaults.
+- `scripts/preprocess.py` writes the health-index model to
+  `outputs/models/health_index_<subset>.pkl` and records `hi_mode`,
+  `hi_baseline_cycles`, `health_index` and `hi_thresholds` in the dataset
+  metadata. `scripts/train.py` refuses to train when the stored `hi_mode`
+  disagrees with the config, exactly as it does for `max_rul`.
+
+### Fixed
+
+- **The `AT_RISK` policy row is monotone in the uncertainty** (see the
+  severity ladder above). The action is now planned on the conservative end
+  of the calibrated interval, so `INSPECT` is structurally unreachable from
+  the `AT_RISK` band; an at-risk engine is planned as
+  `SCHEDULE_MAINTENANCE`, or as `URGENT_MAINTENANCE` when its interval
+  reaches into the critical band. The `DEGRADING` and `CRITICAL` base
+  actions are unchanged.
+- **The HI label is no longer a deterministic function of RUL**, and the
+  reported HI metrics measure a real estimation task instead of echoing the
+  RUL label.
+- **README staleness** — the "Implementation Status" section no longer claims
+  that the conformal benchmark keeps a private clamped copy of the quantile
+  (it calls the shared, unclamped implementation), that the downstream
+  artifacts are not tag-aware (they are), or that the multi-seed benchmark
+  does not seed deterministically (it does).
+
+### Added
+
+- **`src/utils/provenance.py`** — a provenance stamp for every generated
+  artifact. The stamp records the SHA-256 digest of the checkpoint the
+  artifact was produced from, plus the seed, epoch, architecture, git commit
+  and a UTC timestamp, and is embedded **inside** the `.npz` (under the
+  `meta_json` key, as a 0-d unicode array so `np.load` reads it without
+  `allow_pickle=True`). Embedding it in the artifact rather than writing a
+  sidecar means the stamp can never drift away from the data it describes.
+  `scripts/evaluate.py` and all four `scripts/uncertainty.py` methods now
+  write it. `sha256_file()` and `git_commit()` moved here from
+  `scripts/multiseed_train.py` so a file digest has exactly one
+  implementation in the repository.
+- **Artifact-pairing checks.** `src/evaluation/benchmark.py::comparative_benchmark`
+  compares the checkpoint declared by the predictions artifact with the one
+  declared by the intervals artifact and reports a `provenance` block per
+  (subset, model): `ok`, `mismatch` or `unknown`. A mismatch carries a
+  warning explaining that the two artifacts came from different weights; with
+  `strict_provenance=True` it raises `ValueError` instead.
+- **Tests** — `tests/test_provenance.py` (stamp round trip without pickle,
+  corrupt-stamp tolerance, the three comparison statuses, the tagged summary
+  lookup, strict mode, and the decision engine's artifact preference).
+
 - **Multi-seed certification harness** — `scripts/multiseed_train.py` trains the
   deliverable architecture across seeds × subsets and records an auditable
   manifest (seed, resolved config, git commit, checkpoint SHA-256, determinism
@@ -71,6 +261,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The comparative benchmark's summary was empty for every tagged run.**
+  `comparative_benchmark` keys its report by `{subset}_{model}_{tag}` but the
+  summary block looked up `{subset}_{model}`, so a tagged run reported
+  `best_model_by_rul_mae: None` and `best_rul_mae: inf` — a silently broken
+  headline number rather than an error. The lookup now uses the same run key
+  the report is written with.
+- **A stale artifact could shadow a fresh one.** `scripts/decision.py`
+  preferred the legacy structured layout
+  (`outputs/results/uncertainty/<variant>/<subset>/<model>.npz`) over the flat
+  file the current pipeline writes. The five FD001/`gru` files still present
+  in that tree were four weeks old and disagreed with the flat artifacts by up
+  to 16 RUL cycles in their point predictions, so a maintenance decision could
+  have been produced from a different model's intervals. The flat artifact now
+  wins, the structured tree remains a fallback for when it is absent, and the
+  resolution is logged. The stale files themselves were removed.
+- **Artifact pairs could be compared without knowing whether they matched.**
+  Nothing recorded which checkpoint produced a predictions file and which
+  produced the intervals file, so regenerating one side and not the other
+  produced a comparison between two different models that still looked
+  valid. Both artifacts now carry a provenance stamp and the benchmark
+  compares them (see *Added* above).
+
 - **Silent calibration leakage across seeds.** `scripts/uncertainty.py` used a
   hard-coded `random_state=42` for the engine hold-out, so a seed-43 or
   seed-44 checkpoint was calibrated against the seed-42 hold-out — which can
@@ -125,7 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calibration units the repository uses), the full decision policy, the
   Explainability Reliability Index, the six evaluation dimensions and the
   ablation semantics, an extension guide, the test strategy and CI, a
-  glossary, and **fourteen known gaps with their code locations**. The
+  glossary, and **fifteen known gaps with their code locations**. The
   `README.md` linked to an `ARCHITECTURE.md` at the repository root that has
   never existed.
 - **`docs/RMSE_TARGET_PLAN.md`** — why each value in `configs/fd00X.yaml` is
@@ -307,6 +519,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/hitl/logger.py`. The interval-artifact contract also named the output
   file `<subset>_<model>_<method>.npz`, while the four CLI methods write
   `conformal`, `cqr`, `adaptive_conformal` and `engine_joint_conformal`.
+
+### Removed
+
+- **Two dead config keys.** `dataset` and `model` were declared in
+  `DEFAULT_CONFIG` and in every `configs/fd00X.yaml`, but nothing ever read
+  them:
+  - `dataset` was overwritten by `load_config()` with the subset resolved
+    from the file name, so the YAML value was inert and could silently
+    disagree with the file it lived in.
+  - `model` was never read at all — the architecture comes from
+    `scripts/train.py --model` and is recorded in the checkpoint's
+    `model_config`, from which `scripts/evaluate.py` rebuilds the model. A
+    `model:` key in the YAML could therefore only ever disagree with the
+    architecture that was actually trained.
+
+  Both keys are gone from `DEFAULT_CONFIG`, from the four subset YAMLs and
+  from the `load_config()` result; `load_config()` no longer injects
+  `config["dataset"]`. The subset is derived from the file name and the
+  architecture from the command line, which is where both already came
+  from. `tests/test_models.py::test_subset_yaml_only_uses_known_keys` now
+  fails the build if a subset YAML declares a key that `DEFAULT_CONFIG` does
+  not know about — the failure mode this cleanup removed.
 
 ### Notes
 

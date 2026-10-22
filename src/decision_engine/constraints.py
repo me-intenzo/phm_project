@@ -1,7 +1,8 @@
 """Operational constraint handling for the O4 decision engine.
 
 Constraints are a hard feasibility layer applied AFTER the rule-based
-policy.  They can escalate but never de-escalate an action.
+policy.  With one documented exception they can escalate but never
+de-escalate an action.
 
 Supported constraints
 ---------------------
@@ -22,6 +23,17 @@ resource_availability : bool
     Whether maintenance crew / parts are available.  If False and
     action requires physical intervention, flag for human review.
 
+Severity and the one exception
+-------------------------------
+Actions are ordered on the severity ladder of ``src.decision_engine.rules``
+(CONTINUE_OPERATION < MONITOR < INSPECT < SCHEDULE_MAINTENANCE <
+URGENT_MAINTENANCE).  Every rule below moves the action **up** that
+ladder, with one exception: the maintenance-window rule substitutes an
+*infeasible* commitment (SCHEDULE_MAINTENANCE) with the nearest feasible
+one (INSPECT) when no window is available.  That substitution is recorded
+separately from the escalations, and it always flags the record for human
+review.
+
 author: me-intenzo
 """
 
@@ -29,13 +41,8 @@ from __future__ import annotations
 
 from typing import Any
 
-VALID_ACTIONS = frozenset({
-    "CONTINUE_OPERATION",
-    "MONITOR",
-    "INSPECT",
-    "SCHEDULE_MAINTENANCE",
-    "URGENT_MAINTENANCE",
-})
+from src.decision_engine.rules import severity_of
+from src.utils.config import VALID_ACTIONS
 
 _PASSIVE_ACTIONS  = frozenset({"CONTINUE_OPERATION", "MONITOR"})
 _ACTIVE_ACTIONS   = frozenset({"INSPECT", "SCHEDULE_MAINTENANCE", "URGENT_MAINTENANCE"})
@@ -47,7 +54,8 @@ def check_constraints(
 ) -> dict[str, Any]:
     """Apply operational constraints to a candidate decision.
 
-    Constraints can only escalate the action, never downgrade it.
+    Constraints can only escalate the action, never downgrade it (with the
+    documented maintenance-window substitution).
     """
     constraints = constraints or {}
 
@@ -58,8 +66,10 @@ def check_constraints(
     result = dict(decision)
     violations: list[str] = []
     adjustments: list[str] = []
+    substitutions: list[str] = []
 
     rul = float(decision.get("rul", 0.0))
+    initial_severity = severity_of(action)
 
     # ------------------------------------------------------------------
     # 1. Maintenance-window availability
@@ -70,7 +80,10 @@ def check_constraints(
         violations.append("Maintenance window is unavailable.")
         result["candidate_action"] = "INSPECT"
         result["human_review"] = True
-        adjustments.append("Scheduled maintenance downgraded to inspection (no window).")
+        substitutions.append(
+            "Scheduled maintenance substituted by inspection "
+            "(no maintenance window available)."
+        )
 
     # ------------------------------------------------------------------
     # 2. Minimum safe RUL
@@ -136,4 +149,7 @@ def check_constraints(
     result["constraint_status"]      = "VIOLATION" if violations else "SATISFIED"
     result["constraint_violations"]  = violations
     result["constraint_adjustments"] = adjustments
+    result["constraint_substitutions"] = substitutions
+    result["action_severity"]        = severity_of(result["candidate_action"])
+    result["severity_delta"]         = result["action_severity"] - initial_severity
     return result

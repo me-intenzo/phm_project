@@ -32,3 +32,9 @@ captum
 
 joblib
 seaborn
+
+# ------------------------------------------------------------------
+# Dashboard (optional — needed only for `streamlit run app.py`)
+# ------------------------------------------------------------------
+streamlit>=1.49
+plotly>=5.20

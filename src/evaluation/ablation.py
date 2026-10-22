@@ -115,12 +115,19 @@ def _recompute(
     records: list[dict],
     patch: Callable[[dict[str, Any]], dict[str, Any]],
     constraints: dict[str, Any] | None = None,
+    thresholds: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Re-run the decision engine on the patched inputs of every record."""
     decisions = []
     for record in records:
         state = patch(_state_from_record(record))
-        decisions.append(recommend_action(state=state, constraints=constraints))
+        decisions.append(
+            recommend_action(
+                state=state,
+                constraints=constraints,
+                thresholds=thresholds,
+            )
+        )
     return decisions
 
 
@@ -175,6 +182,11 @@ def run_ablation(
     # The operational constraints the original decisions were produced with.
     constraints = full_data.get("operational_constraints") or {}
 
+    # The policy thresholds the original decisions were produced with.  They
+    # are read back from the artifact so that the re-run is the *same* policy,
+    # including the calibrated HI breakpoints of the sensor-derived index.
+    thresholds = full_data.get("thresholds") or None
+
     report: dict[str, Any] = {
         "subset": subset,
         "model": model,
@@ -184,7 +196,9 @@ def run_ablation(
     # ── full pipeline ──────────────────────────────────────────────
     # Re-run with the recorded constraints so that every variant shares
     # one code path; the stored decisions are kept for the consistency check.
-    full_decisions = _recompute(records, _identity, constraints=constraints)
+    full_decisions = _recompute(
+        records, _identity, constraints=constraints, thresholds=thresholds
+    )
     report["full"] = decision_effectiveness_from_records(full_decisions)
     report["full"]["note"] = (
         "decision engine re-run on the recorded inputs "
@@ -200,7 +214,9 @@ def run_ablation(
 
     # ── no_uncertainty ─────────────────────────────────────────────
     # Wide fixed interval instead of the conformal one.
-    unc_decisions = _recompute(records, _fixed_interval, constraints=constraints)
+    unc_decisions = _recompute(
+        records, _fixed_interval, constraints=constraints, thresholds=thresholds
+    )
     report["no_uncertainty"] = decision_effectiveness_from_records(unc_decisions)
     report["no_uncertainty"]["note"] = (
         "fixed interval width=100 cycles applied; the uncertainty level is no "
@@ -208,7 +224,9 @@ def run_ablation(
     )
 
     # ── no_xai ─────────────────────────────────────────────────────
-    xai_decisions = _recompute(records, _neutral_eri, constraints=constraints)
+    xai_decisions = _recompute(
+        records, _neutral_eri, constraints=constraints, thresholds=thresholds
+    )
     report["no_xai"] = decision_effectiveness_from_records(xai_decisions)
     report["no_xai"]["note"] = (
         "ERI set to 0.5 (random baseline); explanation_reliability forced LOW"
@@ -218,7 +236,9 @@ def run_ablation(
     # The constraint layer is bypassed entirely: the engine runs without
     # any operational constraint instead of having its violations cleared
     # after the fact.
-    con_decisions = _recompute(records, _identity, constraints={})
+    con_decisions = _recompute(
+        records, _identity, constraints={}, thresholds=thresholds
+    )
     report["no_constraints"] = decision_effectiveness_from_records(con_decisions)
     report["no_constraints"]["note"] = (
         "operational constraints bypassed (constraint layer not applied)"

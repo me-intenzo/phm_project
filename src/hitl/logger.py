@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.hitl.feedback import store_feedback
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.utils.paths import PROJECT_ROOT
 
 DEFAULT_LOG_PATH = (
     PROJECT_ROOT

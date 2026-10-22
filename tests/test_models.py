@@ -5,12 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from src.models.augmentation import AugmentationConfig, WindowAugmenter
 from src.models.gru_att_deg_v2 import GruAttDegV2
 from src.models.losses import MultiTaskLoss
 from src.models.registry import ALL_MODELS, build_model, model_config
-from src.utils.config import DEFAULT_CONFIG, load_config
+from src.utils.config import CONFIG_DIR, DEFAULT_CONFIG, load_config
 
 INPUT_SIZE = 6
 SEQ_LEN = 20
@@ -183,11 +184,30 @@ def test_default_config_has_every_documented_key():
 def test_load_config_merges_subset_and_overrides():
     cfg = load_config(subset="FD004", overrides={"learning_rate": 1e-3, "epochs": 2})
 
-    assert cfg["dataset"] == "FD004"
     assert cfg["learning_rate"] == 1e-3
     assert cfg["epochs"] == 2
     # FD004's own YAML turns augmentation on.
     assert cfg["augment"] is True
+
+
+def test_subset_yaml_only_uses_known_keys():
+    """Every YAML key must exist in :data:`DEFAULT_CONFIG`.
+
+    The subset files list deviations from the defaults, so a key that the
+    defaults do not know about would be inert — the config would look
+    authoritative while nothing reads it.
+    """
+
+    for path in sorted(CONFIG_DIR.glob("*.yaml")):
+        with open(path, encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+
+        unknown = sorted(set(loaded) - set(DEFAULT_CONFIG))
+
+        assert not unknown, (
+            f"{path.name} declares keys that are not in DEFAULT_CONFIG "
+            f"(and are therefore never read): {unknown}"
+        )
 
 
 def test_load_config_does_not_mutate_defaults():

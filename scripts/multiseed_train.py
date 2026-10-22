@@ -49,9 +49,7 @@ author: me-intenzo
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -67,6 +65,8 @@ import scripts.evaluate as evaluate_module
 import scripts.train as train_module
 from src.utils.config import ALL_SUBSETS, load_config
 from src.utils.logger import get_script_logger
+from src.utils.provenance import git_commit as _git_commit
+from src.utils.provenance import sha256_file as _sha256_file
 
 # ------------------------------------------------------------------
 # Paths
@@ -85,37 +85,22 @@ DEFAULT_TAG_PREFIX = "ms"
 # ------------------------------------------------------------------
 
 def sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest of a file, or an empty string if absent."""
+    """Return the SHA-256 digest of a file, or an empty string if absent.
 
-    if not path.exists():
-        return ""
+    Re-exported from :mod:`src.utils.provenance` so that the digest of a
+    file always has exactly one implementation in the repository.
+    """
 
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _sha256_file(path)
 
 
 def git_commit() -> str:
-    """Return the current git commit hash, or an empty string."""
+    """Return the current git commit hash, or an empty string.
 
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    Re-exported from :mod:`src.utils.provenance`.
+    """
 
-    if result.returncode != 0:
-        return ""
-
-    return result.stdout.strip()
+    return _git_commit()
 
 
 def checkpoint_path(model_name: str, subset: str, tag: str) -> Path:

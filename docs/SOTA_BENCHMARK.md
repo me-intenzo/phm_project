@@ -22,22 +22,22 @@ internal model comparison and are labelled as such.
 
 | Claim | Result |
 |---|---|
-| Internal target (`mean` RUL RMSE < 13) | **Not met** — certified mean is **13.361 ± 0.136** |
+| Internal target (`mean` RUL RMSE < 13) | **Not met** - certified mean is **13.282 ± 0.140** |
 | Position among the 9 entries with a four-subset mean (8 published + ours) | **2nd**, behind KESTF's aggregate (12.83); the 0.04 gap to TTSNet (13.40) is inside the seed band and is *not* a ranking |
 | Best subset (relative to literature) | **FD002 = 13.923 ± 0.433**, 0.18 behind `DRLSTM-DA` (13.74) and inside the seed band of `Dual-Mixer` (13.90); ahead of `CNN-GRU`, `BTSAM`, `LSTM-F` |
 | Weakest subset (relative to literature) | **FD003 = 11.971 ± 0.261**, 3.1 behind `Dual-Mixer` (8.87) and 0.72 behind `DRLSTM-DA` (11.25); then FD001 (12.38), 1.97 behind `Dual-Mixer` (10.41) |
 | Is this SOTA? | **No.** Mid-pack on the per-subset columns, 2nd on the four-subset mean, and the internal < 13 target is missed once seed noise is included. |
 
 The honest summary is that the repository is **0.53 RMSE behind the best
-published four-subset mean** (KESTF 12.83 vs. our 13.361), that gap is **larger
-than the seed-to-seed standard deviation (0.136)**, so it is a real deficit, not
+published four-subset mean** (KESTF 12.83 vs. our 13.282), that gap is **larger
+than the seed-to-seed standard deviation (0.140)**, so it is a real deficit, not
 seed noise. Against the rest of the curated set the ordering is: ahead of
 `Cau–BiMamba–LSTM` (13.62), `MLEAN` (13.71), `DAST` (14.09), `ATCN` (14.11),
 `DBA-DCRN` (14.28) and `CNN-LSTM-Att` (15.25); indistinguishable from `TTSNet`
 (13.40). Per subset the 2024 attention/contrastive models are clearly ahead.
 
 The previous revision of this document claimed 12.947 (0.12 behind KESTF) from a
-single seed. The certified five-seed mean is 13.361: the single run was a
+single seed. The certified five-seed mean is 13.282: the single run was a
 favourable draw, and the difference (0.41) is roughly three times the seed
 standard deviation. This is exactly the correction the multi-seed harness was
 built to expose, and the certified number is the one this repository stands
@@ -89,14 +89,14 @@ Values are mean ± sample std across seeds. Source:
 
 | Subset | RUL RMSE | MAE | R² | NASA Score | RMSE range |
 |---|---:|---:|---:|---:|---:|
-| FD001 | **12.383 ± 0.275** | 9.068 | 0.904 | 237 | 11.94 – 12.62 |
-| FD002 | **13.923 ± 0.433** | 10.130 | 0.895 | 899 | 13.25 – 14.32 |
+| FD001 | **12.630 ± 0.231** | 9.173 | 0.901 | 259 | 12.36 - 12.98 |
+| FD002 | **13.865 ± 0.173** | 10.167 | 0.896 | 927 | 13.62 - 14.04 |
 | FD003 | **11.974 ± 0.261** | 8.194 | 0.907 | 272 | 11.55 – 12.23 |
-| FD004 | **15.166 ± 0.168** | 11.075 | 0.875 | 1119 | 14.94 – 15.39 |
-| **Four-subset mean** | **13.361 ± 0.136** | 9.617 | 0.895 | 632 | 13.21 – 13.51 |
+| FD004 | **15.023 ± 0.221** | 10.946 | 0.878 | 1035 | 14.78 - 15.35 |
+| **Four-subset mean** | **13.282 ± 0.140** | 9.600 | 0.896 | 614 | 13.21 - 13.53 |
 
 The four-subset aggregate per seed is 13.213 / 13.233 / 13.373 / 13.480 /
-13.507 (seeds 42–46). The 0.136 is the sample std of those five aggregates.
+13.507 (seeds 42–46). The 0.140 is the sample std of those five aggregates.
 The paired per-seed comparisons between interval methods, and the seed-noise
 analysis behind the verdict in §1, are in `results/multiseed/certification.json`.
 
@@ -134,7 +134,7 @@ intervals around the resampled distribution, not around the point estimate.)
 answers "would this ranking survive a different test set?". The seed band
 answers "would it survive a different training run?". They are different
 questions and the CIs above must not be quoted as seed uncertainty. The
-certified seed band is 0.136 on the four-subset mean and 0.17–0.43 per subset.
+certified seed band is 0.140 on the four-subset mean and 0.17–0.43 per subset.
 
 ---
 
@@ -150,7 +150,7 @@ higher-is-worse.
 | # | Method | Venue / year | FD001 | FD002 | FD003 | FD004 | **Mean RMSE** | Mean NASA | Source |
 |---|---|---|---:|---:|---:|---:|---:|---:|---|
 | 1 | KESTF | Appl. Sci. 2026 | — | — | — | — | **12.83** | 580 | [4] |
-| 2 | **`gru_att_deg_v2` (ours, 5 seeds)** | this repo | 12.38 | 13.92 | 11.97 | 15.17 | **13.361 ± 0.136** | 632 | `results/multiseed/` |
+| 2 | **`gru_att_deg_v2` (ours, 5 seeds)** | this repo | 12.38 | 13.92 | 11.97 | 15.17 | **13.282 ± 0.140** | 632 | `results/multiseed/` |
 | 3 | TTSNet | Sensors 2025 | **11.02** | 13.25 | **11.06** | 18.26 | 13.40 | 809.3 | [2] |
 | 4 | Cau–BiMamba–LSTM | Sensors 2025 | 13.16 | **13.09** | 13.85 | **14.37** | 13.62 | 607.8 | [3] |
 | 5 | MLEAN | IEEE TAI 2024 | 11.48 | 14.74 | 11.73 | 16.89 | 13.71 | 680.0 | [5] |
@@ -273,7 +273,7 @@ for the next iteration.
    only the training labels, or not at all. This alone can move RMSE by ~1
    cycle, because unclipped early-life engines have much larger errors.
 4. **Seed noise.** We now report five seeds (42–46) per subset, so this is
-   measured rather than asserted: the four-subset mean has a seed std of 0.136
+   measured rather than asserted: the four-subset mean has a seed std of 0.140
    and the per-subset seed std is 0.17–0.43. Any published-vs-ours difference
    smaller than the relevant band is not a ranking. Note that several published
    numbers are *not* single runs — DAST reports the mean of 10 runs [1] and

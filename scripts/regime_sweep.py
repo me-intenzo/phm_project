@@ -31,10 +31,10 @@ from scripts.uncertainty import (
     load_training_data,
     predict,
 )
-from src.uncertainty.calibration import calibrate_eara_levels
 from src.uncertainty.conformal import (
     adaptive_prediction_interval,
     assign_regimes,
+    calibrate_eara_levels,
     fit_regime_detector,
 )
 from src.uncertainty.coverage import evaluate_interval

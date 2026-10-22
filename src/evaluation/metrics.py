@@ -31,11 +31,51 @@ from typing import Any
 
 import numpy as np
 from scipy.stats import spearmanr
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from src.models.outputs import unpack_model_output
+from src.uncertainty.coverage import (
+    coverage_error,
+    empirical_coverage,
+    engine_level_coverage,
+    mean_prediction_interval_width,
+    normalised_interval_width,
+    winkler_score,
+)
 
 # ------------------------------------------------------------------ #
 # 1. Predictive Accuracy
 # ------------------------------------------------------------------ #
+
+def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Mean Absolute Error."""
+
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    return float(np.mean(np.abs(y_pred - y_true)))
+
+
+def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Root Mean Squared Error."""
+
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+
+
+def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Coefficient of determination (``NaN`` for a constant target)."""
+
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+
+    if ss_tot <= 0.0:
+        return float("nan")
+
+    return float(1.0 - ss_res / ss_tot)
+
 
 def nasa_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Asymmetric NASA C-MAPSS penalty (late predictions penalised more)."""
@@ -58,22 +98,17 @@ def predictive_accuracy(
     -------
     dict with keys ``rul`` and ``hi``, each a sub-dict of metric → value.
     """
-    y_rul_true = np.asarray(y_rul_true, dtype=np.float64)
-    y_rul_pred = np.asarray(y_rul_pred, dtype=np.float64)
-    y_hi_true  = np.asarray(y_hi_true,  dtype=np.float64)
-    y_hi_pred  = np.asarray(y_hi_pred,  dtype=np.float64)
-
     return {
         "rul": {
-            "MAE":        float(mean_absolute_error(y_rul_true, y_rul_pred)),
-            "RMSE":       float(np.sqrt(mean_squared_error(y_rul_true, y_rul_pred))),
-            "R2":         float(r2_score(y_rul_true, y_rul_pred)),
+            "MAE":        mae(y_rul_true, y_rul_pred),
+            "RMSE":       rmse(y_rul_true, y_rul_pred),
+            "R2":         r2(y_rul_true, y_rul_pred),
             "NASA_Score": nasa_score(y_rul_true, y_rul_pred),
         },
         "hi": {
-            "MAE":  float(mean_absolute_error(y_hi_true, y_hi_pred)),
-            "RMSE": float(np.sqrt(mean_squared_error(y_hi_true, y_hi_pred))),
-            "R2":   float(r2_score(y_hi_true, y_hi_pred)),
+            "MAE":  mae(y_hi_true, y_hi_pred),
+            "RMSE": rmse(y_hi_true, y_hi_pred),
+            "R2":   r2(y_hi_true, y_hi_pred),
         },
     }
 
@@ -82,71 +117,64 @@ def predictive_accuracy(
 # 2. Uncertainty Reliability
 # ------------------------------------------------------------------ #
 
-def winkler_score(
-    y_true: np.ndarray,
-    lower: np.ndarray,
-    upper: np.ndarray,
-    alpha: float,
-) -> float:
-    """
-    Winkler score for a (1-alpha) prediction interval.
-    Penalises width and adds a penalty proportional to 2/alpha for misses.
-    Lower is better.
-    """
-    y_true = np.asarray(y_true, dtype=np.float64)
-    lower  = np.asarray(lower,  dtype=np.float64)
-    upper  = np.asarray(upper,  dtype=np.float64)
-    width  = upper - lower
-    penalty = (2.0 / alpha) * np.where(
-        y_true < lower, lower - y_true,
-        np.where(y_true > upper, y_true - upper, 0.0)
-    )
-    return float(np.mean(width + penalty))
-
-
 def uncertainty_reliability(
     y_true: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     engine_ids: np.ndarray,
     nominal_alpha: float = 0.10,
-    rul_max: float = 125.0,
+    rul_max: float | None = None,
 ) -> dict[str, Any]:
     """
     Dimension 2 — Uncertainty Reliability.
+
+    Every metric is computed by :mod:`src.uncertainty.coverage` — the
+    module that owns the interval metrics.  This function used to
+    re-implement them with a hard-coded ``125.0`` normalisation constant
+    and with a different set of key names, so the evaluation report and
+    the conformal pipeline could report two different numbers for the
+    same interval.
 
     Parameters
     ----------
     y_true, lower, upper : per-window arrays
     engine_ids           : source engine per window (for engine-level coverage)
     nominal_alpha        : miscoverage level (0.10 → 90 % nominal interval)
-    rul_max              : normalisation constant for PINAW
+    rul_max              : normalisation constant for PINAW.  ``None``
+                           uses the project-wide RUL cap.
 
     Returns
     -------
-    dict with coverage, coverage_error, MPIW, PINAW, Winkler, engine_coverage.
+    dict with coverage, coverage_error, mean_interval_width, pinaw,
+    winkler_score and engine_level_coverage.
     """
-    y_true    = np.asarray(y_true, dtype=np.float64)
-    lower     = np.asarray(lower,  dtype=np.float64)
-    upper     = np.asarray(upper,  dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    lower = np.asarray(lower, dtype=np.float64)
+    upper = np.asarray(upper, dtype=np.float64)
     engine_ids = np.asarray(engine_ids)
 
-    covered   = (y_true >= lower) & (y_true <= upper)
-    mpiw      = float(np.mean(upper - lower))
+    nominal_coverage = float(1.0 - nominal_alpha)
 
-    # Engine-level coverage: all windows of an engine must be covered
-    engines   = np.unique(engine_ids)
-    eng_covered = np.array([covered[engine_ids == e].all() for e in engines])
+    empirical = empirical_coverage(y_true, lower, upper)
+
+    mpiw = mean_prediction_interval_width(lower, upper)
+
+    pinaw = (
+        normalised_interval_width(lower, upper)
+        if rul_max is None
+        else normalised_interval_width(lower, upper, y_range=float(rul_max))
+    )
 
     return {
-        "empirical_coverage":  float(covered.mean()),
-        "nominal_coverage":    float(1.0 - nominal_alpha),
-        "coverage_error":      float(abs(covered.mean() - (1.0 - nominal_alpha))),
-        "MPIW":                mpiw,
-        "PINAW":               mpiw / rul_max,
-        "Winkler":             winkler_score(y_true, lower, upper, nominal_alpha),
-        "engine_level_coverage": float(eng_covered.mean()),
+        "empirical_coverage":    empirical,
+        "nominal_coverage":      nominal_coverage,
+        "coverage_error":        coverage_error(empirical, nominal_coverage),
+        "mean_interval_width":   mpiw,
+        "pinaw":                 pinaw,
+        "winkler_score":         winkler_score(y_true, lower, upper, nominal_alpha),
+        "engine_level_coverage": engine_level_coverage(y_true, lower, upper, engine_ids),
     }
+
 
 
 # ------------------------------------------------------------------ #
@@ -226,6 +254,9 @@ def decision_effectiveness_from_records(records: list[dict]) -> dict[str, Any]:
     violations   = [len(r.get("constraint_violations", [])) > 0 for r in records]
     risks        = np.array([r.get("risk_score",    0.0) for r in records], dtype=np.float64)
     urgencies    = np.array([r.get("urgency_index", 0.0) for r in records], dtype=np.float64)
+    severities   = np.array(
+        [r.get("action_severity", 0.0) for r in records], dtype=np.float64
+    )
 
     action_counts: dict[str, int] = {}
     for a in actions:
@@ -247,6 +278,7 @@ def decision_effectiveness_from_records(records: list[dict]) -> dict[str, Any]:
         "constraint_violation_rate": float(sum(violations) / n),
         "mean_risk_score":        float(risks.mean()),
         "mean_urgency_index":     float(urgencies.mean()),
+        "mean_action_severity":   float(severities.mean()),
         "risk_urgency_correlation": risk_urgency_corr,
     }
 
@@ -314,11 +346,12 @@ def robustness_under_noise(
             for i in range(0, len(X), 64):
                 batch = torch.from_numpy(X[i:i+64]).float().to(dev)
                 out   = model(batch)
-                preds.append((out[0] if isinstance(out, tuple) else out).cpu().numpy())
+                pred_rul, _, _ = unpack_model_output(out)
+                preds.append(pred_rul.cpu().numpy())
         return np.concatenate(preds)
 
     baseline_pred = _predict(X_test)
-    baseline_mae  = float(mean_absolute_error(y_rul_true, baseline_pred))
+    baseline_mae  = mae(y_rul_true, baseline_pred)
 
     results: dict[str, Any] = {"baseline_mae": baseline_mae, "noise_levels": {}}
 
@@ -327,7 +360,7 @@ def robustness_under_noise(
         for t in range(n_trials):
             noise = rng.normal(0, sigma, X_test.shape).astype(np.float32)
             pred  = _predict(X_test + noise)
-            trial_maes.append(float(mean_absolute_error(y_rul_true, pred)))
+            trial_maes.append(mae(y_rul_true, pred))
         mean_mae = float(np.mean(trial_maes))
         results["noise_levels"][sigma] = {
             "mae":             mean_mae,
@@ -406,11 +439,12 @@ def robustness_under_dropout(
             for i in range(0, len(X), 64):
                 batch = torch.from_numpy(X[i:i+64]).float().to(dev)
                 out   = model(batch)
-                preds.append((out[0] if isinstance(out, tuple) else out).cpu().numpy())
+                pred_rul, _, _ = unpack_model_output(out)
+                preds.append(pred_rul.cpu().numpy())
         return np.concatenate(preds)
 
     baseline_pred = _predict(X_test)
-    baseline_mae  = float(mean_absolute_error(y_rul_true, baseline_pred))
+    baseline_mae  = mae(y_rul_true, baseline_pred)
 
     n_features = X_test.shape[-1]
     results: dict[str, Any] = {"baseline_mae": baseline_mae, "dropout_fractions": {}}
@@ -423,7 +457,7 @@ def robustness_under_dropout(
         for _ in range(n_trials):
             drop_mask = per_window_dropout_mask(X_test.shape, n_drop, rng)
             X_drop = X_test * (~drop_mask).astype(np.float32)
-            trial_maes.append(float(mean_absolute_error(y_rul_true, _predict(X_drop))))
+            trial_maes.append(mae(y_rul_true, _predict(X_drop)))
         mean_mae = float(np.mean(trial_maes))
         results["dropout_fractions"][frac] = {
             "n_sensors_dropped": effective_n_drop,

@@ -27,104 +27,11 @@ Author: me-intenzo
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 
-
-class PositionalEncoding(nn.Module):
-    """
-    Sinusoidal positional encoding for temporal sequences.
-
-    Parameters
-    ----------
-    d_model : int
-        Transformer embedding dimension.
-
-    max_len : int
-        Maximum supported sequence length.
-
-    dropout : float
-        Dropout probability.
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        max_len: int = 500,
-        dropout: float = 0.1,
-    ) -> None:
-
-        super().__init__()
-
-        self.dropout = nn.Dropout(
-            p=dropout
-        )
-
-        position = torch.arange(
-            max_len,
-            dtype=torch.float32,
-        ).unsqueeze(1)
-
-        div_term = torch.exp(
-            torch.arange(
-                0,
-                d_model,
-                2,
-                dtype=torch.float32,
-            )
-            * (
-                -math.log(10000.0)
-                / d_model
-            )
-        )
-
-        pe = torch.zeros(
-            max_len,
-            d_model,
-        )
-
-        pe[:, 0::2] = torch.sin(
-            position * div_term
-        )
-
-        pe[:, 1::2] = torch.cos(
-            position * div_term
-        )
-
-        # Shape:
-        # (1, max_len, d_model)
-
-        pe = pe.unsqueeze(0)
-
-        self.register_buffer(
-            "pe",
-            pe,
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape:
-                (batch, sequence_length, d_model)
-
-        Returns
-        -------
-        torch.Tensor
-            Position-aware sequence representation.
-        """
-
-        x = x + self.pe[  # type: ignore[index]
-            :, :x.size(1), :
-        ]
-
-        return self.dropout(x)
+from .heads import build_task_heads, forward_task_heads
+from .layers import PositionalEncoding
 
 
 class TransformerPrognosticsModel(nn.Module):
@@ -216,22 +123,16 @@ class TransformerPrognosticsModel(nn.Module):
         )
 
         # --------------------------------------------------
-        # Task Heads
+        # Task Heads (shared layout, see ``src/models/heads.py``)
         # --------------------------------------------------
 
-        self.rul_head = nn.Linear(
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
             hidden_size,
-            1,
-        )
-
-        self.hi_head = nn.Linear(
-            hidden_size,
-            1,
-        )
-
-        self.scale_head = nn.Linear(
-            hidden_size,
-            1,
+            style="linear",
         )
 
     # ------------------------------------------------------
@@ -308,22 +209,17 @@ class TransformerPrognosticsModel(nn.Module):
         # Multi-task prediction
         # --------------------------------------------------
 
-        pred_rul = self.rul_head(
-            features
-        )
-
-        pred_hi = self.hi_head(
-            features
-        )
-
-        pred_scale = torch.nn.functional.softplus(
-            self.scale_head(features)
+        pred_rul, pred_hi, pred_scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
         )
 
         return (
-            pred_rul.squeeze(-1),
-            pred_hi.squeeze(-1),
-            pred_scale.squeeze(-1),
+            pred_rul,
+            pred_hi,
+            pred_scale,
         )
 
 

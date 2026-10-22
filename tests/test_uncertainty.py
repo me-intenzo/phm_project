@@ -90,22 +90,34 @@ def test_placeholder():
 
 def test_adaptive_score_and_interval_share_scale_floor():
     """Calibration scoring and interval construction must use one scale floor."""
-    from src.uncertainty.adaptive import (
+    from src.uncertainty.conformal import (
         SCALE_FLOOR,
-        normalized_nonconformity,
-        prediction_interval,
+        adaptive_prediction_interval,
+        floor_scale,
+        normalised_nonconformity,
     )
 
     y_true = np.array([10.0, 20.0])
     y_pred = np.array([8.0, 16.0])
     scales = np.array([2.0, 4.0])
 
-    scores = normalized_nonconformity(y_true, y_pred, scales)
+    scores = normalised_nonconformity(y_true, y_pred, scales)
     assert scores == pytest.approx(
-        [2.0 / (2.0 + SCALE_FLOOR), 4.0 / (4.0 + SCALE_FLOOR)]
+        [2.0 / max(2.0, SCALE_FLOOR), 4.0 / max(4.0, SCALE_FLOOR)]
     )
 
-    lower, upper = prediction_interval(y_pred, q_hat=1.0, scales=scales)
-    radius = scales + SCALE_FLOOR
+    # The same floor is applied when the interval is built.
+    lower, upper = adaptive_prediction_interval(
+        y_pred,
+        scale=scales,
+        q_hats=np.array([1.0]),
+        regimes=np.array([0, 0]),
+    )
+    radius = np.maximum(scales, SCALE_FLOOR)
     assert lower == pytest.approx(y_pred - radius)
     assert upper == pytest.approx(y_pred + radius)
+
+    # A degenerate scale is floored, not allowed to divide by zero.
+    assert floor_scale(np.array([0.0, 1.0])) == pytest.approx(
+        [SCALE_FLOOR, 1.0]
+    )

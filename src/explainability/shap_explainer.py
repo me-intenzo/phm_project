@@ -13,20 +13,17 @@ import numpy as np
 import shap
 import torch
 
+from src.models.outputs import select_task_output
+
 
 def _select_output(
     model,
     x: torch.Tensor,
     target: str,
 ) -> torch.Tensor:
-    """Select RUL or HI from the multitask GRU output."""
-    pred_rul, pred_hi, *_ = model(x)
-    target = target.lower()
-    if target == "rul":
-        return pred_rul
-    if target == "hi":
-        return pred_hi
-    raise ValueError("target must be either 'rul' or 'hi'.")
+    """Select RUL or HI from the multitask model output."""
+
+    return select_task_output(model(x), target)
 
 
 def _predict_from_sensor_masks(

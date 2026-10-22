@@ -1,82 +1,10 @@
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 
-# ==============================================================
-# POSITIONAL ENCODING
-# ==============================================================
-
-class PositionalEncoding(nn.Module):
-    """
-    Sinusoidal positional encoding for Transformer.
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        max_len: int = 500,
-        dropout: float = 0.3,
-    ) -> None:
-
-        super().__init__()
-
-        self.dropout = nn.Dropout(dropout)
-
-        # Position indices
-        position = torch.arange(
-            max_len,
-            dtype=torch.float32,
-        ).unsqueeze(1)
-
-        # Frequency terms
-        div_term = torch.exp(
-            torch.arange(
-                0,
-                d_model,
-                2,
-                dtype=torch.float32,
-            )
-            * (
-                -math.log(10000.0)
-                / d_model
-            )
-        )
-
-        # Positional encoding matrix
-        pe = torch.zeros(
-            max_len,
-            d_model,
-        )
-
-        pe[:, 0::2] = torch.sin(
-            position * div_term
-        )
-
-        pe[:, 1::2] = torch.cos(
-            position * div_term
-        )
-
-        # Shape:
-        # (1, max_len, d_model)
-        self.register_buffer(
-            "pe",
-            pe.unsqueeze(0),
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-
-        x = x + self.pe[
-            :, :x.size(1), :
-        ]
-
-        return self.dropout(x)
-
+from .heads import build_task_heads, forward_task_heads
+from .layers import PositionalEncoding
 
 # ==============================================================
 # HYBRID CNN + GRU + TRANSFORMER MODEL
@@ -213,26 +141,16 @@ class CNNGRUTransformerPrognostics(nn.Module):
         )
 
         # ======================================================
-        # MULTI-TASK HEADS
+        # MULTI-TASK HEADS (shared layout, see src/models/heads.py)
         # ======================================================
 
-        # Remaining Useful Life
-        self.rul_head = nn.Linear(
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
             hidden_size,
-            1,
-        )
-
-        # Health Index
-        self.hi_head = nn.Linear(
-            hidden_size,
-            1,
-        )
-
-        # Heteroscedastic scale head for EARA-Conformal.
-        # Outputs log-scale to ensure positivity via softplus.
-        self.scale_head = nn.Linear(
-            hidden_size,
-            1,
+            style="linear",
         )
 
     # ==========================================================
@@ -304,27 +222,20 @@ class CNNGRUTransformerPrognostics(nn.Module):
         # MULTI-TASK PREDICTION
         # ======================================================
 
-        # RUL prediction
-        pred_rul = self.rul_head(
-            features
+        # RUL / HI / softplus-activated error scale.
+        # The return signature (batch,) is shared by every prognostics
+        # model in the project.
+        pred_rul, pred_hi, pred_scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
         )
 
-        # HI prediction
-        pred_hi = self.hi_head(
-            features
-        )
-
-        # Softplus ensures scale > 0
-        pred_scale = torch.nn.functional.softplus(
-            self.scale_head(features)
-        )
-
-        # Return (batch,), matching the (rul, hi, scale) signature
-        # shared by every prognostics model in the project.
         return (
-            pred_rul.squeeze(-1),
-            pred_hi.squeeze(-1),
-            pred_scale.squeeze(-1),
+            pred_rul,
+            pred_hi,
+            pred_scale,
         )
 
 

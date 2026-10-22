@@ -22,6 +22,12 @@ from typing import Any
 import numpy as np
 
 from src.evaluation.metrics import predictive_accuracy, uncertainty_reliability
+from src.utils.provenance import (
+    STATUS_MISMATCH,
+    STATUS_UNKNOWN,
+    compare_provenance,
+    unpack_provenance,
+)
 
 
 def comparative_benchmark(
@@ -30,6 +36,7 @@ def comparative_benchmark(
     models: list[str],
     uncertainty_variant: str = "engine_joint_conformal",
     tag: str = "",
+    strict_provenance: bool = False,
 ) -> dict[str, Any]:
     """
     Load pipeline artifacts and compute predictive + uncertainty metrics
@@ -44,10 +51,13 @@ def comparative_benchmark(
     tag                 : optional run tag (e.g. ``"ms42"``) selecting one
                           specific set of weights.  Without a tag the
                           historical untagged artifacts are read.
+    strict_provenance   : when ``True``, a pair of artifacts that
+                          declares two *different* checkpoints raises
+                          ``ValueError`` instead of being reported.
 
     Returns
     -------
-    dict keyed by ``"{subset}_{model}"`` → metric sub-dicts, plus a
+    dict keyed by ``"{subset}_{run_name}"`` → metric sub-dicts, plus a
     ``"summary"`` key with the best model per metric.
     """
     results_dir = Path(results_dir)
@@ -86,8 +96,43 @@ def comparative_benchmark(
                     unc["upper_90"],
                     engine_ids,
                 )
+
+                # ------------------------------------------------------------
+                # Provenance
+                #
+                # The predictions and the intervals are compared against
+                # each other here, so they have to come from the same
+                # weights.  Neither artifact used to record which
+                # checkpoint produced it, which meant regenerating one
+                # side and not the other produced a comparison between two
+                # different models.
+                # ------------------------------------------------------------
+                comparison = compare_provenance(
+                    unpack_provenance(pred),
+                    unpack_provenance(unc),
+                )
+                entry["provenance"] = comparison
+
+                if comparison["status"] == STATUS_MISMATCH:
+                    message = (
+                        f"{key}: the predictions and the "
+                        f"{uncertainty_variant} intervals come from "
+                        f"different checkpoints "
+                        f"({comparison['left_sha256'][:12]} vs "
+                        f"{comparison['right_sha256'][:12]}). "
+                        "Regenerate both from the same run before "
+                        "comparing them."
+                    )
+                    if strict_provenance:
+                        raise ValueError(message)
+                    entry["provenance"]["warning"] = message
             else:
                 entry["uncertainty_reliability"] = {"note": f"missing {unc_path.name}"}
+                entry["provenance"] = {
+                    "status": STATUS_UNKNOWN,
+                    "left_sha256": "",
+                    "right_sha256": "",
+                }
 
             report[key] = entry
 
@@ -97,11 +142,16 @@ def comparative_benchmark(
         best_mae   = float("inf")
         best_model = None
         for model in models:
-            key = f"{subset}_{model}"
+            # The report is keyed by the *run* name (which carries the tag),
+            # so this lookup has to use the same key the loop above wrote.
+            # Looking up "{subset}_{model}" silently returned nothing for
+            # every tagged run.
+            run_name = f"{model}_{tag}" if tag else model
+            key = f"{subset}_{run_name}"
             mae = report.get(key, {}).get("predictive_accuracy", {}).get("rul", {}).get("MAE")
             if mae is not None and mae < best_mae:
                 best_mae   = mae
-                best_model = model
+                best_model = run_name
         summary[subset] = {"best_model_by_rul_mae": best_model, "best_rul_mae": best_mae}
 
     report["summary"] = summary

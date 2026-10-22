@@ -42,6 +42,14 @@ class MultiTaskLoss(nn.Module):
         normalises per-parameter gradient scale, so this controls how much
         the scale objective competes with RUL accuracy rather than how
         fast the scale head learns.
+    hi_scale : float
+        Factor applied to the HI term so it lives on the same scale as the
+        RUL term.  The RUL loss is an unscaled MSE in cycles squared (order
+        1e2 for a 12-cycle RMSE) while the HI loss is a bounded MSE (order
+        1e-2), so without a factor the HI term moves the shared trunk by
+        ~1e-5 in relative terms and ``beta`` is effectively inert.  The
+        pipeline passes ``max_rul ** 2`` (cycle-equivalent units); the
+        default of ``1.0`` reproduces the raw bounded HI loss.
     eps : float
         Numerical floor keeping s(x) strictly positive in the log term.
     rul_loss_type : str
@@ -58,6 +66,7 @@ class MultiTaskLoss(nn.Module):
         alpha: float = 1.0,
         beta: float = 0.5,
         gamma: float = 0.1,
+        hi_scale: float = 1.0,
         eps: float = 1e-6,
         rul_loss_type: str = "mse",
         huber_delta: float = 10.0,
@@ -68,6 +77,7 @@ class MultiTaskLoss(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.hi_scale = float(hi_scale)
         self.eps = eps
         self.rul_loss_type = rul_loss_type
         self.huber_delta = huber_delta
@@ -105,6 +115,11 @@ class MultiTaskLoss(nn.Module):
             target_hi,
         )
 
+        # The HI term is put on the RUL scale before it enters the total, so
+        # ``beta`` is comparable with ``alpha`` and the HI head actually
+        # contributes gradient to the shared trunk.
+        loss_hi_scaled = self.hi_scale * loss_hi
+
         if pred_scale is None:
             # Models without a scale head, or callers opting out.
             scale_loss = torch.zeros((), device=loss_rul.device)
@@ -119,7 +134,7 @@ class MultiTaskLoss(nn.Module):
         total_loss = (
             self.alpha * loss_rul
             +
-            self.beta * loss_hi
+            self.beta * loss_hi_scaled
             +
             self.gamma * scale_loss
         )
@@ -128,5 +143,6 @@ class MultiTaskLoss(nn.Module):
             "total_loss": total_loss,
             "rul_loss": loss_rul,
             "hi_loss": loss_hi,
+            "hi_loss_scaled": loss_hi_scaled,
             "scale_loss": scale_loss,
         }

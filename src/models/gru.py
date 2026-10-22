@@ -15,6 +15,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from .heads import build_task_heads, forward_task_heads
+
 
 class GRUPrognosticsModel(nn.Module):
     """
@@ -92,23 +94,20 @@ class GRUPrognosticsModel(nn.Module):
 
         # --------------------------------------------------
         # Task Heads
+        #
+        # The head layout is shared with the other architectures (see
+        # ``src/models/heads.py``); only the modules are created here so
+        # that the ``state_dict`` keys stay ``rul_head.*`` / ``hi_head.*``
+        # / ``scale_head.*``.
         # --------------------------------------------------
 
-        self.rul_head = nn.Linear(
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
             hidden_size,
-            1,
-        )
-
-        self.hi_head = nn.Linear(
-            hidden_size,
-            1,
-        )
-
-        # Heteroscedastic scale head for EARA-Conformal.
-        # Outputs log-scale to ensure positivity via softplus.
-        self.scale_head = nn.Linear(
-            hidden_size,
-            1,
+            style="linear",
         )
 
     # ------------------------------------------------------
@@ -148,19 +147,17 @@ class GRUPrognosticsModel(nn.Module):
         features = self.shared(features)
 
         # Task predictions
-        pred_rul = self.rul_head(features)
-
-        pred_hi = self.hi_head(features)
-
-        # Softplus ensures scale > 0
-        pred_scale = torch.nn.functional.softplus(
-            self.scale_head(features)
+        pred_rul, pred_hi, pred_scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
         )
 
         return (
-            pred_rul.squeeze(-1),
-            pred_hi.squeeze(-1),
-            pred_scale.squeeze(-1),
+            pred_rul,
+            pred_hi,
+            pred_scale,
         )
 
 

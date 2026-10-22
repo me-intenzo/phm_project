@@ -9,8 +9,9 @@ Author: me-intenzo
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
+
+from .heads import build_task_heads, forward_task_heads
 
 
 class LSTMPrognosticsModel(nn.Module):
@@ -65,22 +66,16 @@ class LSTMPrognosticsModel(nn.Module):
         )
 
         # --------------------------------------------------
-        # Task Heads
+        # Task Heads (shared layout, see ``src/models/heads.py``)
         # --------------------------------------------------
 
-        self.rul_head = nn.Linear(
+        (
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+        ) = build_task_heads(
             hidden_size,
-            1,
-        )
-
-        self.hi_head = nn.Linear(
-            hidden_size,
-            1,
-        )
-
-        self.scale_head = nn.Linear(
-            hidden_size,
-            1,
+            style="linear",
         )
 
     # ------------------------------------------------------
@@ -110,12 +105,11 @@ class LSTMPrognosticsModel(nn.Module):
 
         features = self.shared(features)
 
-        rul = self.rul_head(features)
-
-        hi = self.hi_head(features)
-
-        scale = torch.nn.functional.softplus(
-            self.scale_head(features)
+        rul, hi, scale = forward_task_heads(
+            self.rul_head,
+            self.hi_head,
+            self.scale_head,
+            features,
         )
 
-        return rul.squeeze(-1), hi.squeeze(-1), scale.squeeze(-1)
+        return rul, hi, scale

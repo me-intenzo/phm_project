@@ -3,15 +3,15 @@
 # The hardest subset: 248 training engines, six operating conditions and two
 # fault modes.  It justifies the widest model and the strongest noise
 # augmentation in the suite.
-
-dataset: FD004
+#
+# The subset and the architecture are not configured here: the subset comes
+# from the file name, the architecture from ``scripts/train.py --model``.
 
 # ------------------------------------------------------------------ data
 window_size: 40
 max_rul: 125
 
 # ------------------------------------------------------------------ model
-model: gru_att_deg_v2
 hidden_size: 160
 num_layers: 2
 dropout: 0.35

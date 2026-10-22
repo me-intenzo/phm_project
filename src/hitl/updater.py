@@ -25,6 +25,8 @@ from typing import Any, Optional
 from src.decision_engine.constraints import check_constraints
 from src.hitl.feedback import VALID_ACTIONS
 from src.hitl.logger import load_feedback
+from src.utils.config import RISK_BANDS as _RISK_BANDS
+from src.utils.config import URGENCY_BANDS as _URGENCY_BANDS
 
 # ---------------------------------------------------------------------
 # Conservative adaptation thresholds
@@ -36,8 +38,8 @@ MIN_WEIGHTED_SUPPORT = 2.0
 
 MIN_CONSENSUS_RATIO = 0.70
 
-RISK_BANDS = ((0.33, "LOW"), (0.66, "MODERATE"))
-URGENCY_BANDS = ((0.33, "LOW"), (0.66, "MODERATE"))
+RISK_BANDS = _RISK_BANDS
+URGENCY_BANDS = _URGENCY_BANDS
 
 
 SAFETY_CRITICAL_ACTIONS = {
@@ -93,6 +95,88 @@ def _rul_severity(value: Any) -> str:
     if rul <= 50.0:
         return "DEGRADING"
     return "HEALTHY"
+
+
+def aggregate_expert_actions(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate the expert actions of *records*.
+
+    Every record contributes its (upper-cased) expert action to the
+    support statistics, weighted by the expert's confidence.  Actions that
+    are not part of :data:`VALID_ACTIONS` are ignored.
+
+    This is the single implementation of the aggregation: the policy
+    profile builder and the recommendation refiner used to compute the
+    same action support, action counts, weighted support and consensus
+    ratio twice, and the two copies could drift apart.
+
+    Returns
+    -------
+    dict
+        ``action_support`` (action → weighted support),
+        ``action_count`` (action → number of observations),
+        ``preferred_action``, ``support``, ``count``, ``total_weight``
+        and ``consensus_ratio``.  ``preferred_action`` is ``None`` when
+        no valid action was observed.
+    """
+
+    action_support: dict[str, float] = defaultdict(float)
+    action_count: dict[str, int] = defaultdict(int)
+
+    for record in records:
+
+        action = str(
+            record.get(
+                "expert_action",
+                "",
+            )
+        ).upper()
+
+        if action not in VALID_ACTIONS:
+            continue
+
+        weight = _feedback_weight(record)
+
+        action_support[action] += weight
+        action_count[action] += 1
+
+    if not action_support:
+        return {
+            "action_support": {},
+            "action_count": {},
+            "preferred_action": None,
+            "support": 0.0,
+            "count": 0,
+            "total_weight": 0.0,
+            "consensus_ratio": 0.0,
+        }
+
+    preferred_action = max(
+        action_support,
+        key=action_support.get,
+    )
+
+    support = action_support[preferred_action]
+    count = action_count[preferred_action]
+
+    total_weight = sum(action_support.values())
+
+    consensus_ratio = (
+        support / total_weight
+        if total_weight > 0
+        else 0.0
+    )
+
+    return {
+        "action_support": dict(action_support),
+        "action_count": dict(action_count),
+        "preferred_action": preferred_action,
+        "support": support,
+        "count": count,
+        "total_weight": total_weight,
+        "consensus_ratio": consensus_ratio,
+    }
 
 
 def policy_state(record: dict[str, Any]) -> dict[str, str]:
@@ -153,67 +237,28 @@ def build_policy_profile(
 
     for key, records in groups.items():
 
-        action_support: dict[str, float] = (
-            defaultdict(float)
-        )
+        aggregation = aggregate_expert_actions(records)
 
-        action_count: dict[str, int] = (
-            defaultdict(int)
-        )
-
-        for record in records:
-
-            action = str(
-                record.get(
-                    "expert_action",
-                    "",
-                )
-            ).upper()
-
-            if action not in VALID_ACTIONS:
-                continue
-
-            weight = _feedback_weight(record)
-
-            action_support[action] += weight
-            action_count[action] += 1
-
-        if not action_support:
+        if aggregation["preferred_action"] is None:
             continue
 
-        preferred_action = max(
-            action_support,
-            key=action_support.get,
-        )
-
-        total_weight = sum(
-            action_support.values()
-        )
-
-        consensus_ratio = (
-            action_support[preferred_action]
-            / total_weight
-            if total_weight > 0
-            else 0.0
-        )
+        preferred_action = aggregation["preferred_action"]
 
         profile[str(key)] = {
             "policy_state": policy_state(records[0]),
             "preferred_action": preferred_action,
             "support": round(
-                action_support[preferred_action],
+                aggregation["support"],
                 4,
             ),
-            "count": action_count[
-                preferred_action
-            ],
+            "count": aggregation["count"],
             "total_observations": len(records),
             "total_weight": round(
-                total_weight,
+                aggregation["total_weight"],
                 4,
             ),
             "consensus_ratio": round(
-                consensus_ratio,
+                aggregation["consensus_ratio"],
                 4,
             ),
             "action_support": {
@@ -222,10 +267,10 @@ def build_policy_profile(
                     4,
                 )
                 for action, support
-                in action_support.items()
+                in aggregation["action_support"].items()
             },
             "action_count": dict(
-                action_count
+                aggregation["action_count"]
             ),
         }
 
@@ -354,39 +399,9 @@ def refine_recommendation(
     # Aggregate expert actions
     # ---------------------------------------------------------------
 
-    action_support: dict[str, float] = (
-        defaultdict(float)
-    )
+    aggregation = aggregate_expert_actions(relevant)
 
-    action_count: dict[str, int] = (
-        defaultdict(int)
-    )
-
-    for record in relevant:
-
-        expert_action = str(
-            record.get(
-                "expert_action",
-                "",
-            )
-        ).upper()
-
-        if expert_action not in VALID_ACTIONS:
-            continue
-
-        weight = _feedback_weight(
-            record
-        )
-
-        action_support[
-            expert_action
-        ] += weight
-
-        action_count[
-            expert_action
-        ] += 1
-
-    if not action_support:
+    if aggregation["preferred_action"] is None:
         result["adaptation_reason"] = (
             "No valid expert actions available."
         )
@@ -396,28 +411,13 @@ def refine_recommendation(
     # Select strongest action
     # ---------------------------------------------------------------
 
-    preferred_action = max(
-        action_support,
-        key=action_support.get,
-    )
+    preferred_action = aggregation["preferred_action"]
 
-    support = action_support[
-        preferred_action
-    ]
+    support = aggregation["support"]
 
-    count = action_count[
-        preferred_action
-    ]
+    count = aggregation["count"]
 
-    total_weight = sum(
-        action_support.values()
-    )
-
-    consensus_ratio = (
-        support / total_weight
-        if total_weight > 0
-        else 0.0
-    )
+    consensus_ratio = aggregation["consensus_ratio"]
 
     result["adaptation_support"] = {
         "count": count,

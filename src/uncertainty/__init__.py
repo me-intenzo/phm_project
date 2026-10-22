@@ -1,15 +1,13 @@
 """Uncertainty estimation package — EARA-Conformal."""
 
-from .calibration import (
-    calibrate_eara_levels,
-    calibrate_multiple_levels,
-)
 from .conformal import (
     # legacy baseline
     absolute_nonconformity,
     adaptive_conformal_interval,
     adaptive_prediction_interval,
     assign_regimes,
+    calibrate_eara_levels,
+    calibrate_multiple_levels,
     calibrate_regime_quantiles,
     conformal_interval,
     conformal_quantile,
@@ -20,6 +18,7 @@ from .conformal import (
     normalised_nonconformity,
     prediction_interval,
     scale_conformalized_interval,
+    signed_conformal_quantile,
 )
 from .coverage import (
     empirical_coverage,
@@ -28,6 +27,7 @@ from .coverage import (
     mean_prediction_interval_width,
     normalised_interval_width,
     per_regime_coverage,
+    winkler_score,
 )
 
 __all__ = [
@@ -46,6 +46,7 @@ __all__ = [
     "normalised_interval_width",
     "normalised_nonconformity",
     "per_regime_coverage",
+    "winkler_score",
     # legacy
     "absolute_nonconformity",
     "conformal_quantile",
@@ -54,4 +55,5 @@ __all__ = [
     "scale_conformalized_interval",
     "engine_joint_interval",
     "prediction_interval",
+    "signed_conformal_quantile",
 ]

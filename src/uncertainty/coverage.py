@@ -5,12 +5,19 @@ These metrics evaluate whether the prediction intervals produced
 by the uncertainty layer achieve their intended coverage while
 remaining reasonably narrow.
 
+This module is the **single source of truth** for the interval metrics.
+The evaluation layer (``src/evaluation/metrics.py``) used to re-implement
+them with a hard-coded ``125.0`` upper bound and with different key
+names; it now calls the functions defined here.
+
 author: me-intenzo
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+from .conformal import RUL_MAX
 
 
 def empirical_coverage(
@@ -132,7 +139,7 @@ def coverage_error(
 def normalised_interval_width(
     lower: np.ndarray,
     upper: np.ndarray,
-    y_range: float = 125.0,
+    y_range: float = RUL_MAX,
 ) -> float:
     """
     Prediction Interval Normalised Average Width (PINAW).
@@ -143,6 +150,35 @@ def normalised_interval_width(
     """
     mpiw = mean_prediction_interval_width(lower=lower, upper=upper)
     return float(mpiw / y_range)
+
+
+def winkler_score(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    alpha: float,
+) -> float:
+    """
+    Winkler score for a (1-alpha) prediction interval.
+
+    Penalises width and adds a penalty proportional to 2/alpha for misses.
+    Lower is better.
+    """
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between 0 and 1.")
+
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    lower = np.asarray(lower, dtype=np.float64).reshape(-1)
+    upper = np.asarray(upper, dtype=np.float64).reshape(-1)
+
+    _validate_interval_inputs(y_true, lower, upper)
+
+    width = upper - lower
+    penalty = (2.0 / alpha) * np.where(
+        y_true < lower, lower - y_true,
+        np.where(y_true > upper, y_true - upper, 0.0)
+    )
+    return float(np.mean(width + penalty))
 
 
 def per_regime_coverage(
