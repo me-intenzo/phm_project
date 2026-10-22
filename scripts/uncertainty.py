@@ -171,13 +171,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--method",
-        choices=["split", "cqr", "adaptive", "engine_joint"],
+        choices=["split", "cqr", "adaptive", "engine_joint", "eara_scp"],
         default="split",
         help=(
             "Uncertainty method: global split conformal ('split'), "
-            "conformalized quantile regression ('cqr'), or normalized "
-            "adaptive conformal ('adaptive'), or engine-block joint "
-            "conformal ('engine_joint')."
+            "conformalized quantile regression ('cqr'), normalized "
+            "adaptive conformal ('adaptive'), engine-block joint "
+            "conformal ('engine_joint'), or EARA-SCP — engine/regime-aware "
+            "scale with prequential online adaptation ('eara_scp')."
         ),
     )
 
@@ -957,6 +958,127 @@ def predict_scales(
 
 
 
+def run_eara_scp(
+    model: torch.nn.Module,
+    model_name: str,
+    subset: str,
+    X_train: np.ndarray,
+    y_rul_train: np.ndarray,
+    X_calibration: np.ndarray,
+    y_rul_calibration: np.ndarray,
+    calibration_engine_ids: np.ndarray,
+    training_engine_ids: np.ndarray,
+    device: torch.device,
+    log: logging.Logger,
+    tag: str = "",
+    seed: int = DEFAULT_SEED,
+    checkpoint: dict | None = None,
+    aci_gamma: float = 0.02,
+) -> None:
+    """EARA-SCP: engine/regime-aware scale + prequential online adaptation.
+
+    Combines the EARA-Conformal scale (kNN retrieval over training-engine
+    profiles, conditioned on degradation regime) with the NEX-SCP prequential
+    miscoverage update.  The scale is sharper than the generic scale head
+    because it is conditioned on the engine's degradation regime; the level
+    adapts from each realised test outcome so coverage tracks the nominal
+    target even when the scale estimates are imperfect.
+    """
+    log.info("=" * 60)
+    log.info("EARA-SCP: ENGINE/REGIME-AWARE SCALE + PREQUENTIAL ADAPTATION")
+
+    train_features = extract_model_features(model, X_train, device)
+    calibration_features = extract_model_features(model, X_calibration, device)
+
+    train_rul = predict_rul(model, X_train, device)
+    calibration_predictions = predict_rul(model, X_calibration, device)
+
+    train_residuals = np.abs(y_rul_train - train_rul)
+    calibration_residuals = np.abs(y_rul_calibration - calibration_predictions)
+
+    profile_data = _build_training_engine_profiles(
+        train_features, train_residuals, training_engine_ids, train_rul
+    )
+
+    calibration_scales = np.empty(len(X_calibration), dtype=np.float64)
+    for i, (feature, pred) in enumerate(
+        zip(calibration_features.detach().cpu().numpy(), calibration_predictions)
+    ):
+        scale, _, _, _ = _nearest_engine_regime_scale(
+            feature, float(pred), profile_data, top_k=5
+        )
+        calibration_scales[i] = scale
+
+    normalized_scores = calibration_residuals / floor_scale(calibration_scales)
+
+    X_test, y_rul_test, y_hi_test = load_test_data(subset)
+    test_features = extract_model_features(model, X_test, device)
+    test_predictions = predict_rul(model, X_test, device)
+
+    test_scales = np.empty(len(X_test), dtype=np.float64)
+    for i, (feature, pred) in enumerate(
+        zip(test_features.detach().cpu().numpy(), test_predictions)
+    ):
+        scale, _, _, _ = _nearest_engine_regime_scale(
+            feature, float(pred), profile_data, top_k=5
+        )
+        test_scales[i] = scale
+
+    save_data: dict[str, np.ndarray] = {
+        "y_rul_test": y_rul_test,
+        "y_hi_test": y_hi_test,
+        "y_rul_pred": test_predictions,
+        "test_scales": test_scales,
+        "calibration_scales": calibration_scales,
+        "normalized_calibration_scores": normalized_scores,
+    }
+
+    for coverage in COVERAGE_LEVELS:
+        alpha = 1.0 - coverage
+        lower, upper, alpha_stream = pipeline.prequential_aci_intervals(
+            scores=normalized_scores,
+            y_pred=test_predictions,
+            scales=test_scales,
+            y_true=y_rul_test,
+            alpha=alpha,
+            gamma=aci_gamma,
+            scale_floor=SCALE_FLOOR,
+        )
+        metrics = evaluate_interval(y_rul_test, lower, upper, coverage)
+        suffix = int(coverage * 100)
+        save_data[f"lower_{suffix}"] = lower
+        save_data[f"upper_{suffix}"] = upper
+        # q_hat stores the median adapted alpha level (not a radius quantile).
+        save_data[f"q_hat_{suffix}"] = np.asarray(
+            [float(np.median(alpha_stream))] if alpha_stream else [alpha]
+        )
+        save_data[f"final_alpha_{suffix}"] = np.asarray(
+            [alpha_stream[-1]] if alpha_stream else [alpha]
+        )
+        log.info(
+            "EARA-SCP %.0f%% | median_alpha %.4f | final_alpha %.4f | "
+            "Empirical %.4f | Error %.4f | MPIW %.4f | MeanScale %.4f",
+            coverage * 100.0,
+            float(np.median(alpha_stream)) if alpha_stream else alpha,
+            alpha_stream[-1] if alpha_stream else alpha,
+            metrics["empirical_coverage"],
+            metrics["coverage_error"],
+            metrics["mean_interval_width"],
+            float(np.mean(test_scales)),
+        )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = results_path(subset, model_name, tag, suffix="eara_scp")
+    save_data["meta_json"] = pack_provenance(
+        build_artifact_provenance(
+            model_name, subset, tag, variant="eara_scp", seed=seed,
+            checkpoint=checkpoint,
+        )
+    )
+    np.savez(output_path, **save_data)
+    log.info("EARA-SCP results saved to: %s", output_path)
+
+
 def run_adaptive_conformal(
     model: torch.nn.Module,
     model_name: str,
@@ -1374,6 +1496,25 @@ def main():
             X_calibration=X_calibration,
             y_rul_calibration=y_rul_calibration,
             y_hi_calibration=y_hi_calibration,
+            calibration_engine_ids=calibration_engine_ids,
+            training_engine_ids=training_engine_ids,
+            device=device,
+            log=log,
+            tag=tag,
+            seed=seed,
+            checkpoint=checkpoint,
+        )
+        return
+
+    if args.method == "eara_scp":
+        run_eara_scp(
+            model=model,
+            model_name=model_name,
+            subset=subset,
+            X_train=X_train,
+            y_rul_train=y_rul_train,
+            X_calibration=X_calibration,
+            y_rul_calibration=y_rul_calibration,
             calibration_engine_ids=calibration_engine_ids,
             training_engine_ids=training_engine_ids,
             device=device,

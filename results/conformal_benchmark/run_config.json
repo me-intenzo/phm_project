@@ -27,7 +27,8 @@
     "cqr",
     "adaptive",
     "eara_conformal",
-    "nex_scp"
+    "nex_scp",
+    "eara_scp"
   ],
   "device": "cuda",
   "nex_scp_protocol": "Prequential adaptive miscoverage; each test engine outcome updates alpha for the next engine.",

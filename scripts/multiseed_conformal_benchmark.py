@@ -68,7 +68,7 @@ DATA = ROOT / "data" / "processed"
 OUT = ROOT / "results" / "conformal_benchmark"
 SUBSETS = ("FD001", "FD002", "FD003", "FD004")
 COVERAGES = (0.80, 0.90, 0.95)
-METHODS = ("split_conformal", "cqr", "adaptive", "eara_conformal", "nex_scp")
+METHODS = ("split_conformal", "cqr", "adaptive", "eara_conformal", "nex_scp", "eara_scp")
 
 # Reuse the production pipeline so benchmark and production cannot drift
 from src.uncertainty import pipeline
@@ -343,59 +343,63 @@ def paired_comparisons(seed_metrics: list[dict]) -> list[dict]:
                 )
                 if not seeds:
                     continue
-                family = []
-                for metric in metrics:
-                    for baseline in METHODS:
-                        if baseline == "eara_conformal":
-                            continue
-                        differences = np.asarray(
-                            [
-                                lookup[
-                                    (subset, unit, seed, "eara_conformal", coverage)
-                                ][metric]
-                                - lookup[(subset, unit, seed, baseline, coverage)][metric]
-                                for seed in seeds
-                            ]
-                        )
-                        n = len(differences)
-                        mean_diff = float(differences.mean())
-                        if n > 1:
-                            sem = float(differences.std(ddof=1) / np.sqrt(n))
-                            critical = float(student_t.ppf(0.975, df=n - 1))
-                            ci_low, ci_high = (
-                                mean_diff - critical * sem,
-                                mean_diff + critical * sem,
+                # Report significance for both novel-ish candidates against every
+                # baseline, so the new EARA-SCP method is evaluated on the same
+                # footing as EARA-Conformal.  Neither EARA nor nex_scp is changed.
+                for candidate in ("eara_conformal", "eara_scp"):
+                    family = []
+                    for metric in metrics:
+                        for baseline in METHODS:
+                            if baseline == candidate:
+                                continue
+                            differences = np.asarray(
+                                [
+                                    lookup[
+                                        (subset, unit, seed, candidate, coverage)
+                                    ][metric]
+                                    - lookup[(subset, unit, seed, baseline, coverage)][metric]
+                                    for seed in seeds
+                                ]
                             )
-                        else:
-                            ci_low = ci_high = float("nan")
-                        family.append(
-                            {
-                                "subset": subset,
-                                "calibration_unit": unit,
-                                "nominal_coverage": coverage,
-                                "metric": metric,
-                                "comparison": f"eara_conformal - {baseline}",
-                                "n_seeds": n,
-                                "mean_paired_difference": mean_diff,
-                                "ci95_low": ci_low,
-                                "ci95_high": ci_high,
-                                "exact_sign_flip_p": exact_sign_flip_pvalue(differences),
-                            }
-                        )
-                for metric in metrics:
-                    indices = [
-                        i for i, row in enumerate(family) if row["metric"] == metric
-                    ]
-                    ordered = sorted(indices, key=lambda i: family[i]["exact_sign_flip_p"])
-                    running = 0.0
-                    for rank, index in enumerate(ordered):
-                        adjusted = min(
-                            1.0,
-                            (len(ordered) - rank) * family[index]["exact_sign_flip_p"],
-                        )
-                        running = max(running, adjusted)
-                        family[index]["holm_adjusted_p"] = running
-                comparisons.extend(family)
+                            n = len(differences)
+                            mean_diff = float(differences.mean())
+                            if n > 1:
+                                sem = float(differences.std(ddof=1) / np.sqrt(n))
+                                critical = float(student_t.ppf(0.975, df=n - 1))
+                                ci_low, ci_high = (
+                                    mean_diff - critical * sem,
+                                    mean_diff + critical * sem,
+                                )
+                            else:
+                                ci_low = ci_high = float("nan")
+                            family.append(
+                                {
+                                    "subset": subset,
+                                    "calibration_unit": unit,
+                                    "nominal_coverage": coverage,
+                                    "metric": metric,
+                                    "comparison": f"{candidate} - {baseline}",
+                                    "n_seeds": n,
+                                    "mean_paired_difference": mean_diff,
+                                    "ci95_low": ci_low,
+                                    "ci95_high": ci_high,
+                                    "exact_sign_flip_p": exact_sign_flip_pvalue(differences),
+                                }
+                            )
+                    for metric in metrics:
+                        indices = [
+                            i for i, row in enumerate(family) if row["metric"] == metric
+                        ]
+                        ordered = sorted(indices, key=lambda i: family[i]["exact_sign_flip_p"])
+                        running = 0.0
+                        for rank, index in enumerate(ordered):
+                            adjusted = min(
+                                1.0,
+                                (len(ordered) - rank) * family[index]["exact_sign_flip_p"],
+                            )
+                            running = max(running, adjusted)
+                            family[index]["holm_adjusted_p"] = running
+                    comparisons.extend(family)
     return comparisons
 
 

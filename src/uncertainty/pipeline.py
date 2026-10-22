@@ -76,6 +76,7 @@ METHODS: tuple[str, ...] = (
     "adaptive",
     "eara_conformal",
     "nex_scp",
+    "eara_scp",
 )
 
 
@@ -510,8 +511,11 @@ def build_training_engine_profiles(
     z = (feature_np - center) / mad
 
     # Degradation regimes are learned from the *training* predictions only.
+    # np.digitize with these edges returns values in [0, n_regimes].  Index 0
+    # (below the first edge) and n_regimes (above the last edge) are both valid
+    # regime labels; regime_scales is keyed 0..n_regimes so all are covered.
     edges = np.quantile(predicted_rul, np.linspace(0.0, 1.0, n_regimes + 1)[1:-1])
-    regimes = np.digitize(predicted_rul, edges, right=False)
+    regimes = np.digitize(predicted_rul, edges, right=False)  # values in [0, n_regimes]
 
     profiles = []
     for engine in np.unique(engine_ids):
@@ -523,7 +527,10 @@ def build_training_engine_profiles(
         engine_z = z[mask]
         regime_scales: dict[int, float] = {}
 
-        for regime in range(n_regimes):
+        # Iterate over all possible regime labels: 0..n_regimes (inclusive).
+        # np.digitize returns n_regimes for values above the last edge, so
+        # that label must be stored or it silently falls back to global_scale.
+        for regime in range(n_regimes + 1):
             values = engine_residuals[regimes[mask] == regime]
             if len(values) >= 8:
                 regime_scales[regime] = _robust_scale(values)
@@ -574,6 +581,8 @@ def nearest_engine_regime_scale(
     weights = 1.0 / (d + 1e-6)
     weights = weights / weights.sum()
 
+    # np.digitize returns values in [0, n_regimes]; all are valid keys in
+    # regime_scales (built with the same range in build_training_engine_profiles).
     regime = int(
         np.digitize(predicted_rul, profile_data["regime_edges"], right=False)
     )
@@ -607,6 +616,7 @@ def prequential_aci_intervals(
     gamma: float,
     scale_floor: float = SCALE_FLOOR,
     alpha_floor: float = 0.01,
+    engine_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[float]]:
     """Prequential adaptive conformal inference (Gibbs & Candes, 2021).
 
@@ -625,6 +635,12 @@ def prequential_aci_intervals(
     calibration set.  For the engine-level unit the floor is sometimes below
     the attainable rank, in which case the interval correctly degenerates to
     the full RUL domain instead of crashing.
+
+    ``engine_ids`` is optional.  When supplied the alpha update fires once per
+    **engine** (after the last window of that engine) rather than once per
+    window.  On C-MAPSS the test set has one window per engine so the two
+    behaviours are identical; the parameter exists so the function is correct
+    for multi-window test sets without changing the C-MAPSS results.
     """
 
     if not 0.0 < alpha_floor < 0.5:
@@ -645,6 +661,26 @@ def prequential_aci_intervals(
     alpha_stream: list[float] = []
     alpha_t = float(np.clip(alpha, alpha_floor, 1.0 - alpha_floor))
 
+    # Determine the last window index for each engine so the alpha update
+    # fires once per engine rather than once per window when engine_ids are
+    # supplied.  On C-MAPSS the test set has one window per engine, so the
+    # two paths produce identical results; the engine-aware path is correct
+    # for multi-window test sets.
+    if engine_ids is not None:
+        engine_ids_arr = np.asarray(engine_ids).reshape(-1)
+        if engine_ids_arr.shape != y_pred.shape:
+            raise ValueError("engine_ids must have the same length as y_pred.")
+        # last index of each engine in stored order
+        last_window: set[int] = set()
+        seen: dict = {}
+        for i, eid in enumerate(engine_ids_arr):
+            seen[int(eid)] = i
+        last_window = set(seen.values())
+    else:
+        # update after every window (original behaviour; correct when the
+        # test set has exactly one window per engine)
+        last_window = set(range(len(y_pred)))
+
     for index in range(len(y_pred)):
         quantile = finite_sample_quantile(scores, alpha_t)
         radius = quantile * max(float(scales[index]), scale_floor)
@@ -656,14 +692,18 @@ def prequential_aci_intervals(
         upper[index] = hi[0]
         alpha_stream.append(alpha_t)
 
-        error = 0.0 if lo <= y_true[index] <= hi else 1.0
-        alpha_t = float(
-            np.clip(
-                alpha_t + gamma * (alpha - error),
-                alpha_floor,
-                1.0 - alpha_floor,
+        # Update alpha only at the last window of each engine.
+        if index in last_window:
+            lo_val = float(lo[0])
+            hi_val = float(hi[0])
+            error = 0.0 if lo_val <= float(y_true[index]) <= hi_val else 1.0
+            alpha_t = float(
+                np.clip(
+                    alpha_t + gamma * (alpha - error),
+                    alpha_floor,
+                    1.0 - alpha_floor,
+                )
             )
-        )
 
     return lower, upper, alpha_stream
 
@@ -941,11 +981,12 @@ def compute_all_intervals(
                 dict(unit_info),
             )
 
-            # ---------------- nex-SCP (prequential) ----------------
+            # ---------------- nex-SCP (prequential, generic scale head) ----------------
+            # Uses the generic scale-head scale (test_scale, singular).
             nex_lower, nex_upper, alpha_stream = prequential_aci_intervals(
                 adaptive_scores,
                 test_pred,
-                test_scale,
+                test_scale,          # generic scale head — distinct from test_scales (EARA)
                 y_true_test,
                 alpha,
                 aci_gamma,
@@ -957,10 +998,54 @@ def compute_all_intervals(
                 y_true_test,
                 nex_lower,
                 nex_upper,
+                # q_hat for prequential methods is the median adapted alpha level,
+                # not a radius quantile.  Stored under the same key for schema
+                # consistency; the "final_alpha" key carries the terminal value.
                 float(np.median(alpha_stream)) if alpha_stream else float(alpha),
                 {
                     **unit_info,
                     "final_alpha": alpha_stream[-1] if alpha_stream else float(alpha),
+                    "q_hat_is_median_alpha": True,
+                },
+            )
+
+            # ---------------- EARA-SCP (prequential, EARA scale) ----------------
+            # Novel combination: EARA's engine/regime-aware scale (test_scales,
+            # plural — kNN over training-engine profiles) with NEX-SCP's online
+            # miscoverage adaptation.  The scale is sharper than the generic head
+            # because it is conditioned on the engine's degradation regime; the
+            # level adapts from each realised test outcome so coverage tracks the
+            # nominal target even when the scale estimates are imperfect.
+            # Neither EARA-Conformal nor nex_scp is modified; this is a clean
+            # composition reported alongside them.
+            eara_scp_lower, eara_scp_upper, eara_scp_alpha_stream = (
+                prequential_aci_intervals(
+                    eara_scores,
+                    test_pred,
+                    test_scales,     # EARA kNN scale — distinct from test_scale (generic)
+                    y_true_test,
+                    alpha,
+                    aci_gamma,
+                    scale_floor,
+                )
+            )
+            results[unit]["eara_scp"][coverage] = _build_result(
+                "eara_scp",
+                coverage,
+                y_true_test,
+                eara_scp_lower,
+                eara_scp_upper,
+                float(np.median(eara_scp_alpha_stream))
+                if eara_scp_alpha_stream
+                else float(alpha),
+                {
+                    **unit_info,
+                    "final_alpha": (
+                        eara_scp_alpha_stream[-1]
+                        if eara_scp_alpha_stream
+                        else float(alpha)
+                    ),
+                    "q_hat_is_median_alpha": True,
                 },
             )
 
