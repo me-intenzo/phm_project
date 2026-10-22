@@ -386,7 +386,7 @@ def generate_html_report(
 
 <h2>Explainability Reliability Index (ERI)</h2>
 <p>ERI measures cross-method agreement between Integrated Gradients, SHAP, and Temporal Attention.
-   Higher ERI → more trustworthy explanations.</p>
+   Higher ERI -> more trustworthy explanations.</p>
 <table>
   <tr>
     <th>Model</th><th>ERI</th><th>ρ(IG,Attn)</th>

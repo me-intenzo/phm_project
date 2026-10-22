@@ -12,10 +12,10 @@ weights.
 
 This driver does exactly that.  For every (subset, seed) pair it runs:
 
-1. ``scripts/uncertainty.py``  → calibrated prediction intervals
-2. ``scripts/explain.py``      → SHAP / IG / attention attributions
-3. ``scripts/decision.py``     → maintenance recommendations
-4. ``scripts/hitl.py``         → human-in-the-loop review workflow
+1. ``scripts/uncertainty.py``  -> calibrated prediction intervals
+2. ``scripts/explain.py``      -> SHAP / IG / attention attributions
+3. ``scripts/decision.py``     -> maintenance recommendations
+4. ``scripts/hitl.py``         -> human-in-the-loop review workflow
 
 and then verifies that every artifact exists and that the numbers are
 mutually consistent (e.g. the interval bounds used by the decision engine

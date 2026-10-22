@@ -5,9 +5,9 @@ Full preprocessing pipeline for NASA C-MAPSS.
 
 Pipeline
 --------
-Load → Validate → Summary → Visualize → Generate RUL/HI
-→ Feature Selection → Feature Scaling → Sliding Windows
-→ Save → Logging → Done
+Load -> Validate -> Summary -> Visualize -> Generate RUL/HI
+-> Feature Selection -> Feature Scaling -> Sliding Windows
+-> Save -> Logging -> Done
 """
 
 from __future__ import annotations
