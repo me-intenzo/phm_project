@@ -39,9 +39,12 @@ from src.models.registry import ALL_MODELS, load_model_from_checkpoint, resolve_
 from src.utils.config import ALL_SUBSETS, get_device
 from src.utils.logger import get_script_logger
 from src.utils.paths import (
+    CHECKPOINT_DIR,
     RESULTS_DIR,
+    safe_path,
 )
 from src.utils.provenance import build_provenance, pack_provenance
+from src.utils.seed import set_seed
 
 # ------------------------------------------------------------------
 # Paths
@@ -132,7 +135,7 @@ def predict(model, X: np.ndarray, device: torch.device):
     predictions_rul = []
     predictions_hi = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
 
         for start in range(0, len(X), BATCH_SIZE):
 
@@ -158,7 +161,14 @@ def predict(model, X: np.ndarray, device: torch.device):
 def run(model_name: str, subset: str, tag: str = "") -> None:
     """Run the full evaluation pipeline for a single model/subset combination."""
 
+    if subset not in ALL_SUBSETS:
+        raise ValueError(f"Unknown subset: {subset!r}")
+
     dir_name = model_name + (f"_{tag}" if tag else "")
+    safe_path(
+        resolve_checkpoint_path(model_name, subset, tag),
+        CHECKPOINT_DIR,
+    )
 
     log = get_script_logger("evaluation", f"evaluate_{subset}_{dir_name}")
 
@@ -187,6 +197,8 @@ def run(model_name: str, subset: str, tag: str = "") -> None:
         subset=subset,
         tag=tag,
     )
+    run_metadata = checkpoint.get("run_metadata") or {}
+    set_seed(int(run_metadata.get("seed", checkpoint.get("seed", 42))))
 
     log.info(
         "Loaded %s checkpoint from epoch %d (arch=%s)",
@@ -244,7 +256,10 @@ def run(model_name: str, subset: str, tag: str = "") -> None:
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    prediction_path = RESULTS_DIR / f"{subset}_{dir_name}_predictions.npz"
+    prediction_path = safe_path(
+        RESULTS_DIR / f"{subset}_{dir_name}_predictions.npz",
+        RESULTS_DIR,
+    )
 
     # The provenance stamp travels *inside* the artifact so it can never
     # drift away from the predictions it describes.  Without it, a
@@ -268,7 +283,10 @@ def run(model_name: str, subset: str, tag: str = "") -> None:
         meta_json=pack_provenance(provenance),
     )
 
-    metrics_path = RESULTS_DIR / f"{subset}_{dir_name}_metrics.json"
+    metrics_path = safe_path(
+        RESULTS_DIR / f"{subset}_{dir_name}_metrics.json",
+        RESULTS_DIR,
+    )
 
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(

@@ -516,6 +516,7 @@ def load_live_model(model: str, subset: str, tag: str) -> dict[str, Any]:
 
     from src.models.outputs import unpack_model_output
     from src.models.registry import load_model_from_checkpoint
+    from src.utils.seed import set_seed
 
     X = np.load(PROCESSED_DIR / f"{subset}_test_X.npy")
     y_rul = np.load(PROCESSED_DIR / f"{subset}_test_y_rul.npy")
@@ -528,9 +529,11 @@ def load_live_model(model: str, subset: str, tag: str) -> dict[str, Any]:
         subset=subset,
         tag=tag,
     )
+    run_metadata = checkpoint.get("run_metadata") or {}
+    set_seed(int(run_metadata.get("seed", checkpoint.get("seed", 42))))
 
     rul, hi = [], []
-    with torch.no_grad():
+    with torch.inference_mode():
         for start in range(0, len(X), 64):
             batch = torch.from_numpy(X[start:start + 64]).float()
             pred_rul, pred_hi, _ = unpack_model_output(net(batch))
@@ -1457,20 +1460,19 @@ def render_xai_tab(subset: str, run: str, model: str, tag: str, target: str) -> 
                 "Normalised share per feature (each method sums to 1)."
             )
 
-            importance_rows = []
-            for index in range(n_sensors):
-                importance_rows.append(
-                    {
-                        "sensor": labels[index],
-                        "integrated gradients": float(
-                            shares["integrated gradients"][index]
-                        ),
-                        "shap": float(shares["shap"][index]),
-                        "temporal relevance": float(
-                            shares["temporal relevance"][index]
-                        ),
-                    }
-                )
+            importance_rows = [
+                {
+                    "sensor": labels[index],
+                    "integrated gradients": float(
+                        shares["integrated gradients"][index]
+                    ),
+                    "shap": float(shares["shap"][index]),
+                    "temporal relevance": float(
+                        shares["temporal relevance"][index]
+                    ),
+                }
+                for index in range(n_sensors)
+            ]
 
             importance_frame = pd.DataFrame(importance_rows)
             long_frame = importance_frame.melt(

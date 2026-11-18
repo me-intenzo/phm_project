@@ -61,6 +61,7 @@ that one weight can produce on its own.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -85,10 +86,24 @@ RISK_OVERRIDE = 0.85
 # Input handling
 # ------------------------------------------------------------------
 
+_SAFE_FILENAME = re.compile(r'^[A-Za-z0-9_\-]+\.json$')
+
+
+def _validate_decision_path(path: Path) -> None:
+    """Raise ValueError if *path* looks like a traversal attempt."""
+    resolved = path.resolve()
+    if not _SAFE_FILENAME.match(resolved.name):
+        raise ValueError(f"Invalid decision file name: {resolved.name!r}")
+    if not resolved.is_relative_to(resolved.parent.resolve()):
+        raise ValueError(f"Path traversal detected: {resolved}")
+
+
 def load_decision_records(path: str | Path) -> list[dict[str, Any]]:
     """Read the decision records of a decision JSON artifact."""
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    safe = Path(path).resolve()
+    _validate_decision_path(safe)
+    payload = json.loads(safe.read_text(encoding="utf-8"))
     decisions = payload.get("decisions", payload)
     if isinstance(decisions, dict):
         decisions = [decisions]
@@ -438,7 +453,8 @@ def run_sensitivity(
 ) -> dict[str, Any]:
     """Run both sweeps on a decision artifact and return the full report."""
 
-    path = Path(decision_path)
+    path = Path(decision_path).resolve()
+    _validate_decision_path(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     records = payload.get("decisions", payload)
     if isinstance(records, dict):

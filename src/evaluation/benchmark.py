@@ -16,6 +16,7 @@ Usage (from scripts/evaluate.py or demo.py)
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -60,16 +61,30 @@ def comparative_benchmark(
     dict keyed by ``"{subset}_{run_name}"`` → metric sub-dicts, plus a
     ``"summary"`` key with the best model per metric.
     """
-    results_dir = Path(results_dir)
+    results_dir = Path(results_dir).resolve()
     report: dict[str, Any] = {}
+
+    _SAFE = re.compile(r'^[A-Za-z0-9_\-]+$')
 
     for subset in subsets:
         for model in models:
+            if not _SAFE.match(subset) or not _SAFE.match(model):
+                raise ValueError(f"Invalid subset or model name: {subset!r}, {model!r}")
+            if tag and not _SAFE.match(tag):
+                raise ValueError(f"Invalid tag: {tag!r}")
+            if not _SAFE.match(uncertainty_variant):
+                raise ValueError(f"Invalid uncertainty_variant: {uncertainty_variant!r}")
+
             run_name = f"{model}_{tag}" if tag else model
             key = f"{subset}_{run_name}"
 
-            pred_path = results_dir / f"{subset}_{run_name}_predictions.npz"
-            unc_path  = results_dir / f"{subset}_{run_name}_{uncertainty_variant}.npz"
+            pred_path = (results_dir / f"{subset}_{run_name}_predictions.npz").resolve()
+            unc_path  = (results_dir / f"{subset}_{run_name}_{uncertainty_variant}.npz").resolve()
+
+            if not str(pred_path).startswith(str(results_dir)):
+                raise ValueError(f"Path traversal detected: {pred_path}")
+            if not str(unc_path).startswith(str(results_dir)):
+                raise ValueError(f"Path traversal detected: {unc_path}")
 
             if not pred_path.exists():
                 report[key] = {"error": f"missing {pred_path.name}"}

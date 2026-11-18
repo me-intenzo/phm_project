@@ -39,6 +39,16 @@ LOGS_DIR = OUTPUTS_DIR / "logs"
 UNCERTAINTY_DIR = RESULTS_DIR / "uncertainty"
 
 
+def safe_path(path: str | Path, *allowed_roots: Path) -> Path:
+    """Resolve *path* and ensure it is contained by an allowed root."""
+
+    resolved = Path(path).resolve()
+    roots = tuple(Path(root).resolve() for root in allowed_roots)
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise ValueError(f"Path outside allowed directories: {resolved}")
+    return resolved
+
+
 # ------------------------------------------------------------------
 # Directory / file naming
 # ------------------------------------------------------------------
@@ -128,5 +138,6 @@ __all__ = [
     "resolve_tagged_path",
     "results_path",
     "run_dir_name",
+    "safe_path",
     "structured_results_path",
 ]

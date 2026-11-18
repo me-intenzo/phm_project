@@ -31,6 +31,7 @@ Expected decision state:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import sys
 from pathlib import Path
@@ -51,6 +52,7 @@ from src.models.registry import ALL_MODELS as REGISTERED_MODELS
 from src.utils.config import ALL_SUBSETS as CONFIG_SUBSETS
 from src.utils.logger import get_script_logger
 from src.utils.paths import run_dir_name
+from src.utils.paths import safe_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR  = PROJECT_ROOT / "outputs" / "results"
@@ -60,6 +62,12 @@ ALL_SUBSETS  = tuple(CONFIG_SUBSETS)
 ALL_MODELS   = tuple(REGISTERED_MODELS)
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external"
 XAI_DIR      = PROJECT_ROOT / "outputs" / "xai"
+_ALLOWED_ROOTS = (
+    PROJECT_ROOT / "outputs",
+    PROJECT_ROOT / "data" / "external",
+    PROJECT_ROOT / "data" / "processed",
+    PROJECT_ROOT / "results",
+)
 DEFAULT_MODEL  = "gru"
 INTERVAL_LEVEL = 90
 UNCERTAINTY_VARIANTS = (
@@ -76,17 +84,21 @@ UNCERTAINTY_VARIANTS = (
 # ---------------------------------------------------------------------
 
 def load_json(path: str | Path) -> Any:
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Input file not found: {path}")
-    with path.open("r", encoding="utf-8") as f:
+    resolved = Path(path).resolve()
+    if not any(str(resolved).startswith(str(root)) for root in _ALLOWED_ROOTS):
+        raise ValueError(f"Path outside allowed directories: {resolved!r}")
+    if not resolved.exists():
+        raise FileNotFoundError(f"Input file not found: {resolved}")
+    with resolved.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_json(data: Any, path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    resolved = Path(path).resolve()
+    if not any(str(resolved).startswith(str(root)) for root in _ALLOWED_ROOTS):
+        raise ValueError(f"Path outside allowed directories: {resolved!r}")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    with resolved.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
@@ -438,9 +450,16 @@ def load_upstream_records(
         raise ValueError(f"XAI output does not contain 'eri': {eri_path}")
     importance = eri_data.get("sensor_importance", {}).get("ig", [])
     top_k_sensors = [
-        index + 1
+        int(index) + 1
         for index in np.argsort(np.asarray(importance))[::-1][:5]
     ]
+    log = get_script_logger("decision", f"decision_{subset}_{model_name}")
+    log.warning(
+        "Using aggregate ERI for every engine in %s/%s; "
+        "per-engine ERI is not available.",
+        subset,
+        model_name,
+    )
     for record in records:
         record["eri"] = eri
         record["top_k_sensors"] = top_k_sensors
@@ -453,7 +472,9 @@ def load_upstream_records(
 
 _ACTION_BADGE = {
     "URGENT_MAINTENANCE": ("🔴", "#c0392b"),
+    "SCHEDULE_MAINTENANCE": ("🟠", "#e67e22"),
     "INSPECT":            ("🟡", "#d68910"),
+    "MONITOR":            ("🔵", "#2471a3"),
     "CONTINUE_OPERATION": ("🟢", "#1e8449"),
 }
 
@@ -467,8 +488,8 @@ _HEALTH_BADGE = {
 
 def _badge(text: str, color: str) -> str:
     return (
-        f'<span style="background:{color};color:#fff;padding:2px 8px;'
-        f'border-radius:4px;font-size:0.85em;font-weight:600">{text}</span>'
+        f'<span style="background:{html.escape(color)};color:#fff;padding:2px 8px;'
+        f'border-radius:4px;font-size:0.85em;font-weight:600">{html.escape(text)}</span>'
     )
 
 
@@ -477,15 +498,16 @@ def _decision_card(d: dict[str, Any]) -> str:
     health  = d.get("health_state", "—")
     icon, ac = _ACTION_BADGE.get(action, ("⚪", "#555"))
     hc       = _HEALTH_BADGE.get(health, "#555")
-    eng_id   = d.get("engine_id", d.get("index", "—"))
-    sensors  = ", ".join(f"S{s}" for s in d.get("top_k_sensors", []))
-    reasons  = "".join(f"<li>{r}</li>" for r in d.get("reasons", []))
+    eng_id   = html.escape(str(d.get("engine_id", d.get("index", "—"))))
+    sensors  = html.escape(", ".join(f"S{s}" for s in d.get("top_k_sensors", [])))
+    reasons  = "".join(f"<li>{html.escape(str(r))}</li>" for r in d.get("reasons", []))
     violations = d.get("constraint_violations", [])
     viol_html  = (
-        "".join(f"<li style='color:#c0392b'>{v}</li>" for v in violations)
+        "".join(f"<li style='color:#c0392b'>{html.escape(str(v))}</li>" for v in violations)
         if violations else "<li style='color:#1e8449'>None</li>"
     )
     inp = d.get("inputs", {})
+    e = html.escape
 
     return f"""
     <div style="border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;
@@ -503,27 +525,27 @@ def _decision_card(d: dict[str, Any]) -> str:
         </tr>
         <tr>
           <td style="padding:5px 10px">RUL</td>
-          <td style="padding:5px 10px"><b>{inp.get('rul', '—')}</b></td>
+          <td style="padding:5px 10px"><b>{e(str(inp.get('rul', '—')))}</b></td>
           <td style="padding:5px 10px">Risk Score</td>
           <td style="padding:5px 10px"><b>{d.get('risk_score', '—'):.4f}</b></td>
         </tr>
         <tr style="background:#f5f5f5">
           <td style="padding:5px 10px">HI</td>
-          <td style="padding:5px 10px"><b>{inp.get('hi', '—')}</b></td>
+          <td style="padding:5px 10px"><b>{e(str(inp.get('hi', '—')))}</b></td>
           <td style="padding:5px 10px">Urgency Index</td>
           <td style="padding:5px 10px"><b>{d.get('urgency_index', '—'):.4f}</b></td>
         </tr>
         <tr>
           <td style="padding:5px 10px">RUL Interval</td>
-          <td style="padding:5px 10px">[{inp.get('rul_lower', '—')}, {inp.get('rul_upper', '—')}]</td>
+          <td style="padding:5px 10px">[{e(str(inp.get('rul_lower', '—')))}, {e(str(inp.get('rul_upper', '—')))}]</td>
           <td style="padding:5px 10px">Uncertainty</td>
-          <td style="padding:5px 10px">{d.get('uncertainty_level', '—')}</td>
+          <td style="padding:5px 10px">{e(str(d.get('uncertainty_level', '—')))}</td>
         </tr>
         <tr style="background:#f5f5f5">
           <td style="padding:5px 10px">ERI</td>
-          <td style="padding:5px 10px"><b>{inp.get('eri', '—')}</b></td>
+          <td style="padding:5px 10px"><b>{e(str(inp.get('eri', '—')))}</b></td>
           <td style="padding:5px 10px">Explanation Reliability</td>
-          <td style="padding:5px 10px">{d.get('explanation_reliability', '—')}</td>
+          <td style="padding:5px 10px">{e(str(d.get('explanation_reliability', '—')))}</td>
         </tr>
         <tr>
           <td style="padding:5px 10px">Top Sensors</td>
@@ -546,31 +568,32 @@ def _decision_card(d: dict[str, Any]) -> str:
 def build_html_report(output: dict[str, Any], input_stem: str) -> str:
     summary   = output["summary"]
     decisions = output["decisions"]
+    safe_stem = html.escape(input_stem)
 
     action_rows = "".join(
-        f"<tr><td style='padding:4px 12px'>{k}</td>"
-        f"<td style='padding:4px 12px;font-weight:600'>{v}</td></tr>"
+        f"<tr><td style='padding:4px 12px'>{html.escape(k)}</td>"
+        f"<td style='padding:4px 12px;font-weight:600'>{html.escape(str(v))}</td></tr>"
         for k, v in summary["action_distribution"].items()
     )
     health_rows = "".join(
-        f"<tr><td style='padding:4px 12px'>{k}</td>"
-        f"<td style='padding:4px 12px;font-weight:600'>{v}</td></tr>"
+        f"<tr><td style='padding:4px 12px'>{html.escape(k)}</td>"
+        f"<td style='padding:4px 12px;font-weight:600'>{html.escape(str(v))}</td></tr>"
         for k, v in summary["health_state_distribution"].items()
     )
     cards = "".join(_decision_card(d) for d in decisions)
 
     risk_line = (
-        f"Risk Score — mean: <b>{summary.get('risk_score_mean', '—')}</b> &nbsp;|&nbsp; "
-        f"max: <b>{summary.get('risk_score_max', '—')}</b><br>"
-        f"Urgency Index — mean: <b>{summary.get('urgency_index_mean', '—')}</b> &nbsp;|&nbsp; "
-        f"max: <b>{summary.get('urgency_index_max', '—')}</b>"
+        f"Risk Score — mean: <b>{html.escape(str(summary.get('risk_score_mean', '—')))}</b> &nbsp;|&nbsp; "
+        f"max: <b>{html.escape(str(summary.get('risk_score_max', '—')))}</b><br>"
+        f"Urgency Index — mean: <b>{html.escape(str(summary.get('urgency_index_mean', '—')))}</b> &nbsp;|&nbsp; "
+        f"max: <b>{html.escape(str(summary.get('urgency_index_max', '—')))}</b>"
     )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>O4 Decision Report — {input_stem}</title>
+  <title>O4 Decision Report — {safe_stem}</title>
   <style>
     body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 24px 32px;
             background: #f0f2f5; color: #222; }}
@@ -584,7 +607,7 @@ def build_html_report(output: dict[str, Any], input_stem: str) -> str:
 </head>
 <body>
   <h1>O4 Explainable Decision Intelligence Engine</h1>
-  <p><b>Input:</b> {input_stem} &nbsp;|&nbsp;
+  <p><b>Input:</b> {safe_stem} &nbsp;|&nbsp;
      <b>Decisions:</b> {summary['num_decisions']} &nbsp;|&nbsp;
      <b>Human Reviews:</b> {summary['human_review_count']} &nbsp;|&nbsp;
      <b>Constraint Violations:</b> {summary['constraint_violation_count']}</p>
@@ -642,8 +665,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--xai-context", type=str, default=None,
                         help="Optional JSON file with top_k_sensors per record from O3.")
-    parser.add_argument("--maintenance-window",    action="store_true", default=False)
-    parser.add_argument("--no-maintenance-window", action="store_true", default=False)
+    maintenance_group = parser.add_mutually_exclusive_group()
+    maintenance_group.add_argument(
+        "--maintenance-window", action="store_true", default=False
+    )
+    maintenance_group.add_argument(
+        "--no-maintenance-window", action="store_true", default=False
+    )
     parser.add_argument("--minimum-safe-rul",      type=float, default=None)
     parser.add_argument("--maintenance-lead-time", type=float, default=None)
     parser.add_argument("--max-allowable-delay",   type=float, default=None)
@@ -745,8 +773,12 @@ def run_subset(
 ) -> None:
     stem = f"{subset}_{run_dir_name(model_name, args.tag)}"
     log = get_script_logger("decision", f"decision_{stem}")
-    result_path = RESULTS_DIR / f"decision_{stem}.json"
-    report_path = REPORTS_DIR / f"decision_{stem}.html"
+    result_path = safe_path(
+        RESULTS_DIR / f"decision_{stem}.json", RESULTS_DIR
+    )
+    report_path = safe_path(
+        REPORTS_DIR / f"decision_{stem}.html", REPORTS_DIR
+    )
 
     log.info("=" * 60)
     log.info("O4 EXPLAINABLE DECISION INTELLIGENCE ENGINE")

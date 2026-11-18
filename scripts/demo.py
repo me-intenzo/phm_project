@@ -83,7 +83,7 @@ def run_stage(
     env = dict(os.environ)
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-    result = subprocess.run(argv, cwd=str(ROOT), env=env)
+    result = subprocess.run(argv, cwd=str(ROOT), env=env, shell=False)
 
     missing = [str(p) for p in outputs if not p.exists()]
     if missing:
@@ -118,6 +118,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--subset", type=str, default=DEFAULT_SUBSET,
+        choices=[*[s.upper() for s in ALL_SUBSETS], *[s.lower() for s in ALL_SUBSETS], "all"],
         help="C-MAPSS subset, or 'all' for FD001-FD004.",
     )
     parser.add_argument(

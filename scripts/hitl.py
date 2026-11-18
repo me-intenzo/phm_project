@@ -60,6 +60,7 @@ from src.models.registry import ALL_MODELS
 from src.utils.config import ALL_SUBSETS
 from src.utils.logger import get_script_logger
 from src.utils.paths import run_dir_name
+from src.utils.paths import safe_path
 
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 
@@ -185,11 +186,11 @@ def _decision_input_path(
 ) -> Path:
 
     candidates = [
-        RESULTS_DIR
-        / f"decision_{subset}_{run_dir_name(model, tag)}.json",
-
-        RESULTS_DIR
-        / f"decision_{subset}.json",
+        safe_path(
+            RESULTS_DIR / f"decision_{subset}_{run_dir_name(model, tag)}.json",
+            RESULTS_DIR,
+        ),
+        safe_path(RESULTS_DIR / f"decision_{subset}.json", RESULTS_DIR),
     ]
 
     for path in candidates:
@@ -212,7 +213,7 @@ def load_json(
     path: str | Path,
 ) -> Any:
 
-    path = Path(path)
+    path = safe_path(path, RESULTS_DIR, REPORTS_DIR, PROJECT_ROOT / "data")
 
     if not path.exists():
         raise FileNotFoundError(
@@ -231,7 +232,7 @@ def save_json(
     path: str | Path,
 ) -> None:
 
-    path = Path(path)
+    path = safe_path(path, RESULTS_DIR, REPORTS_DIR)
 
     path.parent.mkdir(
         parents=True,
@@ -867,6 +868,8 @@ def run(
         REPORTS_DIR
         / f"hitl_{stem}.html"
     )
+    output_path = safe_path(output_path, RESULTS_DIR)
+    report_path = safe_path(report_path, REPORTS_DIR)
 
     logger = get_script_logger(
         "hitl",

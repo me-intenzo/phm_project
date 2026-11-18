@@ -80,14 +80,23 @@ def sha256_file(path: str | Path) -> str:
 def git_commit(root: str | Path | None = None) -> str:
     """Return the current git commit hash, or an empty string."""
 
+    if root is not None:
+        resolved = Path(root).resolve()
+        if not str(resolved).startswith(str(PROJECT_ROOT)):
+            raise ValueError(f"root path outside project directory: {resolved!r}")
+        cwd = str(resolved)
+    else:
+        cwd = str(PROJECT_ROOT)
+
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(root) if root is not None else str(PROJECT_ROOT),
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
+            shell=False,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

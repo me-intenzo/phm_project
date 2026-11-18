@@ -26,6 +26,7 @@ or from demo.py without re-running inference.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,9 +43,26 @@ from src.uncertainty.coverage import (
     winkler_score,
 )
 
-# ------------------------------------------------------------------ #
-# 1. Predictive Accuracy
-# ------------------------------------------------------------------ #
+_SAFE_JSON = re.compile(r'^[A-Za-z0-9_\-]+\.json$')
+_SAFE_JSONL = re.compile(r'^[A-Za-z0-9_\-]+\.jsonl$')
+_ALLOWED_ROOTS = (
+    Path(__file__).resolve().parents[2] / "outputs",
+    Path(__file__).resolve().parents[2] / "data" / "external",
+    Path(__file__).resolve().parents[2] / "results",
+)
+
+
+def _safe_open(path: str | Path, pattern: re.Pattern) -> Path:
+    """Resolve *path*, validate its filename and base directory, return the resolved Path."""
+    resolved = Path(path).resolve()
+    if not pattern.match(resolved.name):
+        raise ValueError(f"Invalid file name: {resolved.name!r}")
+    if not any(str(resolved).startswith(str(root)) for root in _ALLOWED_ROOTS):
+        raise ValueError(f"Path outside allowed directories: {resolved!r}")
+    return resolved
+
+
+
 
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Mean Absolute Error."""
@@ -193,7 +211,8 @@ def explainability_quality(eri_json_path: str | Path) -> dict[str, Any]:
         sensor_importance.ig, sensor_importance.shap,
         sensor_importance.temporal_relevance
     """
-    with open(eri_json_path) as f:
+    resolved = _safe_open(eri_json_path, _SAFE_JSON)
+    with open(resolved) as f:
         eri = json.load(f)
 
     result: dict[str, Any] = {
@@ -291,7 +310,8 @@ def decision_effectiveness(decision_json_path: str | Path) -> dict[str, Any]:
     Computes action distribution, human-review rate, constraint violation
     rate, and urgency–risk alignment (Pearson r).
     """
-    with open(decision_json_path) as f:
+    resolved = _safe_open(decision_json_path, _SAFE_JSON)
+    with open(resolved) as f:
         data = json.load(f)
 
     records = data.get("decisions", data) if isinstance(data, dict) else data
@@ -497,7 +517,8 @@ def user_trust_proxies(
               updated from the feedback log, indicating the system is
               learning from expert corrections.
     """
-    with open(hitl_json_path) as f:
+    resolved = _safe_open(hitl_json_path, _SAFE_JSON)
+    with open(resolved) as f:
         hitl = json.load(f)
 
     reviews   = hitl.get("review_results", [])
@@ -526,7 +547,8 @@ def user_trust_proxies(
     # Optional: parse feedback.jsonl for cross-run override rate
     if feedback_jsonl_path and Path(feedback_jsonl_path).exists():
         records = []
-        with open(feedback_jsonl_path) as f:
+        fb_resolved = _safe_open(feedback_jsonl_path, _SAFE_JSONL)
+        with open(fb_resolved) as f:
             for line in f:
                 line = line.strip()
                 if line:

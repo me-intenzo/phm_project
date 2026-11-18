@@ -75,11 +75,12 @@ from src.explainability.visualization import (
 )
 from src.models.outputs import unpack_model_output
 from src.models.registry import ALL_MODELS as MODEL_REGISTRY
-from src.models.registry import load_model_from_checkpoint
+from src.models.registry import load_model_from_checkpoint, resolve_checkpoint_path
 from src.preprocessing.windowing import WindowGenerator
 from src.utils.config import ALL_SUBSETS, get_device
 from src.utils.logger import get_script_logger
 from src.utils.paths import run_dir_name
+from src.utils.paths import CHECKPOINT_DIR, safe_path
 from src.utils.seed import set_seed
 
 # ─────────────────────────────────────────────────────────────────────
@@ -299,7 +300,7 @@ def generate_html_report(
     output_dir: Path,
 ) -> Path:
     """Generate an interactive HTML explanation report."""
-    rows = ""
+    row_parts: list[str] = []
     for mname, res in model_results.items():
         eri = res.get("eri", {})
         eri_val  = f"{eri.get('eri', 0):.3f}"
@@ -309,7 +310,7 @@ def generate_html_report(
         interp   = eri.get("interpretation", "—")
         color    = "#c8e6c9" if eri.get("eri", 0) > 0.8 else (
                    "#fff9c4" if eri.get("eri", 0) > 0.6 else "#ffcdd2")
-        rows += (
+        row_parts.append(
             f'<tr style="background:{color}">'
             f'<td><b>{mname}</b></td>'
             f'<td>{eri_val}</td>'
@@ -319,16 +320,24 @@ def generate_html_report(
             f'<td style="font-size:12px">{interp}</td>'
             f'</tr>\n'
         )
+    rows = "".join(row_parts)
 
-    figures_html = ""
+    figures_parts: list[str] = []
     # ERI radar
     radar_path = output_dir / f"eri_radar_{target}.png"
     if radar_path.exists():
-        figures_html += _img_tag(str(radar_path), "ERI Radar — Cross-model trustworthiness comparison")
+        figures_parts.append(
+            _img_tag(
+                str(radar_path),
+                "ERI Radar — Cross-model trustworthiness comparison",
+            )
+        )
 
     # Multi-model degradation
     for p in sorted(output_dir.glob("multi_model_degradation_engine*.png")):
-        figures_html += _img_tag(str(p), f"Multi-model degradation trajectory — {p.stem}")
+        figures_parts.append(
+            _img_tag(str(p), f"Multi-model degradation trajectory — {p.stem}")
+        )
 
     # Per-model figures
     for mname in model_results:
@@ -340,7 +349,7 @@ def generate_html_report(
         ]:
             p = model_dir / fig_name
             if p.exists():
-                figures_html += (
+                figures_parts.append(
                     f'<figure style="margin:20px 0">'
                     f'<img src="{mname}/{p.name}" width="700" '
                     f'style="border:1px solid #ddd;border-radius:4px">'
@@ -348,7 +357,7 @@ def generate_html_report(
                     f'</figure>'
                 )
         for p in sorted(model_dir.glob(f"degradation_engine*_{mname}.png")):
-            figures_html += (
+            figures_parts.append(
                 f'<figure style="margin:20px 0">'
                 f'<img src="{mname}/{p.name}" width="700" '
                 f'style="border:1px solid #ddd;border-radius:4px">'
@@ -358,6 +367,7 @@ def generate_html_report(
                 f'</figure>'
             )
 
+    figures_html = "".join(figures_parts)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -432,11 +442,19 @@ def run_model_xai(
 
     # The output directory carries the tag, so the XAI artifacts of
     # different seeds of the same model never overwrite each other.
-    model_out_dir = XAI_DIR / subset / run_dir_name(model_name, tag)
+    model_out_dir = safe_path(
+        XAI_DIR / subset / run_dir_name(model_name, tag), XAI_DIR
+    )
     model_out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Loading model checkpoint...")
+    safe_path(
+        resolve_checkpoint_path(model_name, subset, tag),
+        CHECKPOINT_DIR,
+    )
     model, ckpt = load_model(model_name, input_size, subset, device, tag=tag)
+    run_metadata = ckpt.get("run_metadata") or {}
+    set_seed(int(run_metadata.get("seed", ckpt.get("seed", SEED))))
     log.info("Loaded epoch %d", ckpt.get("epoch", "?"))
 
     x_tensor = torch.from_numpy(X_explain).float().to(device)
@@ -510,7 +528,7 @@ def run_model_xai(
     if len(X_engine) > 0:
         log.info("Generating engine degradation trajectory (engine_uid=%d)...", engine_uid)
         x_eng = torch.from_numpy(X_engine).float().to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             preds = model(x_eng)
             rul_pred_tensor, hi_pred_tensor, _ = unpack_model_output(preds)
             hi_pred = hi_pred_tensor.cpu().numpy()

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -40,9 +41,21 @@ from src.evaluation.metrics import predictive_accuracy
 from src.utils.config import ALL_SUBSETS
 from src.utils.config import get_device as get_device_from_config
 from src.utils.logger import get_script_logger
+from src.utils.paths import safe_path
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
+_SAFE_STEM = re.compile(r'^[A-Za-z0-9_\-]+$')
+
+
+def _validate_stem(value: str, label: str) -> str:
+    """Reject values that could escape the results directory via path traversal."""
+    if not _SAFE_STEM.match(value):
+        raise ValueError(
+            f"Invalid {label} {value!r}: only letters, digits, underscores "
+            "and hyphens are allowed."
+        )
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,6 +123,9 @@ def get_device(preference: str | None) -> torch.device:
 def run(subset: str, members: list[tuple[str, str]], name: str, device) -> dict:
     """Build the ensemble for one subset and persist its results."""
 
+    subset = _validate_stem(subset, "subset")
+    name   = _validate_stem(name,   "name")
+
     log = get_script_logger("evaluation", f"ensemble_{subset}_{name}")
 
     X_test, y_rul_test, y_hi_test = load_test_data(subset)
@@ -169,15 +185,22 @@ def run(subset: str, members: list[tuple[str, str]], name: str, device) -> dict:
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    pred_path = safe_path(
+        RESULTS_DIR / f"{subset}_{name}_predictions.npz", RESULTS_DIR
+    )
+    metrics_path = safe_path(
+        RESULTS_DIR / f"{subset}_{name}_metrics.json", RESULTS_DIR
+    )
+
     np.savez(
-        RESULTS_DIR / f"{subset}_{name}_predictions.npz",
+        pred_path,
         y_rul_true=y_rul_test,
         y_rul_pred=pred_rul,
         y_hi_true=y_hi_test,
         y_hi_pred=pred_hi,
     )
 
-    with open(RESULTS_DIR / f"{subset}_{name}_metrics.json", "w", encoding="utf-8") as f:
+    with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "subset": subset,

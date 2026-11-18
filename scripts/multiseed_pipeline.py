@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -71,6 +72,18 @@ STAGES = ("uncertainty", "xai", "decision", "hitl")
 
 UNCERTAINTY_METHODS = ("split", "cqr", "adaptive", "engine_joint")
 
+_SAFE_ID = re.compile(r'^[A-Za-z0-9_\-]+$')
+
+
+def _validate_id(value: str, label: str) -> str:
+    """Reject values containing characters that could inject arguments."""
+    if not _SAFE_ID.match(value):
+        raise ValueError(
+            f"Invalid {label} {value!r}: only letters, digits, underscores "
+            "and hyphens are allowed."
+        )
+    return value
+
 # Maximum tolerated deviation (in RUL cycles) between the point predictions
 # stored by the uncertainty stage and those stored by the evaluation stage.
 # Both run the same weights, but with different batch sizes, so the GPU
@@ -94,6 +107,12 @@ def run_stage(
 ) -> None:
     """Invoke a pipeline stage as a subprocess (same entry points as the CLI)."""
 
+    _validate_id(model_name, "model_name")
+    _validate_id(subset, "subset")
+    _validate_id(tag, "tag")
+    if constraint_scenario:
+        _validate_id(constraint_scenario, "constraint_scenario")
+
     if stage == "uncertainty":
         for method in UNCERTAINTY_METHODS:
             cmd = [
@@ -104,7 +123,7 @@ def run_stage(
                 "--method", method,
                 "--tag", tag,
             ]
-            subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+            subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, shell=False)
 
     elif stage == "xai":
         # Both targets: the decision engine consumes the RUL ERI, and the
@@ -118,7 +137,7 @@ def run_stage(
             "--tag", tag,
             *extra,
         ]
-        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, shell=False)
 
     elif stage == "decision":
         cmd = [
@@ -131,7 +150,7 @@ def run_stage(
         ]
         if constraint_scenario:
             cmd += ["--constraint-scenario", constraint_scenario]
-        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, shell=False)
 
     elif stage == "hitl":
         cmd = [
@@ -141,7 +160,7 @@ def run_stage(
             "--subset", subset,
             "--tag", tag,
         ]
-        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, shell=False)
 
     else:
         raise ValueError(f"Unknown stage: {stage}")

@@ -27,6 +27,7 @@ decisions.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -165,9 +166,19 @@ def run_ablation(
     -------
     dict keyed by variant name → metric sub-dicts.
     """
-    results_dir = Path(results_dir)
-    decision_path = results_dir / f"decision_{subset}_{model}.json"
-    pred_path     = results_dir / f"{subset}_{model}_predictions.npz"
+    results_dir = Path(results_dir).resolve()
+
+    _SAFE = re.compile(r'^[A-Za-z0-9_\-]+$')
+    if not _SAFE.match(subset) or not _SAFE.match(model):
+        raise ValueError(f"Invalid subset or model name: {subset!r}, {model!r}")
+
+    decision_path = (results_dir / f"decision_{subset}_{model}.json").resolve()
+    pred_path     = (results_dir / f"{subset}_{model}_predictions.npz").resolve()
+
+    if not decision_path.is_relative_to(results_dir):
+        raise ValueError(f"Path traversal detected: {decision_path}")
+    if not pred_path.is_relative_to(results_dir):
+        raise ValueError(f"Path traversal detected: {pred_path}")
 
     if not decision_path.exists():
         return {"error": f"missing {decision_path.name}"}

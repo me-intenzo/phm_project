@@ -140,6 +140,8 @@ def check_constraints(
     resource_available = constraints.get("resource_availability")
     if resource_available is not None and not bool(resource_available):
         if result["candidate_action"] in _ACTIVE_ACTIONS:
+            # Resource shortages affect scheduling feasibility, not machine
+            # severity, so this flags review without escalating the action.
             violations.append("Maintenance resources (crew/parts) are unavailable.")
             result["human_review"] = True
             adjustments.append(
